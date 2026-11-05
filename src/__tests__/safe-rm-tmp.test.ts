@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import * as path from 'node:path'
 import { join, dirname } from 'node:path'
-import { tmpdir, homedir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
 import { safeRmTmp, assertSafeTmpRoot, isStrictlyInside } from './helpers/safe-rm-tmp.js'
 
 // The helper is what keeps a broken beforeAll (empty path variable) from
@@ -74,17 +74,24 @@ describe('safeRmTmp with a poisoned TMPDIR', () => {
   })
   // a missing path under the cwd: nothing can be deleted, the guard must throw first
   const victim = join(process.cwd(), '.safe-rm-never-existed-xyz')
+  // The home the guard protects is the account's home from the user database
+  // (assertSafeTmpRoot: userInfo().homedir), NOT $HOME. Poisoning TMPDIR with
+  // os.homedir() ($HOME) tested a different directory whenever the run had its own
+  // HOME (a sealed test run does): the guard then refused for another reason
+  // ("not strictly inside the temp dir") and the /unsafe temp root/ match failed
+  // (B2-1). Same value as before on a normal run, where $HOME is that home.
+  const home = userInfo().homedir
 
   it('refuses TMPDIR=/', () => {
     process.env.TMPDIR = '/'
     expect(() => safeRmTmp(victim)).toThrow(/unsafe temp root/)
   })
   it('refuses TMPDIR=$HOME', () => {
-    process.env.TMPDIR = homedir()
+    process.env.TMPDIR = home
     expect(() => safeRmTmp(victim)).toThrow(/unsafe temp root/)
   })
   it('refuses TMPDIR=<parent of $HOME>', () => {
-    process.env.TMPDIR = dirname(homedir())
+    process.env.TMPDIR = dirname(home)
     expect(() => safeRmTmp(victim)).toThrow(/unsafe temp root/)
   })
 })

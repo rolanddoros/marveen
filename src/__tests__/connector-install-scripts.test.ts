@@ -7,6 +7,7 @@
 // are pinned on the command line. Skipped scripts are reported back
 // (`scriptsSkipped`) so the UI can offer the opt-in.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { itUnlessRoot } from './setup/root.js'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, chmodSync, symlinkSync, lstatSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -280,7 +281,8 @@ describe('withRepoNpmrcSetAside', () => {
     expect(() => withRepoNpmrcSetAside(d, () => { throw new Error('npm failed') })).toThrow('npm failed')
     expect(readFileSync(join(d, '.npmrc'), 'utf-8')).toBe('a=b\n')
   })
-  it('fails closed when the file cannot be moved: fn is not run', () => {
+  // B2-1: root moves the file out of a 0555 dir, so the failure never happens as root: a counted skip there.
+  itUnlessRoot('fails closed when the file cannot be moved: fn is not run', () => {
     const d = dir()
     writeFileSync(join(d, '.npmrc'), 'a=b\n')
     chmodSync(d, 0o555)

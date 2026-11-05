@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { kanbanMoveInstructions, buildKanbanDispatchContent, DISPATCH_SAFE_CARD_ID_RE } from '../web/routes/kanban.js'
 import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
 import { recipeLine, runRecipeLine, RECIPE_TOKEN } from './helpers/kanban-recipe.js'
@@ -10,6 +10,14 @@ import { PROJECT_ROOT } from '../config.js'
 // scripts/marveen-api.sh, no token on any command line, texts from files). Recipe lines are run for real against a
 // capture server, so what is checked is what reaches the wire.
 
+// The budget test's card, and its measure: the dispatch with every occurrence of the install root counted as a
+// fixed-length reference root (a 13-character one, the length of the root the 2.2k budget was set against).
+const BUDGET_CARD = { id: 'KANBANASSIGNFRAME1008', priority: 'urgent' }
+const REF_ROOT = '/opt/marveen1'
+function budgetLength(dispatch: string, root: string): number {
+  return dispatch.split(root).join(REF_ROOT).length
+}
+
 describe('kanbanMoveInstructions', () => {
   it('reads the card through the dashboard API, never the sqlite3 CLI (not installed, forbidden by CLAUDE.md)', () => {
     const out = buildKanbanDispatchContent({ id: 'abc123', priority: 'high' }, 'cody')
@@ -20,10 +28,35 @@ describe('kanbanMoveInstructions', () => {
 
   // The upstream text is ~5.5k characters; a short one gets read to the end. The absolute helper and payload-file
   // paths (VOICETOKENLEAK1101) are most of what is left.
-  it('is short: the whole dispatch stays within 2.2k characters', () => {
+  //
+  // Those paths carry the install root, ten times, so the RAW length moves with where the checkout lives, not with
+  // the text: 1818 characters at a 13-character root, 2268 at a 58-character test copy (Tom, fork B2-1), and the
+  // limit broke at a root of about 51 characters. The budget is for the text, so it is measured with every
+  // occurrence of the root counted at a fixed reference length (REF_ROOT); the 2.2k is unchanged.
+  it('is short: the whole dispatch stays within 2.2k characters, whatever the install path', () => {
     // Sub-agent variant is the longer one (it carries the never-reassign-to-the-owner sentence).
-    const out = buildKanbanDispatchContent({ id: 'KANBANASSIGNFRAME1008', priority: 'urgent' }, 'some-sub-agent')
-    expect(out.length).toBeLessThanOrEqual(2200)
+    const out = buildKanbanDispatchContent(BUDGET_CARD, 'some-sub-agent')
+    expect(budgetLength(out, PROJECT_ROOT)).toBeLessThanOrEqual(2200)
+  })
+
+  it('the budget measurement does not move with the install path (negative control: a 120-character root)', async () => {
+    const here = budgetLength(buildKanbanDispatchContent(BUDGET_CARD, 'some-sub-agent'), PROJECT_ROOT)
+    const LONG_ROOT = '/' + 'long-install-root/'.repeat(7).slice(0, 119)
+    vi.resetModules()
+    vi.doMock('../config.js', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../config.js')>()
+      return { ...real, PROJECT_ROOT: LONG_ROOT, AGENTS_BASE_DIR: join(LONG_ROOT, 'agents') }
+    })
+    try {
+      const { buildKanbanDispatchContent: build } = await import('../web/routes/kanban.js')
+      const long = build(BUDGET_CARD, 'some-sub-agent')
+      expect(long).toContain(LONG_ROOT) // the long root really is in the text
+      expect(long.length).toBeGreaterThan(2200) // the raw length would have failed the budget on this host
+      expect(budgetLength(long, LONG_ROOT)).toBe(here) // the budget measurement is the same everywhere
+    } finally {
+      vi.doUnmock('../config.js')
+      vi.resetModules()
+    }
   })
 
   it('puts the pre-flight read first and the late-arrival rule before the completion steps', () => {
