@@ -186,6 +186,10 @@ def main():
             ('create, a four-field cron', ['schedule-create', 'x', '0 8 * *', 'task', 'johnny', prompt]),
             ('create, a cron with a shell character', ['schedule-create', 'x', '0 8 * * *;id', 'task', 'johnny', prompt]),
             ('create, an unknown type', ['schedule-create', 'x', '0 8 * * *', 'cron', 'johnny', prompt]),
+            # any word other than the two (Ron's A8 mutant added one to the list and no test failed)
+            ('create, type x', ['schedule-create', 'x', '0 8 * * *', 'x', 'johnny', prompt]),
+            ('create, type Task (case)', ['schedule-create', 'x', '0 8 * * *', 'Task', 'johnny', prompt]),
+            ('update, --type x', ['schedule-update', 'r', '--type', 'x']),
             ('create, an invalid name', ['schedule-create', 'Bad_Name', '0 8 * * *', 'task', 'johnny', prompt]),
             ('create, an invalid agent', ['schedule-create', 'x', '0 8 * * *', 'task', '../tom', prompt]),
             ('create, an empty prompt file', ['schedule-create', 'x', '0 8 * * *', 'task', 'johnny', empty]),

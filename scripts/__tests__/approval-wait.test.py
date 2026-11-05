@@ -7,7 +7,8 @@ What is pinned:
   - 4, not 0, for an approved row the caller can no longer act on: consumed_at set, no resolved_at, or resolved
     longer ago than the use window (1800 s, CATEGORY_CONSUME_DEFAULT_WINDOW_S in src/db.ts) (Ron 11870, Kevin 11876);
   - --timeout takes ASCII digits only ('²' used to crash int(), Arabic-Indic digits were taken);
-
+  - every case that must stop at once runs with a short --timeout and a fast poll, so a regression that keeps
+    polling fails in seconds instead of hanging for the 540 s default (Ron's W3/W5/W6 mutants);
   - it polls at once, then every APPROVAL_POLL_S seconds, and a last time at the deadline;
   - a 5xx or a dropped connection is transient (the next poll decides); 401/403 stops at once (exit 1);
   - it NEVER consumes: every request is a GET on /api/approvals/<id>, never /consume;
@@ -117,7 +118,10 @@ def main():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def wait(args, poll=0.05):
+    def wait(args, poll=0.05, short=True):
+        # short: a case without its own --timeout gets 5 s, so a loop that never stops fails instead of hanging
+        if short and '--timeout' not in args:
+            args = args + ['--timeout', '5']
         mod.APPROVAL_POLL_S = poll
         out, err = io.StringIO(), io.StringIO()
         t0 = time.monotonic()
@@ -132,7 +136,7 @@ def main():
     try:
         # --- decided ---------------------------------------------------------------------------------------------
         reset((200, approved(id='a1')))
-        rc, out, err, dt = wait(['a1'], poll=30)
+        rc, out, err, dt = wait(['a1'], poll=30, short=False)
         check('approved at once: exit 0, one GET, the final status line', rc == 0 and len(REQS) == 1
               and out == 'status=approved id=a1' and only_gets('a1'), (rc, out, err, REQS))
         check('  ...the first poll is immediate (poll 30 s, answered in well under that)', dt < 5, dt)
@@ -216,22 +220,25 @@ def main():
 
         # --- stops at once -----------------------------------------------------------------------------------------
         reset((404, '{"error":"not found"}'))
-        rc, out, err, dt = wait(['nope'])
+        rc, out, err, dt = wait(['nope', '--timeout', '2'])
         check('unknown id (404): exit 2, one request, "nothing to wait for"', rc == 2 and len(REQS) == 1
-              and 'nothing to wait for' in err, (rc, out, err, REQS))
+              and 'nothing to wait for' in err and dt < 1.5, (rc, out, err, REQS, dt))
         all_reqs += REQS
         for code in (401, 403):
             reset((code, '{"error":"auth"}'))
-            rc, out, err, dt = wait(['a9'])
-            check('HTTP %d: exit 1 at once, one request' % code, rc == 1 and len(REQS) == 1, (rc, err, REQS))
+            rc, out, err, dt = wait(['a9', '--timeout', '2'])
+            check('HTTP %d: exit 1 at once, one request' % code, rc == 1 and len(REQS) == 1 and dt < 1.5,
+                  (rc, err, REQS, dt))
             all_reqs += REQS
         reset((200, {'status': 'weird'}))
-        rc, out, err, dt = wait(['a10'])
-        check('an unknown status word: exit 1, named', rc == 1 and "'weird'" in err and len(REQS) == 1, (rc, err))
+        rc, out, err, dt = wait(['a10', '--timeout', '2'])
+        check('an unknown status word: exit 1, named', rc == 1 and "'weird'" in err and len(REQS) == 1 and dt < 1.5,
+              (rc, err, dt))
         all_reqs += REQS
         reset((200, 'not json'))
-        rc, out, err, dt = wait(['a11'])
-        check('a body that is not JSON: exit 1, not taken as pending', rc == 1 and len(REQS) == 1, (rc, err))
+        rc, out, err, dt = wait(['a11', '--timeout', '2'])
+        check('a body that is not JSON: exit 1, not taken as pending', rc == 1 and len(REQS) == 1 and dt < 1.5,
+              (rc, err, dt))
         all_reqs += REQS
 
         # --- usage: nothing is requested ---------------------------------------------------------------------------
@@ -252,9 +259,15 @@ def main():
             ('an id with a slash', ['../consume']),
         ]:
             reset((200, approved()))
-            rc, out, err, dt = wait(args)
+            rc, out, err, dt = wait(args, short=False)
             check('usage error, exit 2, nothing requested: ' + name, rc == 2 and not REQS and err.startswith('FAIL'),
                   (rc, out, err, REQS))
+
+        reset((200, approved()))
+        rc, out, err, dt = wait(['a1', '--timeout', '86400'])
+        check('--timeout 86400 (the maximum, one day) is accepted', rc == 0 and mod.APPROVAL_WAIT_MAX_S == 86400,
+              (rc, err, mod.APPROVAL_WAIT_MAX_S))
+        all_reqs += REQS
 
         # --- it never consumes -------------------------------------------------------------------------------------
         check('across every case: only GETs, never a /consume request',
@@ -287,6 +300,16 @@ def main():
         check('  ...and row 4 says approved-but-consumed is 4 for approval-wait (Kevin 11876)',
               len(row4) == 1 and 'approval-wait: approved, but already consumed or past the use window' in row4[0],
               row4)
+
+        # --- the agent template says the same (Ron's T1 mutant) ---------------------------------------------------
+        tpl = ' '.join(open(os.path.join(ROOT, 'templates', 'CLAUDE.md.template'), encoding='utf-8').read().split())
+        for sentence in (
+            '8 = az `approval-wait` döntést kapott, de NEM jóváhagyást (elutasítva vagy lejárt): ne cselekedj.',
+            'az `approval-wait`-nél pedig jóváhagyva, de már felhasználva vagy lejárt a felhasználási ablaka: ne '
+            'cselekedj, kérj új jóváhagyást;',
+            'az `approval-wait`-nél pedig a `--timeout` végéig nem jött döntés: hívd újra;',
+        ):
+            check('templates/CLAUDE.md.template: ' + sentence[:40], sentence in tpl, sentence)
     finally:
         srv.shutdown()
         shutil.rmtree(inst, ignore_errors=True)
