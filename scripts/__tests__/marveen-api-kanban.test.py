@@ -400,12 +400,14 @@ w = [
      'OK\nid: abcd1234\nrenewed: false\ntook_over_from: null\n'),
     (('kanban-assign', 'abcd1234', 'tom'), '{"ok":true}', 'OK\n'),
 ]
-res = [(run(*a, body=b), want) for a, b, want in w]
+# the held move's exit code is the HELD_WRITE_EXIT constant (P34); every other write exits 0
+held_exit = int(re.search(r'^HELD_WRITE_EXIT = (\d+)$', open(API_PY, encoding='utf-8').read(), re.M).group(1))
+res = [(run(*a, body=b), want, held_exit if i == 3 else 0) for i, (a, b, want) in enumerate(w)]
 held_json = run('kanban-move', 'abcd1234', 'done', '--json', body=w[3][1])
-ok(all(r[0] == 0 and r[1] == want for r, want in res) and held_json[0] == 0 and held_json[1] == w[3][1] + '\n',
+ok(all(r[0] == code and r[1] == want for r, want, code in res) and held_json[0] == 0 and held_json[1] == w[3][1] + '\n',
    'P30 writes: OK (create/comment: OK id=<id>, the comment echo dropped), NOT OK for a held move, every other field on its '
    'own line; --json the body as it came',
-   ' | '.join('rc=%d out=%r' % (r[0], r[1]) for r, _ in res) + ' | json=%r' % held_json[1])
+   ' | '.join('rc=%d out=%r' % (r[0], r[1]) for r, _, _ in res) + ' | json=%r' % held_json[1])
 
 rc, out, err, seen = run('kanban-archive', 'abcd1234')
 g, d = one(seen, 'POST', '/api/kanban/abcd1234/archive', None)
@@ -427,6 +429,14 @@ ok(lst[0] == 1 and 'could not be read' in lst[2] and lst[1] == '' and crd[0] == 
    and wr[0] == 0 and wr[1] == 'OK\n' and 'WARN' in wr[2] and len(wr[3]) == 1,
    'P33 an answer the compact form cannot read: a read fails (exit 1, --json named); a done write says OK and warns (no retry)',
    'list=%d %r card=%d %r write=%d %r %r' % (lst[0], lst[2][:80], crd[0], crd[2][:60], wr[0], wr[1], wr[2][:60]))
+
+# P34: the held write's exit code is one constant (Kevin 11746: open between 7 and 1, 0 until decided). The test reads it
+# from the source, so switching the constant is the one-line change, and a held write that ignores it fails here.
+held = run('kanban-move', 'abcd1234', 'done', body='{"ok":false,"status":"testing","evidence_required":true}')
+fine = run('kanban-move', 'abcd1234', 'done', body='{"ok":true}')
+ok(held[0] == held_exit and held[1].startswith('NOT OK\n') and fine[0] == 0 and fine[1] == 'OK\n',
+   'P34 a held write (2xx, ok:false) exits HELD_WRITE_EXIT (%d now) and prints NOT OK; an applied write exits 0' % held_exit,
+   'held=%d %r fine=%d %r' % (held[0], held[1][:20], fine[0], fine[1]))
 
 SRV.shutdown()
 print('FAIL: %d' % len(FAILS) if FAILS else 'OK')

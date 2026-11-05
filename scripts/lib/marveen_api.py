@@ -314,6 +314,9 @@ KANBAN_WRITE_VERBS = ('kanban-create', 'kanban-move', 'kanban-claim', 'kanban-re
 KANBAN_LIST_FIELDS = 'id,status,priority,assignee,updated_at,title'
 KANBAN_CARD_FIELDS = 'status,title,description'
 KANBAN_CARD_FULL_FIELDS = 'status,title,description,test_steps,done_evidence'
+# A write the server answered 2xx but held (ok:false: a move to done without evidence lands in testing) prints NOT OK.
+# Its exit code is open (Kevin 11746: Johnny decides between a new code 7 and 1); until then 0, changed here only.
+HELD_WRITE_EXIT = 0
 
 
 def build_request(verb, args):
@@ -1009,14 +1012,16 @@ def format_write(verb, answer):
 
 
 def format_answer(verb, flags, texts):
+    """(the compact text, the exit code)."""
     answers = [json.loads(t) for t in texts]
     kind = flags.get('format')
     if kind == 'kanban-list':
-        return format_kanban_list(answers[0], flags.get('limit'), flags.get('all', False), flags.get('statuses_given', False))
+        return format_kanban_list(answers[0], flags.get('limit'), flags.get('all', False), flags.get('statuses_given', False)), 0
     if kind == 'kanban-card':
-        return format_kanban_card(answers[0], answers[1] if len(answers) > 1 else None)
+        return format_kanban_card(answers[0], answers[1] if len(answers) > 1 else None), 0
     if kind == 'write':
-        return format_write(verb, answers[0])
+        text = format_write(verb, answers[0])
+        return text, HELD_WRITE_EXIT if answers[0].get('ok') is False else 0
     raise ValueError(f'no compact form for {verb}')
 
 
@@ -1094,7 +1099,7 @@ def main(argv):
         print(texts[0])
         return EXIT['ok']
     try:
-        out = format_answer(verb, flags, texts)
+        out, code = format_answer(verb, flags, texts)
     except ValueError as e:
         # json.JSONDecodeError is a ValueError too. A write is done by now (2xx): it says OK, so nobody repeats it, and
         # warns; a read has no answer to give, so it fails.
@@ -1105,7 +1110,7 @@ def main(argv):
         print(f'FAIL: HTTP {status}, but the answer could not be read ({e}); --json prints it as it came.', file=sys.stderr)
         return EXIT['server_error']
     print(out)
-    return EXIT['ok']
+    return code
 
 
 if __name__ == '__main__':
