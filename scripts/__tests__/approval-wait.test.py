@@ -4,7 +4,10 @@
 What is pinned:
   - the exit codes Johnny decided (11800): 0 ONLY for approved; 8 for decided but not approved (rejected, or the
     server-side timeout); 3 when still pending at the end of --timeout; 2 for an unknown id (404) and usage errors;
+  - 4, not 0, for an approved row the caller can no longer act on: consumed_at set, no resolved_at, or resolved
+    longer ago than the use window (1800 s, CATEGORY_CONSUME_DEFAULT_WINDOW_S in src/db.ts) (Ron 11870, Kevin 11876);
   - --timeout takes ASCII digits only ('²' used to crash int(), Arabic-Indic digits were taken);
+
   - it polls at once, then every APPROVAL_POLL_S seconds, and a last time at the deadline;
   - a 5xx or a dropped connection is transient (the next poll decides); 401/403 stops at once (exit 1);
   - it NEVER consumes: every request is a GET on /api/approvals/<id>, never /consume;
@@ -68,6 +71,13 @@ def check(name, cond, detail=''):
         FAILS.append(name)
 
 
+def approved(**extra):
+    """An approved row as the server returns it: resolved just now, not consumed."""
+    row = {'status': 'approved', 'resolved_at': int(time.time()), 'consumed_at': None}
+    row.update(extra)
+    return row
+
+
 def reset(*answers):
     STATE['answers'] = [(s, json.dumps(b) if isinstance(b, dict) else b) for s, b in answers]
     del REQS[:]
@@ -121,14 +131,14 @@ def main():
     all_reqs = []
     try:
         # --- decided ---------------------------------------------------------------------------------------------
-        reset((200, {'id': 'a1', 'status': 'approved'}))
+        reset((200, approved(id='a1')))
         rc, out, err, dt = wait(['a1'], poll=30)
         check('approved at once: exit 0, one GET, the final status line', rc == 0 and len(REQS) == 1
               and out == 'status=approved id=a1' and only_gets('a1'), (rc, out, err, REQS))
         check('  ...the first poll is immediate (poll 30 s, answered in well under that)', dt < 5, dt)
         all_reqs += REQS
 
-        reset((200, {'status': 'pending'}), (200, {'status': 'pending'}), (200, {'status': 'approved'}))
+        reset((200, {'status': 'pending'}), (200, {'status': 'pending'}), (200, approved()))
         rc, out, err, dt = wait(['a2'])
         check('pending, pending, approved: exit 0 after three GETs', rc == 0 and len(REQS) == 3
               and out == 'status=approved id=a2' and only_gets('a2'), (rc, out, err, REQS))
@@ -141,6 +151,34 @@ def main():
                   rc == 8 and out.startswith('status=%s id=a3' % state) and 'do not act' in out and len(REQS) == 2,
                   (rc, out, err, REQS))
             all_reqs += REQS
+
+        # --- approved, but no longer usable: 4, never 0 ----------------------------------------------------------------
+        now = int(time.time())
+        win = mod.APPROVAL_USE_WINDOW_S
+        for name, row in [
+            ('consumed_at set', approved(consumed_at=now - 5)),
+            ('consumed_at 0 (set, even if falsy)', approved(consumed_at=0)),
+            ('resolved past the use window', approved(resolved_at=now - win - 60)),
+            ('no resolved_at', {'status': 'approved'}),
+            ('resolved_at null', approved(resolved_at=None)),
+            ('resolved_at a string', approved(resolved_at=str(now))),
+            ('resolved_at a boolean', approved(resolved_at=True)),
+        ]:
+            reset((200, {'status': 'pending'}), (200, row))
+            rc, out, err, dt = wait(['c1'])
+            check('approved but %s: exit 4, "request a new approval", no 0' % name,
+                  rc == 4 and out.startswith('status=approved id=c1: ') and 'request a new approval' in out
+                  and len(REQS) == 2 and only_gets('c1'), (rc, out, err, REQS))
+            all_reqs += REQS
+        reset((200, approved(resolved_at=now - win + 120)))
+        rc, out, err, dt = wait(['c2'])
+        check('approved inside the use window (%d s ago): exit 0' % (win - 120), rc == 0
+              and out == 'status=approved id=c2', (rc, out, err))
+        all_reqs += REQS
+        db_src = open(os.path.join(ROOT, 'src', 'db.ts'), encoding='utf-8').read()
+        m = __import__('re').search(r'CATEGORY_CONSUME_DEFAULT_WINDOW_S = (\d+)', db_src)
+        check('the use window is the server\'s generic consume default (src/db.ts), 1800 s',
+              m and int(m.group(1)) == win == 1800, (m and m.group(1), win))
 
         # --- still pending at the deadline -------------------------------------------------------------------------
         reset((200, {'status': 'pending'}))
@@ -158,7 +196,7 @@ def main():
         all_reqs += REQS
 
         # --- transient problems: the next poll decides -------------------------------------------------------------
-        reset((500, '{"error":"x"}'), (503, '{"error":"y"}'), (200, {'status': 'approved'}))
+        reset((500, '{"error":"x"}'), (503, '{"error":"y"}'), (200, approved()))
         rc, out, err, dt = wait(['a6'])
         check('a 500 and a 503, then approved: exit 0', rc == 0 and len(REQS) == 3 and out == 'status=approved id=a6',
               (rc, out, err, REQS))
@@ -213,7 +251,7 @@ def main():
             ('two ids', ['a1', 'a2']),
             ('an id with a slash', ['../consume']),
         ]:
-            reset((200, {'status': 'approved'}))
+            reset((200, approved()))
             rc, out, err, dt = wait(args)
             check('usage error, exit 2, nothing requested: ' + name, rc == 2 and not REQS and err.startswith('FAIL'),
                   (rc, out, err, REQS))
@@ -232,7 +270,7 @@ def main():
         # --- through marveen-api.sh ----------------------------------------------------------------------------------
         env = dict(os.environ, MARVEEN_API_BASE=api)
         for state, code in (('approved', 0), ('rejected', 8)):
-            reset((200, {'status': state}))
+            reset((200, approved() if state == 'approved' else {'status': state}))
             r = subprocess.run(['bash', os.path.join(inst, 'scripts', 'marveen-api.sh'), 'approval-wait', 'b1'],
                                capture_output=True, text=True, env=env, timeout=60, stdin=subprocess.DEVNULL)
             check('marveen-api.sh approval-wait, %s: exit %d' % (state, code), r.returncode == code
@@ -245,6 +283,10 @@ def main():
         row3 = [line for line in r.stdout.splitlines() if line.startswith('  3  ')]
         check('  ...and row 3 says what it means for approval-wait (Kevin 11827, Johnny 11798)',
               len(row3) == 1 and 'approval-wait: no decision before --timeout, call again' in row3[0], row3)
+        row4 = [line for line in r.stdout.splitlines() if line.startswith('  4  ')]
+        check('  ...and row 4 says approved-but-consumed is 4 for approval-wait (Kevin 11876)',
+              len(row4) == 1 and 'approval-wait: approved, but already consumed or past the use window' in row4[0],
+              row4)
     finally:
         srv.shutdown()
         shutil.rmtree(inst, ignore_errors=True)

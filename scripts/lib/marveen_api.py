@@ -43,7 +43,8 @@ EXIT_CODES = (
     (2, 'usage', 'usage error or no token; nothing was sent'),
     (3, 'unreachable', 'unreachable or timeout (read back before retrying a write); approval-wait: no decision before '
                        '--timeout, call again'),
-    (4, 'conflict', 'already closed or consumed (HTTP 409): not an error, do not retry'),
+    (4, 'conflict', 'already closed or consumed (HTTP 409): not an error, do not retry; approval-wait: approved, but '
+                    'already consumed or past the use window: request a new approval'),
     (5, 'content_rejected', 'message: the homoglyph gate refused the text; nothing was sent, rewrite the word'),
     (6, 'checker_error', 'message: the homoglyph checker failed; the message was NOT sent, retry is safe'),
     # 7 is reserved (Stuart's C2 PR2: "accepted but not applied; read back"), so it is not used here.
@@ -87,7 +88,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-wait <approval-id> [--timeout <seconds>]
                 (polls every 60 s until decided; default --timeout 540, under the Bash tool's 600 s limit: call it
                  with timeout 600000 and, on exit 3 (still pending), call it again. It never consumes: run
-                 approval-consume yourself, after exit 0. 0 = approved, 8 = rejected or expired, 2 = unknown id)
+                 approval-consume yourself, after exit 0. 0 = approved, 8 = rejected or expired, 2 = unknown id,
+                 4 = approved but already consumed or past the use window: request a new approval)
   skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
                 (each --ref-file goes as references/<its file name>, markdown only)
   kanban-list
@@ -883,6 +885,22 @@ APPROVAL_WAIT_DEFAULT_S = 540
 APPROVAL_WAIT_MAX_S = 86400
 APPROVAL_POLL_S = 60
 APPROVAL_DECIDED = {'approved': 'ok', 'rejected': 'not_approved', 'timeout': 'not_approved'}
+# The generic consume's default use window (CATEGORY_CONSUME_DEFAULT_WINDOW_S in src/db.ts, 1800 s; the email path's
+# EMAIL_APPROVAL_WINDOW_S defaults to the same). An approved row resolved longer ago than this, or already consumed, is
+# not one the caller can still act on, so approval-wait answers 4, not 0 (Ron 11870, Kevin 11876).
+APPROVAL_USE_WINDOW_S = 1800
+
+
+def approved_but_unusable(row):
+    """Why an approved row can no longer be consumed (consumeCategoryApproval in src/db.ts), or '' if it can."""
+    if row.get('consumed_at') is not None:
+        return 'already consumed'
+    resolved = row.get('resolved_at')
+    if isinstance(resolved, bool) or not isinstance(resolved, (int, float)):
+        return 'no resolved_at on the row'  # the consume needs it, so it would refuse
+    if time.time() - resolved > APPROVAL_USE_WINDOW_S:
+        return f'approved more than {APPROVAL_USE_WINDOW_S} s ago, past the use window'
+    return ''
 
 
 def approval_wait_loop(method, path, headers, token, approval_id, timeout_s):
@@ -901,9 +919,15 @@ def approval_wait_loop(method, path, headers, token, approval_id, timeout_s):
             return EXIT['server_error']
         elif 200 <= status < 300:
             try:
-                state = json.loads(text).get('status')
+                row = json.loads(text)
+                state = row.get('status')
             except (ValueError, AttributeError):
-                state = None
+                row, state = None, None
+            if state == 'approved':
+                unusable = approved_but_unusable(row)
+                if unusable:
+                    print(f'status=approved id={approval_id}: {unusable}; do not act, request a new approval')
+                    return EXIT['conflict']
             if state in APPROVAL_DECIDED:
                 outcome = APPROVAL_DECIDED[state]
                 note = ('' if outcome == 'ok' else
