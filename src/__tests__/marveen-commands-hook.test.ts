@@ -555,6 +555,11 @@ describe('marveen-commands.py', () => {
       expect(closing).toHaveLength(1)
       const own = Number(closing[0].match(/ elapsed=(\d+\.\d{3})s$/)?.[1] ?? NaN)
       expect(own, `hook elapsed ${own} s, wall clock ${took} ms`).toBeLessThanOrEqual(4 + 0.5)
+      // Ron 12002: the meter must not lie low either. The hung dispatch alone used
+      // its whole 2.0 s share (half of the 4 s deadline), and the hook's own time
+      // can never exceed the wall clock around the spawn.
+      expect(own).toBeGreaterThanOrEqual(1.9)
+      expect(own).toBeLessThanOrEqual(took / 1000)
       const s = sends()
       expect(s).toHaveLength(1)
       expect(s[0].text).toMatch(/Nem sikerült lekérdezni a keret-állapotot/)
