@@ -223,6 +223,43 @@ def main():
             finally:
                 os.rename(os.path.join(inst, 'scripts', 'lib', 'off.py'), os.path.join(inst, 'scripts', 'lib', 'env_gate.py'))
 
+            # env_gate.py present but raising at load with something other than the import/OS errors (Ron 11906:
+            # marveen-commands caught only (OSError, ImportError, SyntaxError, AttributeError), so a ValueError
+            # escaped as an unhandled exception): a clean refusal, no token read, nothing sent, nothing raised
+            gate_path = os.path.join(inst, 'scripts', 'lib', 'env_gate.py')
+            os.rename(gate_path, os.path.join(inst, 'scripts', 'lib', 'off.py'))
+            with open(gate_path, 'w') as f:
+                f.write("raise ValueError('the gate module itself is broken')\n")
+            del local_reqs[:]
+            try:
+                mod = load(inst, name)
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    try:
+                        tok, escaped = read_token(mod, sd), None
+                    except Exception as e:
+                        tok, escaped = None, e
+                    try:
+                        send(mod, BOT_TOKEN)
+                        sent = True
+                    except Exception:
+                        sent = False
+                check('%s: env_gate.py raising ValueError at load: no exception escapes the token read, no token, '
+                      'nothing sent' % name, escaped is None and tok is None and not sent and not local_reqs,
+                      (escaped, tok, sent, local_reqs))
+                if hasattr(mod, 'env_gate_check'):
+                    try:
+                        mod.env_gate_check()
+                        got = None
+                    except Exception as e:
+                        got = e
+                    check('%s: env_gate_check() with that module: EnvGateRefused "cannot be loaded (ValueError)"' % name,
+                          type(got).__name__ == 'EnvGateRefused' and 'cannot be loaded (ValueError)' in str(got),
+                          repr(got))
+            finally:
+                os.remove(gate_path)
+                os.rename(os.path.join(inst, 'scripts', 'lib', 'off.py'), gate_path)
+
         # end to end, the CLI sender: exit 2, the reason on stderr, the reachable stub gets nothing, the token unshown
         env = {k: v for k, v in os.environ.items() if k != 'TELEGRAM_API_BASE'}
         del other_reqs[:]

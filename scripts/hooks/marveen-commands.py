@@ -221,7 +221,7 @@ def env_gate_check():
     Called before every read of the dashboard token; a gate that cannot be loaded refuses too (fail closed)."""
     try:
         mod = env_gate()
-    except (OSError, ImportError, SyntaxError, AttributeError) as e:
+    except Exception as e:  # any load failure refuses cleanly, like the other four senders (Ron 11906)
         raise EnvGateRefused(f"the env gate {ENV_GATE_PATH} cannot be loaded ({e.__class__.__name__}); nothing was sent.")
     refused = mod.check_env(GATE_ROOT)
     if refused:
@@ -238,7 +238,7 @@ def bot_api_base():
     if not _BOT_API_BASE:
         try:
             _BOT_API_BASE.append(env_gate().telegram_api_base())
-        except (OSError, ImportError, SyntaxError, AttributeError) as e:
+        except Exception as e:  # any load failure refuses cleanly, like the other four senders (Ron 11906)
             _BOT_API_BASE.append((None, f"the env gate {ENV_GATE_PATH} cannot be loaded ({e.__class__.__name__}); "
                                         "nothing was sent."))
     return _BOT_API_BASE[0]
