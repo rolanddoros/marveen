@@ -9,7 +9,9 @@ python code. This file pins what those do not:
     recipe payload file (api-*.txt) emptied after a send and kept after a failure, and its usage errors;
   - three tries: a 500 then an id is one message; three failures are one FAIL line and one log line;
   - nothing answering: http=000; no answer in time: ONE request, no retry, "read back before re-sending";
-  - message-close: --report and the old --no-notify send notify:false, a 409 exits 4 and keeps the payload file.
+  - message-close: --report and the old --no-notify send notify:false, a 409 exits 4 and keeps the payload file;
+  - <from> left out: MARVEEN_AGENT_ID (C2 PR6), an explicit <from> wins, an invalid value exits 2;
+  - ONE exit-code table (EXIT_CODES) for the helper and agent-msg.sh, printed by --help.
 
 Everything runs from a sandbox copy of the install (the failure log is <install>/store/agent-msg-failures.log) against
 a stub API on 127.0.0.1; nothing reaches a real dashboard.
@@ -100,11 +102,14 @@ def main():
     api = 'http://127.0.0.1:%d' % srv.server_address[1]
     inst = make_install()
     log = os.path.join(inst, 'store', 'agent-msg-failures.log')
-    env = {k: v for k, v in os.environ.items() if k not in ('MARVEEN_TOKEN_FILE', 'MARVEEN_WEB_PORT', 'WEB_PORT')}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('MARVEEN_TOKEN_FILE', 'MARVEEN_WEB_PORT', 'WEB_PORT', 'MARVEEN_AGENT_ID')}
     env['MARVEEN_API_BASE'] = api
 
-    def helper(args, stdin=None, base=None):
+    def helper(args, stdin=None, base=None, ident=None):
         e = dict(env, MARVEEN_API_BASE=base or api)
+        if ident is not None:
+            e['MARVEEN_AGENT_ID'] = ident
         io_ = {'input': stdin} if stdin is not None else {'stdin': subprocess.DEVNULL}
         r = subprocess.run(['bash', os.path.join(inst, 'scripts', 'marveen-api.sh')] + args, capture_output=True,
                            text=True, env=e, timeout=60, **io_)
@@ -168,8 +173,7 @@ def main():
             ('an unknown option', ['message', 'dani', 'samu', payload('u.txt', 'x'), '--loud'], 2),
             ('two positionals', ['message', 'dani', payload('v.txt', 'x')], 2),
             ('--priority without a value', ['message', 'dani', 'samu', payload('w.txt', 'x'), '--priority'], 2),
-            ('--priority with another word (agent-msg.sh\'s check, its code)',
-             ['message', '--priority', 'urgent', 'dani', 'samu', payload('y.txt', 'x')], 1),
+            ('--priority with another word', ['message', '--priority', 'urgent', 'dani', 'samu', payload('y.txt', 'x')], 2),
         ]:
             reset()
             rc, out, err = helper(args)
@@ -185,8 +189,8 @@ def main():
         before = len(log_lines())
         rc, out, err = helper(['message', 'dani', 'samu', payload('d.txt', 'x')], base=dead)
         lines = log_lines()[before:]
-        check('nothing answering: FAIL with http=000, exit 1, logged',
-              rc == 1 and 'http=000' in out and len(lines) == 1 and '\thttp=000\t' in lines[0], (rc, out, lines))
+        check('nothing answering: FAIL with http=000, exit 3 (unreachable), logged',
+              rc == 3 and 'http=000' in out and len(lines) == 1 and '\thttp=000\t' in lines[0], (rc, out, lines))
 
         # --- no answer in time: one request, no retry (in-process, with a 1 s limit) ----------------------------
         spec = importlib.util.spec_from_file_location('marveen_api_sandbox',
@@ -202,13 +206,13 @@ def main():
             outcome = mod.send_message('dani', 'samu', 'lassu', '', 'test-token')
         time.sleep(1.8)  # let the stub finish its answer before the next case
         lines = log_lines()[before:]
-        check('a timeout is ONE request, not three: the row may exist', outcome == 'send_failed' and len(REQS) == 1,
+        check('a timeout is ONE request, not three: the row may exist', outcome == 'unreachable' and len(REQS) == 1,
               (outcome, len(REQS)))
         check('  ...the FAIL line says to read back before re-sending',
               'http=timeout' in buf.getvalue() and 'read back before re-sending' in buf.getvalue(), buf.getvalue())
         check('  ...and the log line says http=timeout', len(lines) == 1 and '\thttp=timeout\t' in lines[0], lines)
-        check('the exit code of a timeout is the send-failed one, from MESSAGE_EXIT',
-              mod.MESSAGE_EXIT[outcome] == mod.MESSAGE_EXIT['send_failed'] == 1, mod.MESSAGE_EXIT)
+        check('the exit code of a timeout is 3 (unreachable: read back before retrying a write)',
+              mod.EXIT[outcome] == 3, mod.EXIT)
 
         # --- message-close ---------------------------------------------------------------------------------------
         for flag, expect in (('--report', False), ('--no-notify', False), (None, None)):
@@ -227,6 +231,57 @@ def main():
         reset(statuses=[500], body='{"error":"x"}')
         rc, out, err = helper(['message-close', '7'])
         check('message-close, another non-2xx: still exit 1', rc == 1, (rc, err))
+
+        # --- <from> from MARVEEN_AGENT_ID (C2 PR6, kept by the port) ---------------------------------------------
+        reset()
+        rc, out, err = helper(['message', 'samu', payload('i1.txt', 'x')], ident='tom')
+        check('message without <from>: "from" is MARVEEN_AGENT_ID', rc == 0 and REQS and REQS[0]['body']['from'] == 'tom'
+              and REQS[0]['body']['to'] == 'samu', (rc, err, REQS))
+        reset()
+        rc, out, err = helper(['message', 'kevin', 'samu', payload('i2.txt', 'x')], ident='tom')
+        check('message with an explicit <from>: the argument wins', rc == 0 and REQS and REQS[0]['body']['from'] == 'kevin',
+              (rc, err, REQS))
+        reset()
+        rc, out, err = helper(['message', 'samu', payload('i3.txt', 'x')], ident='Bad Name')
+        check('an invalid MARVEEN_AGENT_ID: exit 2, nothing sent, the variable named',
+              rc == 2 and not REQS and 'MARVEEN_AGENT_ID' in err, (rc, err, REQS))
+        reset()
+        rc, out, err = helper(['message', 'samu', payload('i4.txt', 'x')])
+        check('without <from> and without the variable: exit 2, nothing sent (as before)', rc == 2 and not REQS,
+              (rc, err, REQS))
+
+        # --- --as <agent> (Johnny 11686/11691): explicit (--as, or <from>; equal if both) > MARVEEN_AGENT_ID ---------
+        for name, args, ident, want in [
+            ('--as wins over MARVEEN_AGENT_ID', ['--as', 'kevin', 'samu'], 'tom', 'kevin'),
+            ('--as=<name> without the variable', ['--as=kevin', 'samu'], None, 'kevin'),
+            ('--as equal to the positional <from>', ['kevin', 'samu', '--as', 'kevin'], 'tom', 'kevin'),
+        ]:
+            reset()
+            rc, out, err = helper(['message'] + args + [payload('as.txt', 'x')], ident=ident)
+            check('message %s: "from" is %s' % (name, want), rc == 0 and REQS and REQS[0]['body']['from'] == want,
+                  (rc, err, REQS))
+        as_file = payload('as.txt', 'x')
+        for name, args in [
+            ('--as with an invalid name', ['--as', 'Bad Name', 'samu', as_file]),
+            ('--as and a different positional <from> (ambiguous)', ['kevin', 'samu', as_file, '--as', 'dani']),
+            ('--as twice', ['--as', 'kevin', '--as', 'kevin', 'samu', as_file]),
+            ('--as without a value', ['samu', as_file, '--as']),
+        ]:
+            reset()
+            rc, out, err = helper(['message'] + args, ident='tom')
+            check('refused, nothing sent: ' + name, rc == 2 and not REQS and err.startswith('FAIL'), (rc, err, REQS))
+
+        # --- one exit-code table ----------------------------------------------------------------------------------
+        codes = [c for c, _, _ in mod.EXIT_CODES]
+        check('EXIT_CODES is 0..6, each code once, and EXIT is built from it',
+              codes == list(range(7)) and sorted(mod.EXIT.values()) == codes, mod.EXIT_CODES)
+        rc, out, err = helper(['--help'])
+        check('--help prints every code of the table', rc == 0 and all(
+            ('  %d  %s' % (c, text)) in out for c, _, text in mod.EXIT_CODES), out[-600:])
+        src = read(os.path.join(ROOT, 'scripts', 'lib', 'marveen_api.py'))
+        import re as _re
+        literal = [m.group(0) for m in _re.finditer(r'(?:return|sys\.exit\()\s*[0-9]+\b', src)]
+        check('no exit code is written as a number outside the table', not literal, literal)
     finally:
         srv.shutdown()
         shutil.rmtree(inst, ignore_errors=True)

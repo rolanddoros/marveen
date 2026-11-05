@@ -31,10 +31,12 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 # logs a failed send to <its install>/store/agent-msg-failures.log, and a test
 # must not write into the real one.
 SANDBOX = tempfile.mkdtemp(prefix="jegyzetek-test-")
-os.makedirs(os.path.join(SANDBOX, "scripts"))
+os.makedirs(os.path.join(SANDBOX, "scripts", "lib"))
 os.makedirs(os.path.join(SANDBOX, "store"))
 for name in ("jegyzetek.py", "agent-msg.sh"):
     shutil.copy(os.path.join(ROOT, "scripts", name), os.path.join(SANDBOX, "scripts", name))
+# C2 PR4: agent-msg.sh is a shim over the python helper, which logs to <its install>/store too.
+shutil.copy(os.path.join(ROOT, "scripts", "lib", "marveen_api.py"), os.path.join(SANDBOX, "scripts", "lib", "marveen_api.py"))
 SCRIPT = os.path.join(SANDBOX, "scripts", "jegyzetek.py")
 REAL_FAIL_LOG = os.path.join(ROOT, "store", "agent-msg-failures.log")
 SANDBOX_FAIL_LOG = os.path.join(SANDBOX, "store", "agent-msg-failures.log")

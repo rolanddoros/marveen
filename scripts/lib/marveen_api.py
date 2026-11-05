@@ -16,10 +16,7 @@ Entry points: scripts/marveen-api.sh (the allow-listed command), which runs this
 scripts/agent-msg.sh, a shim that runs `--agent-msg` here with its own argv (C2 PR4: the send logic of
 agent-msg.sh lives in send_message below, unchanged in what it checks, prints and logs).
 
-Exit codes: 0 = HTTP 2xx; 1 = the server answered with a non-2xx status (the body is printed to
-stderr); 2 = usage error or no token, nothing was sent; 3 = the dashboard could not be reached or did not answer;
-4 = message-close on a message that is already closed (409): not an error, do not retry.
-The `message` verb keeps agent-msg.sh's own codes for now (MESSAGE_EXIT below).
+Exit codes: one table for every verb and for agent-msg.sh, EXIT_CODES below (also printed by --help).
 """
 import http.client
 import json
@@ -36,6 +33,19 @@ import urllib.parse
 import urllib.request
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# THE exit codes of the whole helper, every verb and agent-msg.sh alike (C2, Johnny 11641 via Kevin 11642). One table:
+# --help prints it, the generated index reads it, and no other place in this file writes a number.
+EXIT_CODES = (
+    (0, 'ok', 'done'),
+    (1, 'server_error', 'the server answered with an error (message: no message id after 3 tries); the body is on stderr'),
+    (2, 'usage', 'usage error or no token; nothing was sent'),
+    (3, 'unreachable', 'the dashboard could not be reached or did not answer in time; read back before retrying a write'),
+    (4, 'conflict', 'already closed or consumed (HTTP 409): not an error, do not retry'),
+    (5, 'content_rejected', 'message: the homoglyph gate refused the text; nothing was sent, rewrite the word'),
+    (6, 'checker_error', 'message: the homoglyph checker failed; the message was NOT sent, retry is safe'),
+)
+EXIT = {name: code for code, name, _ in EXIT_CODES}
 CATEGORIES = ('hot', 'warm', 'cold', 'shared')
 NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
 ID_RE = re.compile(r'^[0-9]{1,18}$')
@@ -54,7 +64,8 @@ PRIORITIES = ('low', 'normal', 'high', 'urgent')
 ASSIGNEE_RE = re.compile(r'^[^\W_][\w .-]{0,63}$')
 
 USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
-  message <from> <to> <content-file> [--priority high|normal]
+  message [<from>] <to> <content-file> [--as <agent>] [--priority high|normal]
+                (sender: --as or <from> (equal if both), else $MARVEEN_AGENT_ID)
   message-close <id> [--result-file <file>] [--report] [--failed]
                 (--report = a report or notice nobody waits on: no receipt to the sender; --no-notify is the old name)
                 (exit 4: the message was already closed (409) - not an error, do not retry)
@@ -83,7 +94,9 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   agents-list
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line.
 Identity: memory-save <agent>, memory-move/memory-update <updated-by> and message <from> may be left out; they then
-default to $MARVEEN_AGENT_ID (set by the launcher). An explicit argument always wins."""
+default to $MARVEEN_AGENT_ID (set by the launcher). An explicit argument always wins.
+Exit codes:
+""" + '\n'.join(f'  {code}  {text}' for code, _, text in EXIT_CODES)
 
 
 class UsageError(Exception):
@@ -166,10 +179,10 @@ def read_token():
             token = f.read().strip()
     except OSError as e:
         print(f'FAIL: no readable token file at {path} ({e.strerror}); nothing was sent.', file=sys.stderr)
-        sys.exit(2)
+        sys.exit(EXIT['usage'])
     if not token:
         print(f'FAIL: the token file at {path} is empty; nothing was sent.', file=sys.stderr)
-        sys.exit(2)
+        sys.exit(EXIT['usage'])
     return token
 
 
@@ -551,19 +564,6 @@ def build_request(verb, args):
 # check_env(), so it still accepts any MARVEEN_API_BASE and token file name, as it always has (a remote agent on
 # 2026-09-13 ran it outside this repo). `marveen-api.sh message` keeps the check. Tightening is a separate decision.
 
-# The exit codes of the message path, in one place. The values are agent-msg.sh's as of fork/main 2c3d59b4; the helper
-# scheme (3 = unreachable/timeout, 4 = conflict) may change the two homoglyph codes, which is a change here only.
-MESSAGE_EXIT = {
-    'ok': 0,
-    'send_failed': 1,         # no id after 3 tries, nothing answered, or a timeout (no retry)
-    'homoglyph_refused': 3,   # the checker refused the text; nothing was sent
-    'checker_crashed': 4,     # the checker failed; nothing was sent, not a verdict on the text
-}
-# Usage and token errors: agent-msg.sh exits 1 for them, marveen-api.sh 2 (its own scheme).
-MESSAGE_USAGE_EXIT = {'agent-msg': 1, 'helper': 2}
-# message-close on a message that is already closed (409): the first close stands, nothing changed. Not an error, do
-# not retry (the plan's helper scheme, C1-C2-design.md section 4).
-CONFLICT_EXIT = 4
 MESSAGE_TRIES = 3
 MESSAGE_TIMEOUT_S = 30
 MESSAGE_PRIORITIES = ('high', 'normal')
@@ -600,7 +600,7 @@ def strip_trailing_newlines(text):
 
 
 def homoglyph_gate(text):
-    """None when the text may go, else the MESSAGE_EXIT key that stops it."""
+    """None when the text may go, else the EXIT key that stops it."""
     checker = os.environ.get('MARVEEN_HOMOGLYPH_BIN') or os.path.join(BASE, 'scripts', 'lib', 'homoglyph.py')
     python = shutil.which('python3')
     if not (os.access(checker, os.R_OK) and os.path.isfile(checker)) or python is None:
@@ -612,10 +612,10 @@ def homoglyph_gate(text):
         return None
     if rc == 3:
         print('FAIL: homoglyph gate refused the message; nothing was sent.', file=sys.stderr)
-        return 'homoglyph_refused'
+        return 'content_rejected'
     print(f'FAIL: homoglyph checker CRASHED (rc={rc}) at {checker}; nothing was sent.', file=sys.stderr)
     print('  This is not a verdict on the text -- fix or unset MARVEEN_HOMOGLYPH_BIN.', file=sys.stderr)
-    return 'checker_crashed'
+    return 'checker_error'
 
 
 def post_message(url, token, body):
@@ -693,7 +693,7 @@ def print_sent(msg_id, depth, minutes, queued, warning, downgraded, to, priority
 
 
 def send_message(sender, to, text, priority, token):
-    """The gate, the payload, three tries; prints the OK or FAIL line. Returns a MESSAGE_EXIT key."""
+    """The gate, the payload, three tries; prints the OK or FAIL line. Returns an EXIT key."""
     refused = homoglyph_gate(text)
     if refused:
         return refused
@@ -710,7 +710,7 @@ def send_message(sender, to, text, priority, token):
             print(f"FAIL from={sender} to={to} url={url} http=timeout id='' (no answer in {MESSAGE_TIMEOUT_S} s, not "
                   'tried again: the message may have arrived; read back before re-sending)')
             log_message_failure(sender, to, url, 'timeout', '')
-            return 'send_failed'
+            return 'unreachable'
         msg_id, depth, minutes, queued, warning, downgraded = message_answer(answer)
         if code in ('200', '201') and msg_id:
             print_sent(msg_id, depth, minutes, queued, warning, downgraded, to, priority)
@@ -719,7 +719,8 @@ def send_message(sender, to, text, priority, token):
             time.sleep(1)
     print(f"FAIL from={sender} to={to} url={url} http={code or '?'} id='{msg_id}' (after {MESSAGE_TRIES} tries)")
     log_message_failure(sender, to, url, code or '?', answer)
-    return 'send_failed'
+    # nothing answered on the last try: unreachable (3); an answer without an id: the server's error (1)
+    return 'unreachable' if code == '000' else 'server_error'
 
 
 def message_api_base():
@@ -731,12 +732,11 @@ def message_api_base():
 
 
 def agent_msg_main(argv):
-    """scripts/agent-msg.sh: its argv, its messages on stdout, exit 1 for usage and token errors."""
-    usage_exit = MESSAGE_USAGE_EXIT['agent-msg']
+    """scripts/agent-msg.sh: its argv and its messages on stdout; the exit codes are the helper's (EXIT_CODES)."""
     parsed, error = parse_agent_msg_argv(argv)
     if error:
         print(error, file=sys.stderr if error.endswith('required') else sys.stdout)
-        return usage_exit
+        return EXIT['usage']
     priority, sender, to, content = parsed
     if content == '-':
         content = strip_trailing_newlines(sys.stdin.read())
@@ -746,37 +746,65 @@ def agent_msg_main(argv):
             token = strip_trailing_newlines(f.read())
     except OSError:
         print(f'FAIL: no token file at {path}')
-        return usage_exit
+        return EXIT['usage']
     if not token:
         print(f'FAIL: the token file at {path} is empty; nothing was sent')
-        return usage_exit
-    return MESSAGE_EXIT[send_message(sender, to, content, priority, token)]
+        return EXIT['usage']
+    return EXIT[send_message(sender, to, content, priority, token)]
 
 
 def helper_message_main(argv):
-    """`marveen-api.sh message <from> <to> <content-file|-> [--priority high|normal]` (check_env already ran)."""
-    usage_exit = MESSAGE_USAGE_EXIT['helper']
+    """`marveen-api.sh message [<from>] <to> <content-file|-> [--as <agent>] [--priority high|normal]`
+    (check_env already ran)."""
     token = read_token()  # missing, unreadable or empty: exit 2 before anything else, never an empty Bearer
     args, priority, given = list(argv), '', False
-    positionals = []
+    positionals, as_name = [], None
     while args:
         a = args.pop(0)
-        if a == '--priority':
+        if a == '--as' or a.startswith('--as='):
+            if as_name is not None:
+                print('FAIL: message: --as given twice; nothing was sent.', file=sys.stderr)
+                return EXIT['usage']
+            if a == '--as' and not args:
+                print('FAIL: --as needs a value', file=sys.stderr)
+                return EXIT['usage']
+            as_name = args.pop(0) if a == '--as' else a[len('--as='):]
+        elif a == '--priority':
             if not args:
                 print('FAIL: --priority needs a value', file=sys.stderr)
-                return usage_exit
+                return EXIT['usage']
             given, priority = True, args.pop(0)
         elif a.startswith('--priority='):
             given, priority = True, a[len('--priority='):]
         elif a.startswith('--'):
             print(f'FAIL: message: unknown option {a}', file=sys.stderr)
-            return usage_exit
+            return EXIT['usage']
         else:
             positionals.append(a)
+    # The sender (attribution only, not a security boundary; C2 PR6 and Johnny 11686/11691). Explicit first: --as, or
+    # the positional <from>; both given, they must be equal. Then the launcher-exported MARVEEN_AGENT_ID. Then the
+    # missing-argument error, as before.
+    if as_name is not None:
+        if not NAME_RE.fullmatch(as_name):
+            print(f"FAIL: message: --as '{as_name}' is not a valid agent name; nothing was sent.", file=sys.stderr)
+            return EXIT['usage']
+        if len(positionals) == 3 and positionals[0] != as_name:
+            print(f"FAIL: message: --as '{as_name}' and <from> '{positionals[0]}' disagree (ambiguous); nothing was "
+                  'sent.', file=sys.stderr)
+            return EXIT['usage']
+        if len(positionals) == 2:
+            positionals.insert(0, as_name)
+    ident = os.environ.get(IDENTITY_ENV, '')
+    if as_name is None and len(positionals) == 2 and ident:
+        if not NAME_RE.fullmatch(ident):
+            print(f"FAIL: message: ${IDENTITY_ENV}='{ident}' is not a valid agent name; pass <from> explicitly",
+                  file=sys.stderr)
+            return EXIT['usage']
+        positionals.insert(0, ident)
     if len(positionals) != 3:
-        print('FAIL: usage: bash scripts/marveen-api.sh message <from> <to> <content-file> [--priority high|normal]',
-              file=sys.stderr)
-        return usage_exit
+        print('FAIL: usage: bash scripts/marveen-api.sh message [<from>] <to> <content-file> [--as <agent>] '
+              '[--priority high|normal]', file=sys.stderr)
+        return EXIT['usage']
     sender, to, path = positionals
     if path == '-':
         text = sys.stdin.read()
@@ -786,25 +814,25 @@ def helper_message_main(argv):
                 text = f.read()
         except (OSError, UnicodeDecodeError):
             print(f'FAIL: cannot read {path}; nothing was sent.', file=sys.stderr)
-            return usage_exit
+            return EXIT['usage']
         # A recipe payload file is emptied after a successful send, and an empty one stops here, so an old text is
         # never sent twice (VOICETOKENLEAK1101 PR-A1); the same rule as read_text.
         if is_recipe_payload(path) and not text.strip():
             print(f'FAIL: {path} is empty: a recipe payload file is emptied after each send, write the new text '
                   'first; nothing was sent.', file=sys.stderr)
-            return usage_exit
-    # Then agent-msg.sh's own checks, with its code, in the order the old hand-over ran them (after the file).
+            return EXIT['usage']
+    # Then agent-msg.sh's own checks, in the order the old hand-over ran them (after the file).
     if given and priority not in MESSAGE_PRIORITIES:
         print('FAIL: --priority must be high or normal (absent = normal)')
-        return MESSAGE_USAGE_EXIT['agent-msg']
+        return EXIT['usage']
     if sender == '' or to == '':
         print(f"FAIL: {'from' if sender == '' else 'to'} required", file=sys.stderr)
-        return MESSAGE_USAGE_EXIT['agent-msg']
+        return EXIT['usage']
     outcome = send_message(sender, to, strip_trailing_newlines(text), priority, token)
     if outcome == 'ok' and is_recipe_payload(path):
         SENT_PAYLOADS.append(path)
         empty_sent_payloads()
-    return MESSAGE_EXIT[outcome]
+    return EXIT[outcome]
 
 
 def main(argv):
@@ -813,21 +841,21 @@ def main(argv):
         return agent_msg_main(argv[1:])
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
-        return 0 if argv else 2
+        return EXIT['ok'] if argv else EXIT['usage']
     refused = check_env()
     if refused:
         print(f'FAIL: {refused}', file=sys.stderr)
-        return 2
+        return EXIT['usage']
     if argv[0] == '--check-env':
         # marveen-api.sh asks this before it hands the message verb to agent-msg.sh, which reads
         # the same two variables.
-        return 0
+        return EXIT['ok']
     if argv[0] == '--check-token':
         # ...and this one too: the token file the way the other verbs read it (missing, unreadable
         # or empty -> exit 2, nothing sent). agent-msg.sh alone would send an empty Bearer for an
         # empty file (VOICETOKENLEAK1101 PR-A0).
         read_token()
-        return 0
+        return EXIT['ok']
     if argv[0] == 'message':
         return helper_message_main(argv[1:])
     verb, rest = argv[0], argv[1:]
@@ -835,11 +863,11 @@ def main(argv):
         method, path, body, headers, flags = build_request(verb, rest)
     except UsageError as e:
         print(f'FAIL: {e}\n{USAGE}', file=sys.stderr)
-        return 2
+        return EXIT['usage']
     refused = schedule_write_refused(method, path)
     if refused:
         print(f'FAIL: {refused}', file=sys.stderr)
-        return 2
+        return EXIT['usage']
     token = read_token()
     data = json.dumps(body).encode('utf-8') if body is not None else None
     req = urllib.request.Request(api_base() + path, data=data, method=method)
@@ -857,9 +885,9 @@ def main(argv):
         if isinstance(e, TimeoutError) or isinstance(getattr(e, 'reason', None), TimeoutError):
             # The request may have been sent and processed; only the answer is missing.
             print(f'FAIL: the dashboard at {api_base()} did not answer in 30 s; read back before you retry a write.', file=sys.stderr)
-            return 3
+            return EXIT['unreachable']
         print(f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).', file=sys.stderr)
-        return 3
+        return EXIT['unreachable']
     if flags.get('search_header'):
         # The search answers leniently; the label travels only in this header (#1374). Its ABSENCE
         # is printed too: a missing header is a request that failed, not an empty result.
@@ -868,14 +896,14 @@ def main(argv):
     if 200 <= status < 300:
         empty_sent_payloads()
         print(text)
-        return 0
+        return EXIT['ok']
     if status == 409 and flags.get('conflict_is_closed'):
         # The first close stands and no receipt went out; a second close changes nothing (the payload file is kept).
         print(f'ALREADY CLOSED: message {flags["conflict_is_closed"]} (HTTP 409): not an error, do not retry; '
               'nothing changed.', file=sys.stderr)
-        return CONFLICT_EXIT
+        return EXIT['conflict']
     print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)
-    return 1
+    return EXIT['server_error']
 
 
 if __name__ == '__main__':

@@ -66,7 +66,7 @@ ok "  ...and the helper reports the id" "$(printf '%s' "$OUT" | grep -q 'id=4242
 
 # THE ASSERTION THAT FAILS WITHOUT THE GATE.
 ENVX= send "szennyezett sz${CY}veg egy lathatatlan betuvel"
-ok "contaminated text is REFUSED" "$([ "$RC" = "3" ] && echo 0 || echo 1)" "rc=$RC (expected 3)"
+ok "contaminated text is REFUSED" "$([ "$RC" = "5" ] && echo 0 || echo 1)" "rc=$RC (expected 5)"
 ok "  ...and NOTHING was sent" "$([ "$CALLED" = "no" ] && echo 0 || echo 1)" "a request reached the API anyway"
 ok "  ...and the refusal names the letter" "$(printf '%s' "$ERR" | grep -qi 'CYRILLIC' && echo 0 || echo 1)" "stderr: $ERR"
 # The message must steer to the right fix, or the next person reaches for the
@@ -85,7 +85,7 @@ ok "  ...and the report masks the letter instead of pasting it" \
 : > "$SANDBOX/calls.txt"
 OUT="$(printf 'stdin sz%sveg' "$CY" | env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" \
         MARVEEN_TOKEN_FILE="$SANDBOX/token" /bin/bash "$HELPER" igor hex - 2>/dev/null)"
-ok "the STDIN form is gated too" "$([ "$?" = "3" ] && [ ! -s "$SANDBOX/calls.txt" ] && echo 0 || echo 1)"
+ok "the STDIN form is gated too" "$([ "$?" = "5" ] && [ ! -s "$SANDBOX/calls.txt" ] && echo 0 || echo 1)"
 
 # --- THE RULE IS THE MIXED-SCRIPT WORD, not the presence of a script --------
 # Requested in the 2026-09-24 review: this gate refused a plain Russian quote
@@ -101,7 +101,7 @@ ok "a standalone Greek symbol is SENT (technical notation)" \
 # ...but Greek INSIDE a Latin word is still the bug this gate exists for.
 GR="$(python3 -c 'print(chr(0x3BF))')"   # GREEK SMALL LETTER OMICRON
 ENVX= send "gorog hom${GR}glifa egy szoban"
-ok "Greek mixed INTO a Latin word is refused" "$([ "$RC" = "3" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC"
+ok "Greek mixed INTO a Latin word is refused" "$([ "$RC" = "5" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC"
 ok "  ...and the refusal names GREEK" "$(printf '%s' "$ERR" | grep -qi 'GREEK' && echo 0 || echo 1)" "stderr: $ERR"
 
 # --- UNIT AND FORMULA NOTATION IS NOT A MIXED-SCRIPT WORD -------------------
@@ -136,7 +136,7 @@ ok "a subscript digit is SENT (H2O)" \
 RN1="$(python3 -c 'print(chr(0x2160))')"  # ROMAN NUMERAL ONE
 ENVX= send "verz${RN1}o egy szoban"
 ok "the neutral list stays narrow: ROMAN NUMERAL ONE is still refused" \
-   "$([ "$RC" = "3" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED"
+   "$([ "$RC" = "5" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED"
 
 # --- THE TWO PATHS MUST NOT DRIFT -------------------------------------------
 # The anti-drift guarantee is not "we copied the rule carefully", it is this
@@ -190,7 +190,7 @@ ok "the send gate and the outgoing-copy hook agree on the whole corpus" "$PARITY
 # has to get the refusal, not a silently rewritten message.
 ENVX="TISZTIT=1" send "tisztitando sz${CY}veg"
 ok "TISZTIT=1 no longer cleans: the text is still REFUSED" \
-   "$([ "$RC" = "3" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED"
+   "$([ "$RC" = "5" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED"
 
 # --- A BROKEN CHECKER IS NOT A VERDICT ON THE TEXT --------------------------
 # Measured in the review: a checker exiting 0 with EMPTY stdout made this
@@ -221,13 +221,14 @@ sys.exit(0 if sent == 'ezt a szoveget kell elkuldeni' else 1)
 
 # A CRASHING checker must get its own message and its own exit code: "refused"
 # would send the author off to rewrite a word that may be perfectly fine.
+# (C2: the helper's one scheme, EXIT_CODES in marveen_api.py: 5 = refused, 6 = checker error, not sent.)
 cat > "$SANDBOX/crash-checker.py" <<'CC'
 import sys
 raise SystemExit(9)
 CC
 ENVX="MARVEEN_HOMOGLYPH_BIN=$SANDBOX/crash-checker.py" send "tiszta szoveg torott checkerrel"
 ok "a CRASHING checker is not reported as a refusal" \
-   "$([ "$RC" = "4" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC (expected 4) sent=$CALLED"
+   "$([ "$RC" = "6" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC (expected 6) sent=$CALLED"
 ok "  ...and it says the checker crashed, not that the text was refused" \
    "$(printf '%s' "$ERR" | grep -q 'CRASHED' && echo 0 || echo 1)" "stderr: $ERR"
 
