@@ -102,7 +102,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line.
 Identity: memory-save <agent>, memory-move/memory-update <updated-by> and message <from> may be left out; they then
 default to $MARVEEN_AGENT_ID (set by the launcher). An explicit argument always wins.
---json (every verb but message): the server's body as it came. Without it the kanban verbs answer compactly:
+--json (every verb but message): the server's body as it came; it changes stdout only, never the exit code.
+Without it the kanban verbs answer compactly:
 kanban-list prints id, status, priority, assignee, last change (MM-DD HH:MM) and title, one card per tab-separated
 line, the newest change first; by default the 40 newest cards that are not done ("# shown N of M" when more match).
 --status picks the statuses, --all adds done and lifts the limit, --mine is the assignee in MARVEEN_AGENT_ID.
@@ -1014,6 +1015,19 @@ def format_write(verb, answer):
     return '\n'.join(lines)
 
 
+def raw_exit(flags, text):
+    """The exit code of an answer printed as it came (--json, or a verb with no compact form). --json changes stdout
+    only, never the exit code (Ron 11856): a held write (2xx, ok:false) exits HELD_WRITE_EXIT here too. A write whose
+    body cannot be read is done (2xx) and exits ok, as in the compact path."""
+    if flags.get('format') != 'write':
+        return EXIT['ok']
+    try:
+        answer = json.loads(text)
+    except ValueError:
+        return EXIT['ok']
+    return HELD_WRITE_EXIT if isinstance(answer, dict) and answer.get('ok') is False else EXIT['ok']
+
+
 def format_answer(verb, flags, texts):
     """(the compact text, the exit code)."""
     answers = [json.loads(t) for t in texts]
@@ -1100,7 +1114,7 @@ def main(argv):
     empty_sent_payloads()
     if flags.get('raw') or not flags.get('format'):
         print(texts[0])
-        return EXIT['ok']
+        return raw_exit(flags, texts[0])
     try:
         out, code = format_answer(verb, flags, texts)
     except ValueError as e:

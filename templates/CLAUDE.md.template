@@ -148,9 +148,15 @@ A kanban adatai a `store/claudeclaw.db` SQLite fájlban vannak, de **NE a `sqlit
 parancssori eszközzel nyúlj hozzá, és `jq`-t se feltételezz**: egyik sincs telepítve egy
 átlagos Linux gépen (a telepítő függőségei: ffmpeg, git, tmux, lsof, curl, python3, pipx,
 unzip), és ott a hívás `exit 127`-tel elhal. A tábla útja a dashboard API -- ugyanaz a
-segéd, mint a memóriánál. Szűréshez/számoláshoz `python3` van mindig kéznél.
+segéd, mint a memóriánál.
 
-Kártyák listázása (JSON tömb: id, title, status, assignee, priority, updated_at, archived_at):
+Kártyák listázása: kártyánként egy tabulátorral tagolt sor (id, status, priority, assignee, utolsó
+változás MM-DD HH:MM, title), a legutóbb változott elöl; alapból a 40 legfrissebb nem-done kártya,
+és ha több van, egy `# shown N of M` sor. Szűrők: `--mine` (a saját kártyáid), `--assignee <név>`,
+`--status <státusz>`, `--all` (a done is, limit nélkül), `--limit <n>`. Egy kártya: `kanban-card
+KARTYA_ID` (status, title, description; `--full` a test_steps, a done_evidence és az utolsó 5
+komment), archiválás: `kanban-archive KARTYA_ID`. JSON csak `--json`-nal jön (a szerver válasza
+változatlanul; a kilépési kód ugyanaz); szűréshez/számoláshoz ilyenkor a `python3` van mindig kéznél.
 ```bash
 bash scripts/marveen-api.sh kanban-list
 ```

@@ -411,7 +411,7 @@ ok(held_exit == _api.EXIT['not_applied'] == 7 and (7, 'not_applied') in [(c, n) 
    'P34a HELD_WRITE_EXIT is EXIT_CODES 7 (not_applied), not a number of its own', repr(held_exit))
 res = [(run(*a, body=b), want, held_exit if i == 3 else 0) for i, (a, b, want) in enumerate(w)]
 held_json = run('kanban-move', 'abcd1234', 'done', '--json', body=w[3][1])
-ok(all(r[0] == code and r[1] == want for r, want, code in res) and held_json[0] == 0 and held_json[1] == w[3][1] + '\n',
+ok(all(r[0] == code and r[1] == want for r, want, code in res) and held_json[0] == held_exit and held_json[1] == w[3][1] + '\n',
    'P30 writes: OK (create/comment: OK id=<id>, the comment echo dropped), NOT OK for a held move, every other field on its '
    'own line; --json the body as it came',
    ' | '.join('rc=%d out=%r' % (r[0], r[1]) for r, _, _ in res) + ' | json=%r' % held_json[1])
@@ -444,6 +444,37 @@ fine = run('kanban-move', 'abcd1234', 'done', body='{"ok":true}')
 ok(held[0] == held_exit and held[1].startswith('NOT OK\n') and fine[0] == 0 and fine[1] == 'OK\n',
    'P34 a held write (2xx, ok:false) exits HELD_WRITE_EXIT (%d now) and prints NOT OK; an applied write exits 0' % held_exit,
    'held=%d %r fine=%d %r' % (held[0], held[1][:20], fine[0], fine[1]))
+
+# P35 (Ron 11856): --json changes stdout only, never the exit code. Each pair: the same answer, compact and --json.
+def pair(*a, status=200, body='{"ok":true}'):
+    return run(*a, status=status, body=body)[0], run(*a, '--json', status=status, body=body)[0]
+HELD_BODY = '{"ok":false,"status":"testing","evidence_required":true}'
+pairs = {
+    'held move (7)': pair('kanban-move', 'abcd1234', 'done', body=HELD_BODY),
+    'applied move (0)': pair('kanban-move', 'abcd1234', 'done'),
+    '409 move (4)': pair('kanban-move', 'abcd1234', 'done', status=409, body='{"error":"status_conflict","current_status":"done"}'),
+    '409 claim (4)': pair('kanban-claim', 'abcd1234', 'dani', status=409, body='{"error":"held","claimed_by":"tom"}'),
+    '404 claim (1)': pair('kanban-claim', 'abcd1234', 'dani', status=404, body='{"ok":false,"reason":"claim_lock_disabled"}'),
+    'list (0)': pair('kanban-list', body='[]'),
+    'card (0)': pair('kanban-card', 'abcd1234', body='{"status":"planned","title":"t","description":""}'),
+}
+want = {'held move (7)': held_exit, 'applied move (0)': 0, '409 move (4)': 4, '409 claim (4)': 4, '404 claim (1)': 1,
+        'list (0)': 0, 'card (0)': 0}
+ok(all(pairs[k] == (want[k], want[k]) for k in want),
+   'P35 --json changes stdout only: the exit code with and without it is the same (held write 7, 409 4, 404 1, reads 0)',
+   repr(pairs))
+
+# P36 (Ron 11856): the template teaches the compact kanban answers, not the old JSON array, and the exit codes PR2 set.
+TPL = open(os.path.join(ROOT, 'templates', 'CLAUDE.md.template'), encoding='utf-8').read()
+flat = ' '.join(TPL.split())
+needs = ['Kártyák listázása: kártyánként egy tabulátorral tagolt sor (id, status, priority, assignee, utolsó változás MM-DD HH:MM, title)',
+         '`# shown N of M`', '`--mine`', '`--assignee <név>`', '`--status <státusz>`', '`--all`', '`--limit <n>`',
+         '`--full`', '`kanban-archive KARTYA_ID`', 'JSON csak `--json`-nal jön',
+         'HTTP 409 (a kilépési kód 4', '409 esetén (kilépési kód 4)', '(NOT OK, kilépési kód 7)']
+missing = [n for n in needs if n not in flat]
+ok(not missing and 'JSON tömb' not in flat,
+   'P36 the template: the compact kanban-list row, its filters, kanban-card --full, kanban-archive, JSON only with --json; '
+   'a kanban 409 exits 4, a held done exits 7', 'missing=%r json_array_left=%s' % (missing, 'JSON tömb' in flat))
 
 SRV.shutdown()
 print('FAIL: %d' % len(FAILS) if FAILS else 'OK')
