@@ -49,24 +49,60 @@ def normalise_base(raw):
     return raw.strip().rstrip('/')
 
 
+def parse_base(b):
+    """urlsplit + the parts that raise on a malformed URL (an unclosed IPv6 bracket, a non-numeric port), or None.
+    Before C2 PR4d, MARVEEN_API_BASE='http://[' made check_env() raise ValueError instead of refusing (Ron 11828)."""
+    try:
+        u = urllib.parse.urlsplit(b)
+        u.hostname, u.port  # noqa: B018 -- evaluated for their ValueError
+        return u
+    except ValueError:
+        return None
+
+
+def shown(name, b):
+    """How a refusal names a base: NAME=<base> with any user:password@ masked; an unparseable one is not shown at all
+    (its text could hold anything). A refusal line can end up in a log or a chat reply (Ron 11828, Kevin 11853)."""
+    u = parse_base(b)
+    if u is None:
+        return f'{name} (not shown: not a valid URL)'
+    if '@' in u.netloc:
+        b = urllib.parse.urlunsplit(u._replace(netloc='***@' + u.netloc.rsplit('@', 1)[1]))
+    if '@' in b.replace('***@', '', 1):
+        # an '@' outside the netloc: a password with an unencoded / ? or # ends up in the path, query or fragment
+        return f'{name} (not shown: it contains @)'
+    return f'{name}={b}'
+
+
+def has_userinfo(u):
+    return '@' in u.netloc
+
+
 def check_env(root, environ=None):
     """None when the environment may be used; otherwise the refusal, one line ending in "nothing was sent."."""
     env = os.environ if environ is None else environ
     base = env.get('MARVEEN_API_BASE')
     if base:
         b = normalise_base(base)
-        u = urllib.parse.urlsplit(b)
+        u = parse_base(b)
+        if u is None:
+            return f'{shown("MARVEEN_API_BASE", b)} must be a valid origin; nothing was sent.'
+        # user:password@ is not an origin, and it is never printed (C2 PR4d, Kevin 11853)
+        if has_userinfo(u):
+            return (f'{shown("MARVEEN_API_BASE", b)} carries user information (user:password@), which is not an '
+                    'origin; nothing was sent.')
         # http(s) only, for EVERY accepted base, the .env origins included (Ron, PR4b G14: a loopback host under
         # another scheme is not the dashboard).
+        name = shown('MARVEEN_API_BASE', b)
         if u.scheme not in ('http', 'https'):
-            return f'MARVEEN_API_BASE={b} must be http:// or https://; nothing was sent.'
+            return f'{name} must be http:// or https://; nothing was sent.'
         on_loopback = u.hostname in LOOPBACK_HOSTS
         configured = {normalise_base(v) for v in env_file_values(root, *ORIGIN_KEYS).values() if v}
         if not on_loopback and b not in configured:
-            return (f'MARVEEN_API_BASE={b} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
+            return (f'{name} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
                     'DASHBOARD_PUBLIC_URL (.env); nothing was sent.')
         if u.path not in ('', '/') or u.query or u.fragment or '?' in b or '#' in b or not u.netloc:
-            return (f'MARVEEN_API_BASE={b} must be an origin only (scheme://host[:port]), with no path, query or '
+            return (f'{name} must be an origin only (scheme://host[:port]), with no path, query or '
                     'fragment; nothing was sent.')
     # unconditional: this rule holds with or without MARVEEN_API_BASE (Ron, PR4b G8)
     token_file = env.get('MARVEEN_TOKEN_FILE')

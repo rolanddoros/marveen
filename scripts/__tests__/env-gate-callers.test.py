@@ -197,6 +197,62 @@ def main():
               and other_reqs[0]['path'] == '/api/commands/dispatch', (err, other_reqs))
         os.remove(os.path.join(inst, '.env'))
 
+        # C2 PR4d: a malformed base is a clean refusal in every caller (it raised ValueError before, Ron 11828), and a
+        # base with user:password@ is refused (not an origin) without ever printing the secret part (Kevin 11853).
+        def helper(base):
+            r = subprocess.run([sys.executable, os.path.join(inst, 'scripts', 'lib', 'marveen_api.py'), 'kanban-list'],
+                               capture_output=True, text=True, env=dict(base_env, MARVEEN_API_BASE=base), timeout=60,
+                               stdin=subprocess.DEVNULL)
+            return r.returncode, r.stdout + r.stderr
+
+        def agent_msg(base):
+            r = subprocess.run(['bash', os.path.join(inst, 'scripts', 'agent-msg.sh'), 'dani', 'samu', 'szia'],
+                               capture_output=True, text=True, env=dict(base_env, MARVEEN_API_BASE=base), timeout=60,
+                               stdin=subprocess.DEVNULL)
+            return r.returncode, r.stdout + r.stderr
+
+        port = local_api.rsplit(':', 1)[1]
+        secret = 's3cr3t-pw'
+        for label, base, secret_part in [
+            ('an unclosed IPv6 bracket', 'http://[', None),
+            ('a non-numeric port', 'http://127.0.0.1:abc', None),
+            ('user:password@ on loopback', 'http://dani:%s@127.0.0.1:%s' % (secret, port), secret),
+            ('user@ only', 'http://%s@127.0.0.1:%s' % (secret, port), secret),
+            ('a password with an unencoded slash', 'http://dani:%s/x@127.0.0.1:%s' % (secret, port), secret),
+            ('user:password@ on a non-http scheme', 'ftp://dani:%s@127.0.0.1' % secret, secret),
+        ]:
+            outs = []
+            reset()
+            rc, out = helper(base)
+            outs.append(out)
+            check('helper, %s: exit 2, refused, nothing arrives' % label,
+                  rc == 2 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
+            reset()
+            rc, out = agent_msg(base)
+            outs.append(out)
+            check('agent-msg.sh, %s: exit 2, refused, nothing arrives' % label,
+                  rc == 2 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
+            reset()
+            rc, out = jegyzetek(base)
+            outs.append(out)
+            check('jegyzetek, %s: exit 1, refused, nothing arrives' % label,
+                  rc == 1 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
+            reset()
+            try:
+                (res, err), (names, note) = hook(base)
+            except Exception as e:  # the hook must refuse, not raise
+                res, err, note = None, 'RAISED %r' % e, None
+            outs.append(err or '')
+            check('hook, %s: dispatch refused by the env gate (no exception), menu not asked' % label,
+                  res is None and err and err.startswith('env-kapu:') and note == 'EnvGateRefused'
+                  and not local_reqs, (res, err, note))
+            if secret_part:
+                check('  ...%s: the secret part is in no output of the four callers' % label,
+                      all(secret_part not in o for o in outs), [o for o in outs if secret_part in o])
+        # the mask keeps the rest readable: the host is still named
+        rc, out = jegyzetek('http://dani:%s@127.0.0.1:%s' % (secret, port))
+        check('the refusal names the base with the userinfo masked', '***@127.0.0.1' in out and secret not in out, out)
+
         # env_gate.py missing: fail closed, even on loopback
         os.rename(os.path.join(inst, 'scripts', 'lib', 'env_gate.py'), os.path.join(inst, 'scripts', 'lib', 'gone.py'))
         reset()
