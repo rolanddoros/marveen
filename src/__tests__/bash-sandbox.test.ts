@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { itUnlessRoot } from './setup/root.js'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-bash-sandbox-test-'))
 const STORE = join(tmpRoot, 'store')
@@ -98,10 +99,17 @@ describe('syncBashSandboxSettings', () => {
     expect(statSync(dir).mode & 0o777).toBe(0o555)
     expect(statSync(p as string).mode & 0o777).toBe(0o444)
     expect(syncBashSandboxSettings('soma', { dir, vendorPath: vendor, writePathsPath: join(tmpRoot, 'none.json'), enabled: true })).toBe(p)
-    expect(() => writeFileSync(join(dir, 'planted.json'), '{}')).toThrow(/EACCES/)
     expect(syncBashSandboxSettings('soma', { dir, enabled: false })).toBeNull()
     expect(existsSync(p as string)).toBe(false)
     expect(statSync(dir).mode & 0o777).toBe(0o555)
+  })
+  // B2-1: the 0555 dir stops a planted file only for a non-root writer (root ignores the mode): a counted skip as root.
+  itUnlessRoot('the read-only dir between writes refuses a planted file (EACCES)', () => {
+    writeFileSync(vendor, JSON.stringify({ domains: ['dentalsalon.hu'] }))
+    expect(syncBashSandboxSettings('soma', { dir, vendorPath: vendor, writePathsPath: join(tmpRoot, 'none.json'), enabled: true }))
+      .toBe(bashSandboxSettingsPath('soma', dir))
+    expect(() => writeFileSync(join(dir, 'planted.json'), '{}')).toThrow(/EACCES/)
+    expect(syncBashSandboxSettings('soma', { dir, enabled: false })).toBeNull()
   })
   it('an unlisted name the switch could never hold does not throw (the start is not blocked)', () => {
     expect(syncBashSandboxSettings('Weird Name', { dir, enabled: false })).toBeNull()

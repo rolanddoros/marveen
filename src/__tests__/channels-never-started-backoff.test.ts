@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { itUnlessRoot } from './setup/root.js'
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -258,7 +259,8 @@ describe('the streak file, executed for real and read back', () => {
     }
   })
 
-  it('an unwritable store/ does not fake success: the counter stays put and the exit still happens', () => {
+  // B2-1: root writes into a 0500 dir, so the failed write never happens as root: a counted skip there.
+  itUnlessRoot('an unwritable store/ does not fake success: the counter stays put and the exit still happens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'streak-ro-'))
     try {
       const storeDir = join(dir, 'store')

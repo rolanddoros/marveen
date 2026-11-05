@@ -3,6 +3,7 @@
 // them. Run for real on a copy of the 0.0.7 plugin excerpt (verbatim blocks,
 // fixtures/telegram-plugin-0.0.7/server.ts.txt) in a scratch plugins cache.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { itUnlessRoot } from './setup/root.js'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, existsSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
@@ -164,7 +165,8 @@ describe('patch-telegram-plugin.py', () => {
     expect(r.status).toBe(0)
   })
 
-  it('an unwritable file: named in the log, exit 0 (the channel still starts)', () => {
+  // B2-1: root writes into an a-w dir, so the write never fails as root: a counted skip there.
+  itUnlessRoot('an unwritable file: named in the log, exit 0 (the channel still starts)', () => {
     const dir = join(cache, 'claude-plugins-official', 'telegram', '0.0.7')
     spawnSync('chmod', ['a-w', dir])
     try {
