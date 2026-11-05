@@ -48,6 +48,8 @@ EXIT_CODES = (
     (4, 'conflict', 'already closed or consumed (HTTP 409): not an error, do not retry'),
     (5, 'content_rejected', 'message: the homoglyph gate refused the text; nothing was sent, rewrite the word'),
     (6, 'checker_error', 'message: the homoglyph checker failed; the message was NOT sent, retry is safe'),
+    (7, 'not_applied', 'accepted but not applied: the server answered 2xx but did not set the requested state (a kanban '
+                       'write held with ok:false, NOT OK); read back, do not just retry'),
 )
 EXIT = {name: code for code, name, _ in EXIT_CODES}
 CATEGORIES = ('hot', 'warm', 'cold', 'shared')
@@ -105,7 +107,8 @@ kanban-list prints id, status, priority, assignee, last change (MM-DD HH:MM) and
 line, the newest change first; by default the 40 newest cards that are not done ("# shown N of M" when more match).
 --status picks the statuses, --all adds done and lifts the limit, --mine is the assignee in MARVEEN_AGENT_ID.
 kanban-card prints status, title, description (--full adds test_steps, done_evidence and the last 5 comments).
-A write prints OK (create and comment: OK id=<id>) and the answer's other fields; NOT OK when the server held it.
+A write prints OK (create and comment: OK id=<id>) and the answer's other fields; NOT OK (exit 7) when the server
+accepted it but did not set the state: read the card back.
 Exit codes:
 """ + '\n'.join(f'  {code}  {text}' for code, _, text in EXIT_CODES)
 
@@ -314,9 +317,9 @@ KANBAN_WRITE_VERBS = ('kanban-create', 'kanban-move', 'kanban-claim', 'kanban-re
 KANBAN_LIST_FIELDS = 'id,status,priority,assignee,updated_at,title'
 KANBAN_CARD_FIELDS = 'status,title,description'
 KANBAN_CARD_FULL_FIELDS = 'status,title,description,test_steps,done_evidence'
-# A write the server answered 2xx but held (ok:false: a move to done without evidence lands in testing) prints NOT OK.
-# Its exit code is open (Kevin 11746: Johnny decides between a new code 7 and 1); until then 0, changed here only.
-HELD_WRITE_EXIT = 0
+# A write the server answered 2xx but held (ok:false: a move to done without evidence lands in testing) prints NOT OK and
+# exits 7, "accepted but not applied, read back" (Johnny 11757 via Kevin 11762; 1 would say retry), from the one table.
+HELD_WRITE_EXIT = EXIT['not_applied']
 
 
 def build_request(verb, args):
@@ -1016,12 +1019,12 @@ def format_answer(verb, flags, texts):
     answers = [json.loads(t) for t in texts]
     kind = flags.get('format')
     if kind == 'kanban-list':
-        return format_kanban_list(answers[0], flags.get('limit'), flags.get('all', False), flags.get('statuses_given', False)), 0
+        return format_kanban_list(answers[0], flags.get('limit'), flags.get('all', False), flags.get('statuses_given', False)), EXIT['ok']
     if kind == 'kanban-card':
-        return format_kanban_card(answers[0], answers[1] if len(answers) > 1 else None), 0
+        return format_kanban_card(answers[0], answers[1] if len(answers) > 1 else None), EXIT['ok']
     if kind == 'write':
         text = format_write(verb, answers[0])
-        return text, HELD_WRITE_EXIT if answers[0].get('ok') is False else 0
+        return text, HELD_WRITE_EXIT if answers[0].get('ok') is False else EXIT['ok']
     raise ValueError(f'no compact form for {verb}')
 
 
