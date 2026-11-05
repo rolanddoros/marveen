@@ -192,7 +192,10 @@ def web_port():
 
 
 def api_base():
-    return os.environ.get("MARVEEN_API_BASE") or f"http://127.0.0.1:{web_port()}"
+    base = os.environ.get("MARVEEN_API_BASE")
+    if base:
+        return env_gate().normalise_base(base)  # the reading the gate checked (env_gate_check runs first)
+    return f"http://127.0.0.1:{web_port()}"
 
 
 class EnvGateRefused(Exception):
@@ -200,17 +203,27 @@ class EnvGateRefused(Exception):
     request URL), so unlike other exceptions it may be shown in a log line or a reply."""
 
 
-def env_gate_check():
-    """Raises EnvGateRefused(<refusal>) unless the shared env gate (scripts/lib/env_gate.py, loaded by its exact path
-    under GATE_ROOT) accepts MARVEEN_API_BASE / MARVEEN_TOKEN_FILE. Called before every read of the dashboard token;
-    a gate that cannot be loaded refuses too (fail closed)."""
-    path = os.path.join(GATE_ROOT, "scripts", "lib", "env_gate.py")
-    try:
-        spec = importlib.util.spec_from_file_location("marveen_env_gate", path)
+ENV_GATE_PATH = os.path.join(GATE_ROOT, "scripts", "lib", "env_gate.py")
+_ENV_GATE = []
+
+
+def env_gate():
+    """scripts/lib/env_gate.py, loaded once by its exact path under GATE_ROOT. Raises when it cannot be loaded."""
+    if not _ENV_GATE:
+        spec = importlib.util.spec_from_file_location("marveen_env_gate", ENV_GATE_PATH)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        _ENV_GATE.append(mod)
+    return _ENV_GATE[0]
+
+
+def env_gate_check():
+    """Raises EnvGateRefused(<refusal>) unless the shared env gate accepts MARVEEN_API_BASE / MARVEEN_TOKEN_FILE.
+    Called before every read of the dashboard token; a gate that cannot be loaded refuses too (fail closed)."""
+    try:
+        mod = env_gate()
     except (OSError, ImportError, SyntaxError, AttributeError) as e:
-        raise EnvGateRefused(f"the env gate {path} cannot be loaded ({e.__class__.__name__}); nothing was sent.")
+        raise EnvGateRefused(f"the env gate {ENV_GATE_PATH} cannot be loaded ({e.__class__.__name__}); nothing was sent.")
     refused = mod.check_env(GATE_ROOT)
     if refused:
         raise EnvGateRefused(refused)

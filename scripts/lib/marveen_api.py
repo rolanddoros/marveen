@@ -121,14 +121,21 @@ def fail_usage(msg):
 ENV_GATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env_gate.py')
 
 
+_ENV_GATE = None
+
+
 def load_env_gate():
-    """scripts/lib/env_gate.py, by its exact path next to this file (C2 PR4c): the one copy of the token env gate."""
-    spec = importlib.util.spec_from_file_location('marveen_env_gate', ENV_GATE_PATH)
-    if spec is None or spec.loader is None:
-        raise ImportError(ENV_GATE_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """scripts/lib/env_gate.py, by its exact path next to this file (C2 PR4c): the one copy of the token env gate.
+    Loaded once per process."""
+    global _ENV_GATE
+    if _ENV_GATE is None:
+        spec = importlib.util.spec_from_file_location('marveen_env_gate', ENV_GATE_PATH)
+        if spec is None or spec.loader is None:
+            raise ImportError(ENV_GATE_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ENV_GATE = mod
+    return _ENV_GATE
 
 
 def env_file_values(*keys):
@@ -152,7 +159,7 @@ def check_env():
 def api_base():
     base = os.environ.get('MARVEEN_API_BASE')
     if base:
-        return base.strip().rstrip('/')
+        return load_env_gate().normalise_base(base)  # the same reading the gate checked
     port = os.environ.get('MARVEEN_WEB_PORT') or os.environ.get('WEB_PORT') or env_file_values('WEB_PORT').get('WEB_PORT')
     return f'http://localhost:{port or 3420}'
 
@@ -711,10 +718,8 @@ def send_message(sender, to, text, priority, token):
 
 
 def message_api_base():
-    # agent-msg.sh's own reading: MARVEEN_API_BASE as given minus one trailing '/', else the port chain.
-    base = os.environ.get('MARVEEN_API_BASE')
-    if base:
-        return base[:-1] if base.endswith('/') else base
+    # The gate's own reading (env_gate.normalise_base, Ron PR4b point 7), else the port chain. agent-msg.sh used to
+    # drop only one trailing '/' and keep surrounding spaces, so a base the gate accepted could fail on the wire.
     return api_base()
 
 

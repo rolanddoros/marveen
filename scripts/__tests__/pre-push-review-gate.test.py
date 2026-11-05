@@ -445,6 +445,13 @@ class ReviewGate(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertTrue(self.stub.requests, "the green was read from the dashboard")
 
+    def test_a_base_with_spaces_and_a_trailing_slash_is_read_the_way_the_gate_checked_it(self):
+        # Ron, PR4b point 7: the gate normalised the base and the request did not, so it failed on the wire
+        h = self.commit("a")
+        self.stub.add("CUSTOM-GREEN %s" % h[:8])
+        p = self.push("fork", "feature", env=dict(self.env, MARVEEN_API_BASE="  http://127.0.0.1:%d/  " % self.stub.port))
+        self.assertEqual(p.returncode, 0, p.stderr)
+
     def test_review_gate_install_root_does_not_choose_the_trusted_dotenv(self):
         # REVIEW_GATE_INSTALL_ROOT moves STORE (the token) for tests; it must not name the .env that decides which
         # origins are allowed. A fake root whose .env allows the 127.0.0.2 stub does not open the gate.

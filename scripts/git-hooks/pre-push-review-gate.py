@@ -169,18 +169,29 @@ def cfg(name):
 def api_base():
     base = os.environ.get("MARVEEN_API_BASE")
     if base:
-        return base.rstrip("/")
+        return env_gate().normalise_base(base)  # the reading the gate checked (green_hashes runs the gate first)
     port = os.environ.get("MARVEEN_WEB_PORT") or cfg("WEB_PORT")
     return "http://localhost:%s" % (port or "3420")
+
+
+_ENV_GATE = []
+
+
+def env_gate():
+    """The pinned env gate module, loaded once by its exact path (GATE_MODULE). Raises when it cannot be loaded."""
+    if not _ENV_GATE:
+        spec = importlib.util.spec_from_file_location("marveen_env_gate", str(GATE_MODULE))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ENV_GATE.append(mod)
+    return _ENV_GATE[0]
 
 
 def env_gate_refusal():
     """None when MARVEEN_API_BASE / MARVEEN_TOKEN_FILE pass the shared env gate; otherwise why not. Loaded lazily,
     only on the token path, so a disabled gate (no reviewer) never depends on the module. Missing: refused."""
     try:
-        spec = importlib.util.spec_from_file_location("marveen_env_gate", str(GATE_MODULE))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = env_gate()
     except (OSError, ImportError, SyntaxError, AttributeError) as e:
         return ("the env gate %s cannot be loaded (%s); reinstall the hook: bash scripts/install-review-gate-hook.sh"
                 % (GATE_MODULE, type(e).__name__))

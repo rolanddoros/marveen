@@ -153,6 +153,16 @@ def main():
               note == 'EnvGateRefused' and 'stub' not in names, (names, note))
         check('hook: the refusal names neither token', 'gate-token' not in (err or '') and 'fake-root' not in (err or ''))
 
+        # point 7 (Ron, PR4b): the request reads the base the way the gate did (spaces, trailing slashes)
+        reset()
+        rc, out = jegyzetek('  %s//  ' % local_api)
+        check('jegyzetek, a base with spaces and trailing slashes: sent, to the right path',
+              rc == 0 and local_reqs and local_reqs[0]['path'] == '/api/notes', (rc, out, local_reqs))
+        reset()
+        (res, err), _ = hook('  %s/  ' % local_api)
+        check('hook, a base with spaces and a trailing slash: dispatch sent, to the right path',
+              err is None and local_reqs and local_reqs[0]['path'] == '/api/commands/dispatch', (err, local_reqs))
+
         # a base with a path, on loopback
         reset()
         rc, out = jegyzetek(local_api + '/api/notes?x=')

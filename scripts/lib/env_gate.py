@@ -42,21 +42,33 @@ def env_file_values(root, *keys):
     return out
 
 
+def normalise_base(raw):
+    """THE one reading of MARVEEN_API_BASE, for the check AND for the request (Ron, PR4b point 7): surrounding
+    whitespace and trailing slashes dropped. Before, the check stripped spaces and some senders did not, so
+    ' http://127.0.0.1:3420/ ' passed the gate and then failed on the wire (http=000)."""
+    return raw.strip().rstrip('/')
+
+
 def check_env(root, environ=None):
     """None when the environment may be used; otherwise the refusal, one line ending in "nothing was sent."."""
     env = os.environ if environ is None else environ
     base = env.get('MARVEEN_API_BASE')
     if base:
-        b = base.strip().rstrip('/')
+        b = normalise_base(base)
         u = urllib.parse.urlsplit(b)
-        on_loopback = u.scheme in ('http', 'https') and u.hostname in LOOPBACK_HOSTS
-        configured = {v.rstrip('/') for v in env_file_values(root, *ORIGIN_KEYS).values() if v}
+        # http(s) only, for EVERY accepted base, the .env origins included (Ron, PR4b G14: a loopback host under
+        # another scheme is not the dashboard).
+        if u.scheme not in ('http', 'https'):
+            return f'MARVEEN_API_BASE={b} must be http:// or https://; nothing was sent.'
+        on_loopback = u.hostname in LOOPBACK_HOSTS
+        configured = {normalise_base(v) for v in env_file_values(root, *ORIGIN_KEYS).values() if v}
         if not on_loopback and b not in configured:
             return (f'MARVEEN_API_BASE={b} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
                     'DASHBOARD_PUBLIC_URL (.env); nothing was sent.')
         if u.path not in ('', '/') or u.query or u.fragment or '?' in b or '#' in b or not u.netloc:
             return (f'MARVEEN_API_BASE={b} must be an origin only (scheme://host[:port]), with no path, query or '
                     'fragment; nothing was sent.')
+    # unconditional: this rule holds with or without MARVEEN_API_BASE (Ron, PR4b G8)
     token_file = env.get('MARVEEN_TOKEN_FILE')
     if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
         return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
