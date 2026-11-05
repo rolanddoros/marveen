@@ -46,7 +46,7 @@ for _k in AGENT_MARKERS:
 class Stub:
     """Serves GET /api/messages. `rows` is the whole mailbox; the handler honours agent/limit/before."""
 
-    def __init__(self):
+    def __init__(self, host="127.0.0.1"):
         self.rows = []
         self.requests = []
         self.token_seen = []
@@ -76,7 +76,7 @@ class Stub:
                 self.end_headers()
                 self.wfile.write(body)
 
-        self.srv = HTTPServer(("127.0.0.1", 0), H)
+        self.srv = HTTPServer((host, 0), H)
         self.port = self.srv.server_address[1]
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.next_id = 1
@@ -101,12 +101,16 @@ class ReviewGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.stub = Stub()
+        # C2 PR4c: a second, REACHABLE stub off loopback. A refused push must leave it untouched, and with a green
+        # row in it a push that wrongly reached it would pass, so "nothing arrived" is a real proof.
+        cls.other = Stub("127.0.0.2")
         cls.tmp = tempfile.mkdtemp(prefix="reviewgate-")
         cls.n = 0
 
     @classmethod
     def tearDownClass(cls):
         cls.stub.close()
+        cls.other.close()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
@@ -114,6 +118,9 @@ class ReviewGate(unittest.TestCase):
         self.stub.rows.clear()
         self.stub.requests.clear()
         self.stub.next_id = 1
+        self.other.rows.clear()
+        self.other.requests.clear()
+        self.other.next_id = 1
         base = os.path.join(self.tmp, "case%d" % ReviewGate.n)
         self.repo = os.path.join(base, "repo")
         self.bare = os.path.join(base, "fork.git")
@@ -127,6 +134,8 @@ class ReviewGate(unittest.TestCase):
             shutil.copy(os.path.join(SCRIPTS, f), os.path.join(self.repo, "scripts", f))
         shutil.copy(os.path.join(SCRIPTS, "git-hooks", "pre-push-review-gate.py"),
                     os.path.join(self.repo, "scripts", "git-hooks", "pre-push-review-gate.py"))
+        os.makedirs(os.path.join(self.repo, "scripts", "lib"))
+        shutil.copy(os.path.join(SCRIPTS, "lib", "env_gate.py"), os.path.join(self.repo, "scripts", "lib", "env_gate.py"))
         with open(os.path.join(self.repo, "store", ".dashboard-token"), "w") as fh:
             fh.write("test-token\n")
         sh("git", "remote", "add", "origin", self.upbare, cwd=self.repo)
@@ -355,6 +364,104 @@ class ReviewGate(unittest.TestCase):
 
     def env_without(self, *names):
         return {k: v for k, v in self.env.items() if k not in names}
+
+    # ---- the token env gate (C2 PR4c, Kevin 11741/11751) -------------------------------------------
+
+    def gate_module(self):
+        return os.path.join(self.repo, ".git", "hooks", "marveen-lib", "env_gate.py")
+
+    def test_the_installer_puts_the_env_gate_next_to_the_hook_not_into_pre_push_d(self):
+        self.assertTrue(os.path.isfile(self.gate_module()))
+        self.assertEqual(os.stat(self.gate_module()).st_mode & 0o777, 0o644)
+        entries = os.listdir(os.path.join(self.repo, ".git", "hooks", "pre-push.d"))
+        self.assertIn("30-review-gate", entries)
+        # the dispatcher runs every executable entry there, a directory included: nothing of the module may sit there
+        self.assertFalse([e for e in entries if "env_gate" in e or "marveen-lib" in e], entries)
+
+    def test_env_gate_missing_and_the_gate_enabled_blocks_and_asks_nothing(self):
+        h = self.commit("a")
+        self.stub.add("CUSTOM-GREEN %s" % h[:8])  # it would pass if the token went out
+        os.remove(self.gate_module())
+        p = self.push("fork", "feature")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("reinstall the hook", p.stderr)
+        self.assertEqual(self.stub.requests, [], "no request may go out without the gate")
+
+    def test_env_gate_missing_and_the_gate_disabled_still_passes(self):
+        self.commit("a")
+        os.remove(self.gate_module())
+        p = self.push("fork", "feature", env=self.env_without("REVIEW_GATE_REVIEWER", "REVIEW_GATE_TRACE_WORD"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("INACTIVE", p.stderr)
+
+    def test_a_base_off_loopback_blocks_and_the_reachable_host_gets_nothing(self):
+        h = self.commit("a")
+        self.other.add("CUSTOM-GREEN %s" % h[:8])
+        p = self.push("fork", "feature", env=dict(self.env, MARVEEN_API_BASE="http://127.0.0.2:%d" % self.other.port))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("neither loopback", p.stderr)
+        self.assertEqual(self.other.requests, [])
+        self.assertEqual(self.other.token_seen, [])
+
+    def test_a_token_file_not_named_dashboard_token_blocks(self):
+        h = self.commit("a")
+        self.stub.add("CUSTOM-GREEN %s" % h[:8])
+        other = os.path.join(self.repo, "notes.txt")
+        with open(other, "w") as fh:
+            fh.write("first line of another file\n")
+        p = self.push("fork", "feature", env=dict(self.env, MARVEEN_TOKEN_FILE=other))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(".dashboard-token", p.stderr)
+        self.assertEqual(self.stub.requests, [])
+
+    def test_the_install_dotenv_origin_opens_exactly_that_origin(self):
+        h = self.commit("a")
+        self.other.add("CUSTOM-GREEN %s" % h[:8])
+        with open(os.path.join(self.repo, ".env"), "w") as fh:
+            fh.write("AGENT_API_ORIGIN=http://127.0.0.2:%d/\n" % self.other.port)
+        p = self.push("fork", "feature", env=dict(self.env, MARVEEN_API_BASE="http://127.0.0.2:%d" % self.other.port))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("Bearer test-token", self.other.token_seen)
+
+    def test_a_push_from_a_linked_worktree_uses_the_hooks_own_module_not_the_main_checkouts(self):
+        # Kevin 11741 (b): the hook copy lives in the COMMON .git, so a push from any worktree runs it, and its
+        # parents[3] is the MAIN checkout. Before cutover that checkout has no scripts/lib/env_gate.py; the push must
+        # still be checked and pass, because the module the hook loads is the copy pinned next to it.
+        os.remove(os.path.join(self.repo, "scripts", "lib", "env_gate.py"))
+        wt = os.path.join(self.repo, "..", "wt")
+        sh("git", "worktree", "add", "-q", "-b", "wt-branch", wt, cwd=self.repo)
+        with open(os.path.join(wt, "g.txt"), "w") as fh:
+            fh.write("from the worktree\n")
+        sh("git", "add", "g.txt", cwd=wt)
+        sh("git", "commit", "-q", "-m", "wt", cwd=wt)
+        h = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+        p = subprocess.run(["git", "push", "-q", "fork", "wt-branch"], cwd=wt, env=self.env, capture_output=True,
+                           text=True)
+        self.assertNotEqual(p.returncode, 0, "no green yet: must block (proves the gate ran from the worktree)")
+        self.stub.requests.clear()
+        self.stub.add("CUSTOM-GREEN %s" % h[:8])
+        p = subprocess.run(["git", "push", "-q", "fork", "wt-branch"], cwd=wt, env=self.env, capture_output=True,
+                           text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(self.stub.requests, "the green was read from the dashboard")
+
+    def test_review_gate_install_root_does_not_choose_the_trusted_dotenv(self):
+        # REVIEW_GATE_INSTALL_ROOT moves STORE (the token) for tests; it must not name the .env that decides which
+        # origins are allowed. A fake root whose .env allows the 127.0.0.2 stub does not open the gate.
+        h = self.commit("a")
+        self.other.add("CUSTOM-GREEN %s" % h[:8])
+        fake = os.path.join(self.repo, "..", "fake-root")
+        os.makedirs(os.path.join(fake, "store"))
+        with open(os.path.join(fake, "store", ".dashboard-token"), "w") as fh:
+            fh.write("fake-root-token\n")
+        with open(os.path.join(fake, ".env"), "w") as fh:
+            fh.write("AGENT_API_ORIGIN=http://127.0.0.2:%d\n" % self.other.port)
+        env = dict(self.env, MARVEEN_API_BASE="http://127.0.0.2:%d" % self.other.port,
+                   REVIEW_GATE_INSTALL_ROOT=os.path.abspath(fake))
+        p = self.push("fork", "feature", env=env)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("neither loopback", p.stderr)
+        self.assertEqual(self.other.requests, [])
 
     def test_an_unset_reviewer_means_the_gate_is_inactive(self):
         self.commit("a")

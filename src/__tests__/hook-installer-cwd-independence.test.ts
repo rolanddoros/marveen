@@ -54,6 +54,7 @@ const INSTALLERS = [
 const COMPANIONS = [
   join('scripts', 'install-git-guard-hook.sh'),
   join('scripts', 'git-hooks', 'pre-push-review-gate.py'),
+  join('scripts', 'lib', 'env_gate.py'), // C2 PR4c: installed next to the hook; the installer refuses without it
 ]
 
 const stage = mkdtempSync(join(tmpdir(), 'hookcwd-'))

@@ -23,6 +23,10 @@ HOOK_DIR="$(cd "$GIT_COMMON_DIR" && pwd)/hooks"
 DISPATCH="$HOOK_DIR/pre-push"
 GUARD="$HOOK_DIR/pre-push.d/30-review-gate"
 SRC="$ROOT/scripts/git-hooks/pre-push-review-gate.py"
+# The token env gate the hook loads by exact path (C2 PR4c): a copy pinned next to the hook's own copy, outside
+# pre-push.d (the dispatcher there runs every executable entry, a directory included), not executable.
+GATE_SRC="$ROOT/scripts/lib/env_gate.py"
+GATE_DIR="$HOOK_DIR/marveen-lib"
 MARK="marveen-pre-push-dispatcher"
 
 # core.hooksPath pointing anywhere but $HOOK_DIR means git never runs the hook we are about to
@@ -40,6 +44,7 @@ if [ -n "$HOOKS_PATH" ]; then
 fi
 
 [ -f "$SRC" ] || { echo "install-review-gate-hook: $SRC missing" >&2; exit 1; }
+[ -f "$GATE_SRC" ] || { echo "install-review-gate-hook: $GATE_SRC missing -- NOT installed" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "install-review-gate-hook: python3 not found, the gate cannot run -- NOT installed" >&2; exit 1; }
 
 # The dispatcher is the git-guard installer's job; run it when it is not there yet, then verify.
@@ -48,7 +53,9 @@ if ! grep -q "$MARK" "$DISPATCH" 2>/dev/null; then
 fi
 grep -q "$MARK" "$DISPATCH" 2>/dev/null || { echo "install-review-gate-hook: no pre-push dispatcher at $DISPATCH after install-git-guard-hook.sh -- the gate would never run" >&2; exit 1; }
 
-mkdir -p "$HOOK_DIR/pre-push.d"
+mkdir -p "$HOOK_DIR/pre-push.d" "$GATE_DIR"
+cp "$GATE_SRC" "$GATE_DIR/env_gate.py"
+chmod 644 "$GATE_DIR/env_gate.py"
 cp "$SRC" "$GUARD"
 chmod +x "$GUARD"
 
