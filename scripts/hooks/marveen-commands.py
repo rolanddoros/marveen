@@ -122,6 +122,13 @@ def remaining():
     return DEADLINE_SEC - (time.monotonic() - START)
 
 
+def elapsed():
+    """The hook's own run time (START -> now) for the closing log line: the
+    share the overall deadline governs. Interpreter start and teardown belong
+    to the host, so a test asserts on this value, not on wall-clock time."""
+    return f"elapsed={time.monotonic() - START:.3f}s"
+
+
 # The builtin registry names (src/web/builtin-commands.ts + the A2 writes).
 # Only consulted when the dashboard is DOWN, to decide "ours, answer with an
 # error" vs "not ours, let the model have it". Pinned against the registry by
@@ -807,11 +814,11 @@ def main():
             if send(sd, tok, chat_id, reply, thread):
                 mark_answered(sd, payload, chat_id, reply)
         clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
-        log(sd, f"/{name} deferred until the hook exits chat={chat_id} sid={sid}")
+        log(sd, f"/{name} deferred until the hook exits chat={chat_id} sid={sid} {elapsed()}")
         sys.exit(2)
     if result is None:
         if name not in BUILTIN_NAMES:
-            log(sd, f"/{name}: dashboard unreachable ({why}), not a builtin, passed to the model")
+            log(sd, f"/{name}: dashboard unreachable ({why}), not a builtin, passed to the model {elapsed()}")
             sys.exit(0)
         reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
         if name == "usage":
@@ -819,12 +826,12 @@ def main():
         if send(sd, tok, chat_id, reply, thread):
             mark_answered(sd, payload, chat_id, reply)
         clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
-        log(sd, f"/{name}: dashboard unreachable ({why}), error reply sent, turn blocked")
+        log(sd, f"/{name}: dashboard unreachable ({why}), error reply sent, turn blocked {elapsed()}")
         sys.exit(2)
 
     if not result.get("handled"):
         # visible in the log: "passed to the model" is a decision, not silence
-        log(sd, f"/{name}: not a registry command ({result.get('outcome')}), passed to the model chat={chat_id} sid={sid}")
+        log(sd, f"/{name}: not a registry command ({result.get('outcome')}), passed to the model chat={chat_id} sid={sid} {elapsed()}")
         sys.exit(0)
 
     replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
@@ -838,7 +845,7 @@ def main():
     if sent_any:
         mark_answered(sd, payload, chat_id, replies[-1])
     clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
-    log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid} reply={json.dumps(chr(10).join(replies)[:2000], ensure_ascii=False)}")
+    log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid} {elapsed()} reply={json.dumps(chr(10).join(replies)[:2000], ensure_ascii=False)}")
     sys.exit(2)  # block: the model never sees this turn
 
 
