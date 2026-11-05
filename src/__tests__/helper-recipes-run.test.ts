@@ -13,7 +13,7 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-helper-recipes-'))
 // The generated lines name <PROJECT_ROOT>/scripts/marveen-api.sh: the real scripts, copied under the mocked root.
 mkdirSync(join(tmpRoot, 'scripts', 'lib'), { recursive: true })
-for (const f of ['marveen-api.sh', 'agent-msg.sh', join('lib', 'marveen_api.py'), join('lib', 'homoglyph.py'), join('lib', 'mixed_script.py')]) {
+for (const f of ['marveen-api.sh', 'agent-msg.sh', join('lib', 'marveen_api.py'), join('lib', 'env_gate.py'), join('lib', 'homoglyph.py'), join('lib', 'mixed_script.py')]) {
   copyFileSync(join(REPO, 'scripts', f), join(tmpRoot, 'scripts', f))
 }
 

@@ -30,9 +30,12 @@ skipped. Exit 1 if any message could not be sent.
 
 Environment: MARVEEN_API_BASE, else the port chain of scripts/agent-msg.sh
 (MARVEEN_WEB_PORT, WEB_PORT, WEB_PORT in .env, 3420); MARVEEN_TOKEN_FILE (default
-store/.dashboard-token); MAIN_AGENT_ID (else .env, else marveen).
+store/.dashboard-token); MAIN_AGENT_ID (else .env, else marveen). Both MARVEEN_* values pass the shared env gate
+(scripts/lib/env_gate.py) before the token is read: loopback or the install's .env origin only, a .dashboard-token
+file only; otherwise one FAIL line, exit 1, nothing sent.
 """
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -90,7 +93,23 @@ def token():
         raise CliError("cannot read the dashboard token (%s): %s" % (path, e.strerror))
 
 
+def env_gate_refusal():
+    """The shared token env gate (scripts/lib/env_gate.py, C2 PR4c), loaded by its exact path from ROOT, which comes
+    from this file's location, never from the environment. Not loadable: refuse (fail closed)."""
+    path = os.path.join(ROOT, "scripts", "lib", "env_gate.py")
+    try:
+        spec = importlib.util.spec_from_file_location("marveen_env_gate", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except (OSError, ImportError, SyntaxError, AttributeError) as e:
+        return "the env gate %s cannot be loaded (%s); nothing was sent." % (path, e.__class__.__name__)
+    return mod.check_env(ROOT)
+
+
 def api(method, path, payload=None):
+    refused = env_gate_refusal()  # before the token is read
+    if refused:
+        raise CliError(refused)
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(api_base() + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + token())

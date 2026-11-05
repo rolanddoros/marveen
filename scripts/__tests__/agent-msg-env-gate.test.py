@@ -64,7 +64,7 @@ def make_install():
     os.makedirs(os.path.join(inst, 'scripts', 'lib'))
     os.makedirs(os.path.join(inst, 'store'))
     shutil.copy(os.path.join(ROOT, 'scripts', 'agent-msg.sh'), os.path.join(inst, 'scripts', 'agent-msg.sh'))
-    for f in ('marveen_api.py', 'homoglyph.py', 'mixed_script.py'):
+    for f in ('marveen_api.py', 'env_gate.py', 'homoglyph.py', 'mixed_script.py'):
         shutil.copy(os.path.join(ROOT, 'scripts', 'lib', f), os.path.join(inst, 'scripts', 'lib', f))
     with open(os.path.join(inst, 'store', '.dashboard-token'), 'w') as f:
         f.write('gate-test-token\n')
