@@ -127,6 +127,7 @@ Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
 bash scripts/marveen-api.sh memory-search {{MAIN_AGENT_ID}} KULCSSZÓ --category warm   # az első kimeneti sor az X-Memory-Search címke: EZT IS OLVASD EL, nem opcionális
 ```
+Találatonként egy sor (id, kategória, nap, a tartalom 160 karakternél levágva): mielőtt egy sorra döntést építesz, olvasd el egészben a `--full` kapcsolóval (a `memory-list` is így ír).
 
 Az `X-Memory-Search` sor NEM dísz (ha `MISSING`, a keresés nem úgy futott, ahogy kérted). A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja
 őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz

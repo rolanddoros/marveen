@@ -644,4 +644,11 @@ describe('marveen-api.sh memory-search: the compact answer (C2 PR3)', () => {
     expect((await list()).stdout).toBe('# 0 hits\n')
     expect([(await list(['--full', '--json'])).code, seen.length]).toEqual([2, 4])
   })
+
+  it('the template says the rows are cut at the helper\'s width and points to --full (Ron, PR3)', () => {
+    const tpl = readFileSync(join(REPO, 'templates', 'CLAUDE.md.template'), 'utf-8')
+    const width = readFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), 'utf-8').match(/^SNIPPET_WIDTH = (\d+)$/m)?.[1]
+    expect(width).toBe('160')
+    expect(tpl).toContain(`a tartalom ${width} karakternél levágva): mielőtt egy sorra döntést építesz, olvasd el egészben a \`--full\` kapcsolóval`)
+  })
 })
