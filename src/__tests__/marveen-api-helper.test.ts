@@ -145,6 +145,7 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen[0].method).toBe('PUT')
     expect(seen[0].url).toBe('/api/memories/7')
     expect(JSON.parse(seen[0].body)).toEqual({ content: 'új', updated_by: 'dani' })
+    reply = { status: 200, body: '[]' } // a listing answers a list (C2 PR3: memory-list reads it compactly)
     expect((await run(['memory-list', 'dani', 'hot'])).code).toBe(0)
     expect(seen[1].method).toBe('GET')
     expect(seen[1].url).toBe('/api/memories?agent=dani&category=hot&limit=40')
@@ -628,24 +629,19 @@ describe('marveen-api.sh memory-search: the compact answer (C2 PR3)', () => {
     expect(r.stderr).toMatch(/could not be read.*--json/)
   })
 
-  it('memory-list: raw while MEMORY_LIST_COMPACT is False; the one-line switch gives it the same compact form', async () => {
-    const src = readFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), 'utf-8')
-    expect(src).toMatch(/^MEMORY_LIST_COMPACT = False$/m)
+  it('memory-list: the same compact rows (no label line), --full the same, --json the body as it came; one request each', async () => {
     reply = { status: 200, body: JSON.stringify(ROWS) }
-    const r = await run(['memory-list', 'dani', 'hot'], { TZ: 'UTC0' })
-    expect([r.code, r.stdout]).toEqual([0, JSON.stringify(ROWS) + '\n'])
-    const flags = (on: boolean): Promise<string> => new Promise((resolve) => {
-      execFile('python3', ['-I', '-c', [
-        'import importlib.util, json, sys',
-        'spec = importlib.util.spec_from_file_location("marveen_api", sys.argv[1])',
-        'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
-        `m.MEMORY_LIST_COMPACT = ${on ? 'True' : 'False'}`,
-        'f = m.build_request("memory-list", ["dani", "hot"])[4]',
-        'print(f.get("format"), m.format_memory_rows(json.loads(sys.argv[2])) if f.get("format") else "-")',
-      ].join('\n'), join(REPO, 'scripts', 'lib', 'marveen_api.py'), JSON.stringify(ROWS)], { env: { PATH: process.env.PATH!, TZ: 'UTC0' } },
-      (_err, stdout) => resolve(stdout))
-    })
-    expect(await flags(false)).toBe('None -\n')
-    expect(await flags(true)).toBe(`memory-rows 7\twarm\t2023-11-14\tline one line two\n8\tcold\t2023-11-16\t${'x'.repeat(159)}\u2026\n`)
+    const list = (extra: string[] = []) => run(['memory-list', 'dani', 'hot', ...extra], { TZ: 'UTC0' })
+    const plain = await list()
+    expect([plain.code, plain.stdout]).toEqual([0, `7\twarm\t2023-11-14\tline one line two\n8\tcold\t2023-11-16\t${'x'.repeat(159)}…\n`])
+    const full = await list(['--full'])
+    expect(full.stdout).toBe(`7\twarm\t2023-11-14\tkeywords: a, b\n  line one\n  \tline two\n8\tcold\t2023-11-16\tkeywords: (none)\n  ${'x'.repeat(200)}\n`)
+    const json = await list(['--json'])
+    expect([json.code, json.stdout]).toEqual([0, JSON.stringify(ROWS) + '\n'])
+    expect(seen).toHaveLength(3)
+    expect(new Set(seen.map((s) => s.url))).toEqual(new Set(['/api/memories?agent=dani&category=hot&limit=40']))
+    reply = { status: 200, body: '[]' }
+    expect((await list()).stdout).toBe('# 0 hits\n')
+    expect([(await list(['--full', '--json'])).code, seen.length]).toEqual([2, 4])
   })
 })

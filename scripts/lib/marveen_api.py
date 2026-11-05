@@ -78,7 +78,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   directive-verify <msg-id>
   memory-search <agent> <query> [--category hot|warm|cold|shared] [--strict] [--date <expr>] [--since <day>] [--until <day>] [--limit <n>] [--full]
   memory-save <agent> <hot|warm|cold|shared> <keywords> <content-file>
-  memory-list <agent> <hot|warm|cold|shared> [--limit <n>]
+  memory-list <agent> <hot|warm|cold|shared> [--limit <n>] [--full]
   memory-move <memory-id> <hot|warm|cold|shared> <updated-by>
   memory-update <memory-id> <updated-by> <content-file>
   daily-log <agent> <content-file>
@@ -110,6 +110,7 @@ line, the newest change first; by default the 40 newest cards that are not done 
 kanban-card prints status, title, description (--full adds test_steps, done_evidence and the last 5 comments).
 memory-search prints the X-Memory-Search line first, then one tab-separated line per hit: id, category, date
 (YYYY-MM-DD) and the content on one line, cut at 160 ("# 0 hits" when none); --full: keywords and the whole content.
+memory-list prints its rows the same way (no label line).
 A write prints OK (create and comment: OK id=<id>) and the answer's other fields; NOT OK (exit 7) when the server
 accepted it but did not set the state: read the card back.
 Exit codes:
@@ -323,9 +324,6 @@ KANBAN_CARD_FULL_FIELDS = 'status,title,description,test_steps,done_evidence'
 # A write the server answered 2xx but held (ok:false: a move to done without evidence lands in testing) prints NOT OK and
 # exits 7, "accepted but not applied, read back" (Johnny 11757 via Kevin 11762; 1 would say retry), from the one table.
 HELD_WRITE_EXIT = EXIT['not_applied']
-# C2 PR3: memory-list answers like memory-search (one line per row) only when this is True. Off: the design names only
-# memory-search, and the switch waits for Johnny's decision (Kevin 11748); the formatter and its test are in place.
-MEMORY_LIST_COMPACT = False
 
 
 def build_request(verb, args):
@@ -401,12 +399,15 @@ def build_verb_request(verb, args, raw=False):
         headers['X-Agent-Id'] = agent
         return 'POST', '/api/memories', body, headers, {}
     if verb == 'memory-list':
+        # C2 PR3 (Johnny 11758 via Kevin 11762): the same compact rows as memory-search; the request is unchanged.
+        full = take_flag(args, '--full')
         limit = take_opt(args, '--limit')
         agent, category = positional(args, 2, verb)
         check(agent, NAME_RE, 'agent name')
         q = {'agent': agent, 'category': check_category(category), 'limit': check(limit or '40', ID_RE, 'limit')}
-        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, (
-            {'format': 'memory-rows'} if MEMORY_LIST_COMPACT else {})
+        if full and raw:
+            fail_usage('memory-list: --full shapes the compact answer; --json prints the body as it came')
+        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'format': 'memory-rows', 'full': full}
     if verb == 'memory-move':
         args = default_identity(args, 3, 2, verb)
         mem_id, category, updated_by = positional(args, 3, verb)
@@ -1050,7 +1051,7 @@ def local_day(ts):
 
 
 def format_memory_rows(rows, full=False):
-    """memory-search (and memory-list when MEMORY_LIST_COMPACT): one line per row, id, category, the day of the last
+    """memory-search and memory-list: one line per row, id, category, the day of the last
     change (updated_at, else created_at) and the content on one line, cut at 160. --full: the keywords on the line and
     the whole content under it, indented two spaces like the kanban blocks."""
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
