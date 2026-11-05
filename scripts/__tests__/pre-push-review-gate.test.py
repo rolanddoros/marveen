@@ -470,6 +470,75 @@ class ReviewGate(unittest.TestCase):
         self.assertIn("neither loopback", p.stderr)
         self.assertEqual(self.other.requests, [])
 
+    # ---- Ron 11828 pins (C2 PR4d): the code was right, nothing held it -------------------------------
+
+    def test_p2_the_gate_runs_before_the_token_file_is_opened(self):
+        # The token file is a FIFO with no writer: opened before the gate, the push hangs until the timeout;
+        # gated first, it is refused at once (Ron's PR4b method).
+        h = self.commit("a")
+        self.other.add("CUSTOM-GREEN %s" % h[:8])
+        fifo_dir = os.path.join(self.repo, "..", "fifo")
+        os.makedirs(fifo_dir)
+        fifo = os.path.join(fifo_dir, ".dashboard-token")
+        os.mkfifo(fifo)
+        env = dict(self.env, MARVEEN_API_BASE="http://127.0.0.2:%d" % self.other.port, MARVEEN_TOKEN_FILE=fifo)
+        try:
+            p = subprocess.run(["git", "push", "-q", "fork", "feature"], cwd=self.repo, env=env, capture_output=True,
+                               text=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            try:
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # release a reader stuck on it
+            except OSError:
+                pass
+            self.fail("the push hung on the FIFO: the token file was opened before the gate")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("neither loopback", p.stderr)
+        self.assertEqual(self.other.requests, [])
+
+    def run_source_layout(self, env, h):
+        # the hook run from its SOURCE place (scripts/git-hooks), the layout a developer runs by hand
+        payload = "refs/heads/feature %s refs/heads/feature %s\n" % (h, "0" * 40)
+        return subprocess.run([sys.executable, os.path.join(self.repo, "scripts", "git-hooks", "pre-push-review-gate.py"),
+                               "fork", self.bare], input=payload, cwd=self.repo, env=env, capture_output=True,
+                              text=True, timeout=30)
+
+    def test_p7_the_source_layout_loads_its_own_module_not_the_install_roots(self):
+        h = self.commit("a")
+        self.stub.add("CUSTOM-GREEN %s" % h[:8])
+        # control: from its source place INSTALL (parents[3]) is above the repo, so the store comes from
+        # REVIEW_GATE_INSTALL_ROOT, which is what that variable is for
+        p = self.run_source_layout(dict(self.env, REVIEW_GATE_INSTALL_ROOT=self.repo), h)
+        self.assertEqual(p.returncode, 0, "control: the source layout runs and passes on loopback: " + p.stderr)
+        self.assertTrue(self.stub.requests, "control: the green was read from the dashboard")
+        self.other.add("CUSTOM-GREEN %s" % h[:8])
+        # REVIEW_GATE_INSTALL_ROOT names a root whose .env allows the 127.0.0.2 stub AND whose scripts/lib/env_gate.py
+        # allows everything: the source layout still loads <its own root>/scripts/lib/env_gate.py and its own .env.
+        fake = os.path.join(self.repo, "..", "fake-src-root")
+        os.makedirs(os.path.join(fake, "store"))
+        os.makedirs(os.path.join(fake, "scripts", "lib"))
+        with open(os.path.join(fake, "store", ".dashboard-token"), "w") as fh:
+            fh.write("fake-root-token\n")
+        with open(os.path.join(fake, ".env"), "w") as fh:
+            fh.write("AGENT_API_ORIGIN=http://127.0.0.2:%d\n" % self.other.port)
+        with open(os.path.join(fake, "scripts", "lib", "env_gate.py"), "w") as fh:
+            fh.write("def check_env(root, environ=None):\n    return None\n\n\n"
+                     "def normalise_base(raw):\n    return raw.strip().rstrip('/')\n")
+        env = dict(self.env, MARVEEN_API_BASE="http://127.0.0.2:%d" % self.other.port,
+                   REVIEW_GATE_INSTALL_ROOT=os.path.abspath(fake))
+        p = self.run_source_layout(env, h)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("neither loopback", p.stderr)
+        self.assertEqual(self.other.requests, [])
+
+    def test_i3_the_installer_installs_nothing_without_the_env_gate_module(self):
+        os.remove(self.hook_path())
+        os.remove(os.path.join(self.repo, "scripts", "lib", "env_gate.py"))
+        p = subprocess.run(["bash", os.path.join(self.repo, "scripts", "install-review-gate-hook.sh")], cwd=self.repo,
+                           env=CLEAN_ENV, capture_output=True, text=True)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("env_gate.py missing -- NOT installed", p.stderr)
+        self.assertFalse(os.path.exists(self.hook_path()), "no hook without its env gate")
+
     def test_an_unset_reviewer_means_the_gate_is_inactive(self):
         self.commit("a")
         env = self.env_without("REVIEW_GATE_REVIEWER", "REVIEW_GATE_TRACE_WORD")

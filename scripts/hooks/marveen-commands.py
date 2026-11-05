@@ -89,7 +89,6 @@ USAGE_SCRIPT = os.path.join(REPO_ROOT, "scripts", "usage-collect.py")
 # REPO_ROOT (the store and the token, for tests), but it must not choose the .env that decides which origins are
 # allowed: a gate must not ask the environment whether to trust the environment.
 GATE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 TELEGRAM_MAX_TEXT = 4096
 SEND_ATTEMPTS = 3
 SEND_RETRY_SECONDS = float(os.environ.get("MARVEEN_CMD_SEND_RETRY_SECONDS", "1.5"))
@@ -229,8 +228,37 @@ def env_gate_check():
         raise EnvGateRefused(refused)
 
 
+_BOT_API_BASE = []
+
+
+def bot_api_base():
+    """(base, refusal) for the Telegram bot token (C2 PR4d): the shared gate's telegram_api_base(), so
+    TELEGRAM_API_BASE may only name https://api.telegram.org or loopback. A gate that cannot be loaded refuses too.
+    Asked BEFORE the bot token is read; computed once per process."""
+    if not _BOT_API_BASE:
+        try:
+            _BOT_API_BASE.append(env_gate().telegram_api_base())
+        except (OSError, ImportError, SyntaxError, AttributeError) as e:
+            _BOT_API_BASE.append((None, f"the env gate {ENV_GATE_PATH} cannot be loaded ({e.__class__.__name__}); "
+                                        "nothing was sent."))
+    return _BOT_API_BASE[0]
+
+
+def bot_token(sd):
+    """The bot token from the state dir's .env, or None: also None (and logged) when the gate refuses the Bot API
+    base, so the token is not even read then."""
+    base, refused = bot_api_base()
+    if refused:
+        log(sd, f"bot token not used: {refused}")
+        return None
+    return env_value(os.path.join(sd, ".env"), "TELEGRAM_BOT_TOKEN")
+
+
 def tg(tok, method, payload):
-    url = f"{TELEGRAM_API_BASE}/bot{tok}/{method}"
+    base, refused = bot_api_base()
+    if refused:
+        raise RuntimeError("the env gate refused TELEGRAM_API_BASE; nothing was sent")
+    url = f"{base}/bot{tok}/{method}"
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=budget(15)) as r:
         return json.loads(r.read().decode())
@@ -621,7 +649,7 @@ def run_deferred():
     except Exception:
         sys.exit(0)
     sd = state_dir()
-    tok = env_value(os.path.join(sd, ".env"), "TELEGRAM_BOT_TOKEN")
+    tok = bot_token(sd)
     if not tok:
         sys.exit(0)
     text, chat_id = job.get("text") or "", job.get("chat_id") or ""
@@ -760,7 +788,7 @@ def main():
     main_session = is_main_session(payload)
 
     sd = state_dir()
-    tok = env_value(os.path.join(sd, ".env"), "TELEGRAM_BOT_TOKEN")
+    tok = bot_token(sd)
     if not tok:
         log(sd, "no bot token found, letting the prompt through")
         sys.exit(0)
