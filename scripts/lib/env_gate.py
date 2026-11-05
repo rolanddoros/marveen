@@ -19,6 +19,11 @@ else's. A caller that cannot load it must not send the token (fail closed).
 
 Users: scripts/lib/marveen_api.py (every helper verb and agent-msg.sh), scripts/jegyzetek.py,
 scripts/hooks/marveen-commands.py, scripts/git-hooks/pre-push-review-gate.py.
+
+telegram_api_base() is the same gate for the Telegram BOT token (C2 PR4d): its users are the five python senders
+that read TELEGRAM_API_BASE (scripts/hooks/marveen-commands.py, telegram_fallback_send.py, telegram_progress.py,
+telegram_progress_clear.py, telegram_progress_watchdog.py). The bash path (scripts/lib/send-telegram.sh, and
+uptime-monitor.py through it) is not covered yet: a separate item.
 """
 import os
 import urllib.parse
@@ -109,4 +114,36 @@ def check_env(root, environ=None):
     if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
         return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
     return None
+
+
+# --- the Telegram bot token (C2 PR4d, Johnny 11833, Kevin 11853) -------------------------------------------------
+# The same class as the dashboard token: the python senders put the BOT token into the URL path of
+# <TELEGRAM_API_BASE>/bot<token>/<method>, and TELEGRAM_API_BASE is plain environment. Allowed: the real Bot API, and
+# loopback, because the tests point it at a local stub (a stated limit: whoever can listen on a loopback port and set
+# the environment still receives the token). Unset or empty: the real Bot API.
+TELEGRAM_DEFAULT_BASE = 'https://api.telegram.org'
+
+
+def telegram_api_base(environ=None):
+    """(base, None) for the Bot API base the bot token may be sent to, or (None, refusal) -- the refusal is one line
+    ending in "nothing was sent.", and it never shows user information. Call it BEFORE the bot token is read."""
+    env = os.environ if environ is None else environ
+    raw = env.get('TELEGRAM_API_BASE')
+    if raw is None or not raw.strip():
+        return TELEGRAM_DEFAULT_BASE, None
+    b = normalise_base(raw)
+    u = parse_base(b)
+    name = shown('TELEGRAM_API_BASE', b)
+    if u is None:
+        return None, f'{name} must be a valid origin; nothing was sent.'
+    if has_userinfo(u):
+        return None, f'{name} carries user information (user:password@), which is not an origin; nothing was sent.'
+    if u.scheme not in ('http', 'https'):
+        return None, f'{name} must be http:// or https://; nothing was sent.'
+    if u.path not in ('', '/') or u.query or u.fragment or '?' in b or '#' in b or not u.netloc:
+        return None, (f'{name} must be an origin only (scheme://host[:port]), with no path, query or fragment; '
+                      'nothing was sent.')
+    if b != TELEGRAM_DEFAULT_BASE and u.hostname not in LOOPBACK_HOSTS:
+        return None, f'{name} is neither {TELEGRAM_DEFAULT_BASE} nor loopback; nothing was sent.'
+    return b, None
 

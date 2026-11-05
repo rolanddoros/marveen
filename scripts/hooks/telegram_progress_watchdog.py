@@ -46,6 +46,30 @@ through the install's own scripts/hooks/ledger_lib.py, also stdlib). Bot API
 base is overridable via TELEGRAM_API_BASE (tests point it at a local stub).
 """
 import datetime, os, glob, json, sys, time, subprocess, urllib.request
+import importlib.util
+
+# The bot-token env gate (C2 PR4d): scripts/lib/env_gate.py, loaded by its exact path from THIS file's location.
+# TELEGRAM_API_BASE may only name https://api.telegram.org or loopback (the tests' stub); otherwise, or when the gate
+# cannot be loaded, the token is not read and nothing is sent (fail closed).
+ENV_GATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib", "env_gate.py")
+_BOT_API_BASE = []
+
+
+def api_base():
+    """The gated Bot API base, or None when refused (the reason went to stderr once)."""
+    if not _BOT_API_BASE:
+        try:
+            spec = importlib.util.spec_from_file_location("marveen_env_gate", ENV_GATE_PATH)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            base, refused = mod.telegram_api_base()
+        except Exception as e:
+            base, refused = None, f"the env gate {ENV_GATE_PATH} cannot be loaded ({type(e).__name__}); nothing was sent."
+        if refused:
+            sys.stderr.write(f"telegram_progress_watchdog: {refused}\n")
+        _BOT_API_BASE.append(base)
+    return _BOT_API_BASE[0]
+
 
 # State dirs to scan: per-agent dirs under the fleet, plus the default dir.
 #
@@ -205,6 +229,8 @@ def stale_sec():
 
 
 def token(state_dir):
+    if api_base() is None:
+        return None  # the env gate refused TELEGRAM_API_BASE: the token is not even read
     try:
         for line in open(os.path.join(state_dir, ".env"), encoding="utf-8"):
             line = line.strip()
@@ -216,7 +242,9 @@ def token(state_dir):
 
 
 def api(tok, method, payload):
-    base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+    base = api_base()
+    if base is None:
+        raise RuntimeError("the env gate refused TELEGRAM_API_BASE; nothing was sent")
     url = f"{base}/bot{tok}/{method}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data,

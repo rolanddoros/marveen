@@ -509,6 +509,12 @@ refuses, nothing is sent (for the review gate, the push is refused too). The all
 install the script itself sits in, never one named by an environment variable. The review gate loads the module from
 next to its own copy (`.git/hooks/marveen-lib/env_gate.py`, put there by `scripts/install-review-gate-hook.sh`), so
 it does not depend on what the checkout holds; a new module gets there only by reinstalling the hook. `scripts/skill.ts` (the skill registry) reads its own `SKILL_REGISTRY_BASE`, not `MARVEEN_API_BASE`.
+A base that is not a valid URL, or that carries `user:password@`, is refused too, and no refusal prints the user
+information. The Telegram bot token has the same gate: the python senders that read `TELEGRAM_API_BASE`
+(`marveen-commands.py`, `telegram_fallback_send.py`, `telegram_progress.py`, `telegram_progress_clear.py`,
+`telegram_progress_watchdog.py`) send it only to `https://api.telegram.org` (the default) or a loopback address (the
+tests' stub), and they load `scripts/lib/env_gate.py` next to their own `scripts/hooks/` folder: without it they send
+nothing. `scripts/lib/send-telegram.sh` (bash) is not covered yet.
 
 ---
 
