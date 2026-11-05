@@ -77,7 +77,9 @@ describe('every fleet launch path exports MARVEEN_AGENT_ID', () => {
 
   it('channels.sh: quoted export, in both launch strings (boot and relaunch)', () => {
     const s = read('scripts/channels.sh')
-    expect(s).toMatch(/^AGENT_ID_ENV="export MARVEEN_AGENT_ID=\$\(sh_single_quote "\$\{MAIN_AGENT_ID:-marveen\}"\) && "$/m)
+    // Sanitised to the same class as channel-watchdog.sh / stuck-modal-guard.sh (Ron review, PR6).
+    expect(s).toMatch(/^_agent_id="\$\{MAIN_AGENT_ID:-marveen\}"; _agent_id="\$\{_agent_id\/\/\[\^a-zA-Z0-9_-\]\/\}"$/m)
+    expect(s).toMatch(/^\[ -z "\$_agent_id" \] \|\| AGENT_ID_ENV="export MARVEEN_AGENT_ID=\$\(sh_single_quote "\$_agent_id"\) && "$/m)
     expect(s.match(/\$\{STATE_DIR_ENV\}\$\{AGENT_ID_ENV\}\$\{MCP_BATCH_ENV\}[^\n]*\$CLAUDE --dangerously-skip-permissions/g)?.length).toBe(2)
   })
 

@@ -1535,7 +1535,10 @@ export "$STATE_ENV_VAR"="$MAIN_CHAN_DIR"
 STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 # C2 PR6: the agent identity for scripts/marveen-api.sh defaults. Attribution only, self-asserted,
 # NOT a security boundary (src/web/agent-id-env.ts).
-AGENT_ID_ENV="export MARVEEN_AGENT_ID=$(sh_single_quote "${MAIN_AGENT_ID:-marveen}") && "
+# Same character class as channel-watchdog.sh / stuck-modal-guard.sh, so boot and relaunch export the same value.
+_agent_id="${MAIN_AGENT_ID:-marveen}"; _agent_id="${_agent_id//[^a-zA-Z0-9_-]/}"
+AGENT_ID_ENV=""
+[ -z "$_agent_id" ] || AGENT_ID_ENV="export MARVEEN_AGENT_ID=$(sh_single_quote "$_agent_id") && "
 
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
 # new-session. A new session inherits the tmux SERVER's global environment, not

@@ -123,7 +123,7 @@ ok(rc == 2 and not seen, 'I9 memory-update without <updated-by> and without the 
 
 # --- an invalid variable is refused, naming its source ---------------------------------------------
 rc, _, err, seen = run('memory-move', '5', 'cold', ident="x'; id")
-ok(rc == 2 and not seen and 'MARVEEN_AGENT_ID' in err,
+ok(rc == 2 and not seen and 'MARVEEN_AGENT_ID' in err and 'is not a valid agent name' in err,
    'I10 an invalid MARVEEN_AGENT_ID: exit 2, nothing sent, the error names the variable', 'rc=%d n=%d %s' % (rc, len(seen), err[:200]))
 
 # --- verbs whose arity is full keep ignoring the variable ------------------------------------------
