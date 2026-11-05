@@ -17,6 +17,7 @@ Run:  python3 scripts/__tests__/agent-msg-priority.test.py
 import http.server
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,10 +57,12 @@ def check(name, cond, detail=''):
 def main():
     srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Stub)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    tok = tempfile.NamedTemporaryFile('w', delete=False, prefix='agent-msg-priority-token-')
-    tok.write('test-token')
-    tok.close()
-    env = dict(os.environ, MARVEEN_API_BASE='http://127.0.0.1:%d' % srv.server_address[1], MARVEEN_TOKEN_FILE=tok.name)
+    # C2 PR4b: agent-msg.sh refuses a token file not named .dashboard-token, so the fixture is one, in its own dir
+    tok_dir = tempfile.mkdtemp(prefix='agent-msg-priority-token-')
+    tok_path = os.path.join(tok_dir, '.dashboard-token')
+    with open(tok_path, 'w') as f:
+        f.write('test-token')
+    env = dict(os.environ, MARVEEN_API_BASE='http://127.0.0.1:%d' % srv.server_address[1], MARVEEN_TOKEN_FILE=tok_path)
 
     def run(args, answer=None, stdin=None):
         ANSWER['body'] = answer if answer is not None else {'id': 7, 'status': 'pending', 'queue': QUEUE}
@@ -118,7 +121,7 @@ def main():
                   'rc=%d out=%r err=%r requests=%d' % (rc, out, err[:120], len(reqs)))
     finally:
         srv.shutdown()
-        os.unlink(tok.name)
+        shutil.rmtree(tok_dir, ignore_errors=True)
 
     print('%d check(s) failed: %s' % (len(FAILS), FAILS) if FAILS else 'all checks passed')
     return 1 if FAILS else 0

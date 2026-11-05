@@ -95,7 +95,7 @@ server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 PORT = server.server_address[1]
 TMP = tempfile.mkdtemp(prefix="jegyzetek-test-")
-TOKEN = os.path.join(TMP, "token")
+TOKEN = os.path.join(TMP, ".dashboard-token")  # C2 PR4b: agent-msg.sh refuses any other file name
 with open(TOKEN, "w") as f:
     f.write("t0k\n")
 

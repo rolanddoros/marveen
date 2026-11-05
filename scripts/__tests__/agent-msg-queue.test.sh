@@ -22,7 +22,7 @@ ok() { N=$((N+1)); if [ "$2" = "0" ]; then echo "PASS  $1"; else echo "FAIL  $1$
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/msgqueue.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 BIN="$SANDBOX/bin"; mkdir -p "$BIN"
-printf 'test-token\n' > "$SANDBOX/token"
+printf 'test-token\n' > "$SANDBOX/.dashboard-token"
 
 # A stub API on 127.0.0.1 (C2 PR4: the send is python now, not curl): nothing leaves the machine, and each
 # answer is the reply file as send() writes it.
@@ -35,7 +35,7 @@ API="http://127.0.0.1:$(cat "$SANDBOX/port")"
 
 send() {  # send <json> [warn_at]
   printf '%s' "$1" > "$SANDBOX/reply.json"
-  OUT="$(env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" MARVEEN_TOKEN_FILE="$SANDBOX/token" \
+  OUT="$(env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" MARVEEN_TOKEN_FILE="$SANDBOX/.dashboard-token" \
              ${2:+MARVEEN_QUEUE_WARN_AT="$2"} \
              /bin/bash "$HELPER" igor hex "tiszta szoveg" 2>"$SANDBOX/err.txt")"
   RC=$?

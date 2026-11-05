@@ -560,9 +560,11 @@ def build_request(verb, args):
 # The token is read here and sent in a header by urllib: it is on no argv and in no child's environment, and the
 # homoglyph checker child gets the text on stdin and the token nowhere.
 #
-# KNOWN GAP, kept on purpose for parity (Kevin 11639): agent-msg.sh, run directly (`--agent-msg`), does not apply
-# check_env(), so it still accepts any MARVEEN_API_BASE and token file name, as it always has (a remote agent on
-# 2026-09-13 ran it outside this repo). `marveen-api.sh message` keeps the check. Tightening is a separate decision.
+# ENV GATE (C2 PR4b, Johnny 11641): agent-msg.sh, run directly (`--agent-msg`), applies check_env() like every verb,
+# right after its argv and before the text or the token is read. A MARVEEN_API_BASE that is neither loopback nor this
+# install's own AGENT_API_ORIGIN / DASHBOARD_PUBLIC_URL (.env), or a token file not named .dashboard-token, exits 2
+# and the token is never read, let alone sent. A copy run outside this repo (measured 2026-09-13: a remote agent
+# did) reads ITS OWN .env next to its scripts/ directory: that is where its dashboard origin is allowed.
 
 MESSAGE_TRIES = 3
 MESSAGE_TIMEOUT_S = 30
@@ -738,6 +740,10 @@ def agent_msg_main(argv):
         print(error, file=sys.stderr if error.endswith('required') else sys.stdout)
         return EXIT['usage']
     priority, sender, to, content = parsed
+    refused = check_env()  # before the text or the token is read (C2 PR4b); stdout, like agent-msg.sh's other FAILs
+    if refused:
+        print(f'FAIL: {refused}')
+        return EXIT['usage']
     if content == '-':
         content = strip_trailing_newlines(sys.stdin.read())
     path = os.environ.get('MARVEEN_TOKEN_FILE') or os.path.join(BASE, 'store', '.dashboard-token')
@@ -837,7 +843,7 @@ def helper_message_main(argv):
 
 def main(argv):
     if argv and argv[0] == '--agent-msg':
-        # scripts/agent-msg.sh, run directly: no check_env() here, see KNOWN GAP above.
+        # scripts/agent-msg.sh, run directly: check_env() runs in agent_msg_main, after the argv (see ENV GATE).
         return agent_msg_main(argv[1:])
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
