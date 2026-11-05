@@ -47,6 +47,9 @@ describe('self-pace-gate: the main agent\'s schedule-write tool (marveen-admin.s
     for (const c of [
       'bash scripts/marveen-adm*.sh schedule-create x',
       'bash scripts/marveen-{admin,x}.sh schedule-create x',
+      // the brace spans the name, so only expansion shows it (Ron G5)
+      'bash scripts/marveen-{ad,x}min.sh schedule-create x',
+      'python3 scripts/lib/marveen_{ad,x}min.py schedule-create x',
       `bash "scripts/marveen-admin.sh" schedule-create x`,
       `bash 'scripts/marveen-'admin.sh schedule-create x`,
       'A=scripts/marveen-admin.sh; bash $A schedule-create x',
@@ -68,9 +71,12 @@ describe('self-pace-gate: the main agent\'s schedule-write tool (marveen-admin.s
     ]) expect(deny(c), c).toBe(false)
   })
 
-  it('a bare *.py / *.sh glob is every such file, not evidence of the tool; a glob with its name still is', () => {
+  it('only a fully bare *.py / *.sh glob is every such file; any literal name text is evidence of the tool', () => {
     for (const c of [
       'sed -i s/a/b/ scripts/hooks/*.py',
+      'sed s/a/b/ scripts/hooks/*.py',
+      'python3 scripts/lib/*.py schedule-create x',
+      'bash scripts/*.sh schedule-create x',
       'chmod +x scripts/*.sh',
       'python3 -m py_compile scripts/lib/*.py',
       'shellcheck scripts/?.sh',
@@ -79,6 +85,11 @@ describe('self-pace-gate: the main agent\'s schedule-write tool (marveen-admin.s
       'bash scripts/marveen-*.sh schedule-create x',
       'python3 scripts/lib/*admin.py schedule-update x --enabled false',
       'bash scripts/*-admin.sh schedule-create x',
+      // one or two literal letters are enough: one name per extension and directory (Ron 11870, a6f4f50e regression)
+      'python3 scripts/lib/*n.py schedule-create x',
+      'python3 scripts/lib/m*n.py schedule-create x',
+      'bash scripts/*n.sh schedule-create x',
+      'bash scripts/m*.sh schedule-create x',
     ]) expect(deny(c), c).toBe(true)
   })
 

@@ -1422,13 +1422,17 @@ function globRefs(text, opts) {
         const parent = i > 0
           ? prev.replace(/\[[^\]]*\]|[*?]/g, '').length >= 2 && STORE_PARENTS.some((p) => globMatchesName(prev, p))
           : !!opts?.parentCtx
-        // a file name target needs literal text beyond its extension: `*.ts`,
-        // `*.db`, `*.sh` or `*.py` alone is every such file, not evidence of
-        // this one (.sh/.py since marveen-admin.sh / marveen_admin.py, C2 PR5)
+        // a file name target needs literal text beyond its extension: `*.ts`
+        // or `*.db` alone is every such file, not evidence of this one.
+        // For .sh/.py (marveen-admin.sh / marveen_admin.py, C2 PR5) only the
+        // fully bare `*.sh` / `*.py` (stem 0) passes: one name per extension
+        // in each directory, so `*n.py` already picks out marveen_admin.py.
+        const shPy = /\.(?:sh|py)$/i.test(seg)
         const stem = seg.replace(/\.[cm]?[jt]s$|\.db$|\.sh$|\.py$/i, '').replace(/\[[^\]]*\]|[*?]/g, '').length
+        const bareExt = shPy ? stem === 0 : stem < 3
         for (const name of GLOB_TARGETS) {
           if (!globMatchesName(seg, name)) continue
-          if (FILE_GLOB_TARGETS.has(name) && !bracket && stem < 3) continue
+          if (FILE_GLOB_TARGETS.has(name) && !bracket && bareExt) continue
           if (bracket || literal >= 3 || (name === SCHEDULE_DIR_NAME && parent)) return name
         }
         return seg
