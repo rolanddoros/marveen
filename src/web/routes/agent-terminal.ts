@@ -8,7 +8,7 @@ import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { literalKeyArgs, specialKeyArgs, loginSequence, type LoginStep } from '../tmux-keys.js'
 import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../terminal-input-store.js'
 import type { RouteContext } from './types.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { exactTmuxTarget } from '../../tmux-target.js'
 
 // Per-agent dashboard terminal: live pane stream (SSE), keystroke injection,
@@ -120,7 +120,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
 
   // --- terminal-input master toggle (owner-gated opt-in) ---------------
   // GET returns the current state (dashboard-token gate). POST {enabled:boolean}
-  // flips it and additionally requires the owner's session (mayIssueCredentials),
+  // flips it and additionally requires the owner's session (mayActAsOwner),
   // because every agent holds the dashboard token. This is the deliberate first step of the two-step opt-in:
   // /keys stays 403 until this is ON. Every flip is audit-logged.
   if (path === '/api/terminal-input') {
@@ -132,7 +132,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       // Flipping the toggle is the owner's decision. The dashboard-token gate alone is NOT enough:
       // every agent holds that token, so without this check any agent could enable /keys and type
       // into any pane, including the main session (fork audit 2026-11-05, server-api-data #1).
-      if (!mayIssueCredentials(ctx.auth, ctx.req)) {
+      if (!mayActAsOwner(ctx.auth, ctx.req)) {
         logger.warn({ auth: ctx.auth?.kind, agent: ctx.auth?.agent, remote: ctx.req.socket?.remoteAddress ?? 'unknown' }, 'agent-terminal: terminal-input toggle refused: no owner session')
         json(res, OWNER_SESSION_REQUIRED, 403)
         return true

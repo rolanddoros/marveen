@@ -2,18 +2,29 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
+import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
-import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+
+// FLEETIMPORTGATE1022: two of these calls take the owner's session (mayIssueCredentials, the
+// predicate that guards issuing credentials), because the fleet's one shared token reaches
+// them from every agent. An export with a vault password hands out the vault's master key and
+// every secret, encrypted with a password the caller chose. An applied import overwrites
+// store/autonomy-config.json (an agent could raise email_send to 3 and switch the mail approval
+// gate off), the agents' settings and the global skills. The plain export (no secrets) and
+// the dry run (writes nothing) stay on the token.
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path !== '/api/fleet/export' && path !== '/api/fleet/import') return false
 
-  // Export can carry vault data and import rewrites every agent: both are the owner's, never the
-  // shared token every agent holds (fork audit 2026-11-05, server-api-data #1). Same predicate as
-  // issuing credentials (mayIssueCredentials, #2163).
-  if (!mayIssueCredentials(ctx.auth, req)) {
+  // Fork A1 (audit 2026-11-05, server-api-data #1), layered on FLEETIMPORTGATE1022: on this
+  // install EVERY export and import is the owner's, the plain export and the dry run too (the
+  // plain export still lists every agent's config and the dry run is a free probe of what an
+  // import would change). The shared token every agent holds is not enough once a login exists.
+  // Same predicate as upstream's owner gates below (mayActAsOwner: the owner session, or the
+  // Bridge key beside it, BRIDGEPWLOGIN1101).
+  if (!mayActAsOwner(ctx.auth, req)) {
     logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Fleet transfer refused: no owner session')
     json(res, OWNER_SESSION_REQUIRED, 403)
     return true
@@ -25,6 +36,10 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/fleet/export' && method === 'GET') {
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
       json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
+      return true
+    }
+    if (vaultPassword && !mayActAsOwner(ctx.auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     try {
@@ -50,6 +65,11 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/fleet/import' && method === 'POST') {
     const apply = ctx.url.searchParams.get('apply') === 'true'
+    // Before the body is read: a refused apply does no work at all.
+    if (apply && !mayActAsOwner(ctx.auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
 
     // M1: check vault password length for import side too
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {

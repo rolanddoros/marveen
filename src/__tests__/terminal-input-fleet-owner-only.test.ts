@@ -2,7 +2,9 @@
 // sat behind the shared dashboard token only. Every agent holds that token, so any agent could enable
 // terminal input and then type into any pane via /api/agents/<n>/keys (the 2026-06-26 vector), or
 // export the fleet (vault data included) / import over it. Once a dashboard login exists these now take
-// the owner's session (mayIssueCredentials); GET /api/terminal-input stays readable with the token.
+// the owner's session (mayActAsOwner: the session, or the Bridge key beside it); GET /api/terminal-input stays
+// readable with the token. Upstream FLEETIMPORTGATE1022 gates only the vault export and the applied import; the
+// fork gate also covers the plain export and the dry run (pinned below).
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
@@ -99,6 +101,21 @@ describe('fleet export/import: owner session once a login exists', () => {
     const r = await call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', { version: 1 }, TOKEN)
     expect(r.status).toBe(403)
     expect(fleetTransfer.imported).toBe(0)
+  })
+  it('the plain export and the dry-run import (left on the token upstream) are 403 with the shared token too', async () => {
+    await addOwner()
+    expect((await call(tryHandleFleet, 'GET', '/api/fleet/export', undefined, TOKEN)).status).toBe(403)
+    const dry = await call(tryHandleFleet, 'POST', '/api/fleet/import', { version: 1 }, TOKEN)
+    expect(dry.status).toBe(403)
+    expect(fleetTransfer.exported + fleetTransfer.imported).toBe(0)
+  })
+  it('a bare full device key (no owner cookie beside it) is refused on all three', async () => {
+    await addOwner()
+    const KEY: Auth = { kind: 'device', scope: 'full', device: 'laptop' } as Auth
+    expect((await call(tryHandleAgentTerminal, 'POST', '/api/terminal-input', { enabled: true }, KEY)).status).toBe(403)
+    expect((await call(tryHandleFleet, 'GET', '/api/fleet/export', undefined, KEY)).status).toBe(403)
+    expect((await call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', { version: 1 }, KEY)).status).toBe(403)
+    expect(toggle.value).toBe(false)
   })
   it('the owner session exports', async () => {
     await addOwner()

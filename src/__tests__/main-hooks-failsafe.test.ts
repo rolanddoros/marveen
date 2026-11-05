@@ -63,10 +63,11 @@ function run(shell: string, command: string, proj: string) {
 }
 
 describe('main agent hooks: explicit fail mode (A5-main-hooks-failsafe)', () => {
-  it('classifies every handler: 15 security gates, 1 freeze gate, the rest fail-open', () => {
-    expect(handlers.filter(isSecurityGate)).toHaveLength(15)
+  it('classifies every handler: 16 security gates, 1 freeze gate, the rest fail-open', () => {
+    // 16 = 8 outgoing-copy-gate + 6 email-approval-gate + egress-gate + db-write-gate (upstream APPROVALDBGATE1030)
+    expect(handlers.filter(isSecurityGate)).toHaveLength(16)
     expect(handlers.filter(isFreezeGate)).toHaveLength(1)
-    expect(failOpen.length).toBe(handlers.length - 16)
+    expect(failOpen.length).toBe(handlers.length - 17)
     // All 12 UserPromptSubmit hooks are fail-open: a broken UPS hook must never deafen the agent.
     expect(failOpen.filter((h) => h.event === 'UserPromptSubmit')).toHaveLength(12)
   })

@@ -48,6 +48,7 @@ import {
   initDatabase, createKanbanCard, getKanbanCard, getKanbanCardEvents, moveKanbanCard,
 } from '../db.js'
 import { tryHandleKanban, kanbanMoveInstructions } from '../web/routes/kanban.js'
+import { recipeLine, runRecipeLine } from './helpers/kanban-recipe.js'
 
 interface MoveResult { status: number; body: Record<string, unknown> }
 
@@ -164,19 +165,18 @@ describe('moveKanbanCard expectedStatus (db layer)', () => {
 // done payload exactly as the dispatch hands it over and send it to the real
 // route.
 describe('dispatch recipe sends expected_status on the close', () => {
-  const donePayload = (): Record<string, unknown> => {
+  // The recipe's done line is run for real (scripts/marveen-api.sh against a capture server), and the body it sent is
+  // what goes to the real route here.
+  const donePayload = async (): Promise<Record<string, unknown>> => {
     const out = kanbanMoveInstructions('t-1', 'dex')
-    // The heredoc body line of the close command, exactly as the reader pastes it.
-    const line = out.split('\n').find((l) => l.startsWith('{"status":"done"'))
-    expect(line).toBeDefined()
-    return JSON.parse(line!) as Record<string, unknown>
+    return (await runRecipeLine(recipeLine(out, 'kanban-move', 't-1', 'done'), { 'kanban-t-1-bizonyitek.txt': 'tests 3/3' })).body!
   }
 
   it('a late close does not move a card that has moved on (409, unchanged)', async () => {
     createKanbanCard({ id: 't-1', title: 'Moved on', assignee: 'dex' })
     moveKanbanCard('t-1', 'testing', 0, 'orin')
 
-    const r = await move('t-1', donePayload())
+    const r = await move('t-1', await donePayload())
 
     expect(r.status).toBe(409)
     expect(r.body).toMatchObject({ error: 'status_conflict', current_status: 'testing' })
@@ -187,7 +187,7 @@ describe('dispatch recipe sends expected_status on the close', () => {
     createKanbanCard({ id: 't-1', title: 'Still mine', assignee: 'dex' })
     moveKanbanCard('t-1', 'in_progress', 0, 'dex')
 
-    const r = await move('t-1', donePayload())
+    const r = await move('t-1', await donePayload())
 
     expect(r.status).toBe(200)
     expect(getKanbanCard('t-1')?.status).toBe('done')
@@ -195,9 +195,9 @@ describe('dispatch recipe sends expected_status on the close', () => {
 
   it('tells the reader what a 409 means and to guard the waiting move too', () => {
     const out = kanbanMoveInstructions('t-1', 'dex')
-    expect(out).toContain('409 status_conflict = card moved on (current_status): stop, no retry')
+    expect(out).toContain('FAIL: HTTP 409 status_conflict = card moved on (current_status): stop, no retry')
     // The waiting move is the same guarded close call, with "waiting" in place of "done".
     expect(out).toContain('then close as "waiting", not "done"')
-    expect(out).toContain('"expected_status":"in_progress"')
+    expect(out).toMatch(/kanban-move t-1 waiting --actor dex --expected-status in_progress/)
   })
 })

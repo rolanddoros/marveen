@@ -82,6 +82,15 @@ export function recordInjectedPrompt(session: string, text: string, now: number 
   records.set(session, { text, at: now })
 }
 
+/**
+ * Drop the record when it still holds `text`: the sender left this prompt typed but
+ * unsubmitted and will type it again (#2143), so the stuck-input watcher's
+ * 'reinject-recorded' path must not match and submit the leftover copy meanwhile.
+ */
+export function forgetInjectedPrompt(session: string, text: string): void {
+  if (records.get(session)?.text === text) records.delete(session)
+}
+
 /** The last prompt typed into this pane, or null if absent/expired. */
 export function getInjectedPrompt(session: string, now: number = Date.now()): InjectedPromptRecord | null {
   const rec = records.get(session)
@@ -133,13 +142,6 @@ export function matchesInjectedPrompt(parked: string | null, record: InjectedPro
   // floor is well under the shortest real inter-agent frame (the security
   // preamble alone is ~700 chars) but high enough to exclude noise. Counted on
   // the whitespace-free form, so it is 24 real characters, not 24 columns.
-  //
-  // An EXACT whole-text match is exempt: the floor guards against a fragment
-  // that happens to occur inside a long message, and a box that holds byte for
-  // byte the whole short line we typed is not a fragment. This is what lets the
-  // post-spawn `/rename <name>` (13 chars) recover when its Enter is swallowed
-  // (measured 2026-10-19 on agent-margot: parked, held 5 attempts, owner alert).
-  if (a === b) return true
   if (a.length < 24) return false
   return b.includes(a) || a.includes(b)
 }

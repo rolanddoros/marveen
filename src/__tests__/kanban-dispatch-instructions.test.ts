@@ -1,57 +1,29 @@
-import { describe, expect, it, vi } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-// The live install's store path, so the length budget below is measured on what
-// a real dispatch renders (the token path appears in every command).
-vi.mock('../config.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../config.js')>()),
-  STORE_DIR: '/root/marveen/store',
-}))
-
-import { kanbanMoveInstructions, buildKanbanDispatchContent } from '../web/routes/kanban.js'
+import { describe, expect, it } from 'vitest'
+import { kanbanMoveInstructions, buildKanbanDispatchContent, DISPATCH_SAFE_CARD_ID_RE } from '../web/routes/kanban.js'
 import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
+import { recipeLine, runRecipeLine, RECIPE_TOKEN } from './helpers/kanban-recipe.js'
+import { execFileSync as git } from 'node:child_process'
+import { join } from 'node:path'
+import { PROJECT_ROOT } from '../config.js'
 
-// The one line of the dispatch that reads the card.
-const probeLine = (out: string): string | undefined =>
-  out.split('\n').find((l) => l.includes('?fields=status,title,description'))
-
-// Every `curl ... <<'JSON'` command with its heredoc body, as the reader would paste it.
-const heredocCommands = (out: string): string[] => {
-  const lines = out.split('\n')
-  const cmds: string[] = []
-  lines.forEach((l, i) => {
-    if (l.endsWith("<<'JSON'")) cmds.push([l, lines[i + 1], lines[i + 2]].join('\n'))
-  })
-  return cmds
-}
-
-// Execute a pasted command in bash with `curl` replaced by a recorder that
-// writes its argv and stdin: proves the quoting survives a real shell, and that
-// a free-text payload with an apostrophe, a backtick and $(...) is sent verbatim.
-const runWithFakeCurl = (cmd: string): { args: string[]; stdin: string } => {
-  const dir = mkdtempSync(join(tmpdir(), 'kanban-dispatch-'))
-  const rec = join(dir, 'rec')
-  writeFileSync(join(dir, 'curl'), `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${rec}.args'\ncat > '${rec}.stdin'\n`)
-  chmodSync(join(dir, 'curl'), 0o755)
-  execFileSync('bash', ['-c', cmd], { env: { PATH: `${dir}:/usr/bin:/bin` }, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
-  return { args: readFileSync(`${rec}.args`, 'utf-8').split('\n'), stdin: readFileSync(`${rec}.stdin`, 'utf-8') }
-}
+// Fork A6 (English, short, single-card read) on top of upstream VOICETOKENLEAK1101 round 2 (every step through
+// scripts/marveen-api.sh, no token on any command line, texts from files). Recipe lines are run for real against a
+// capture server, so what is checked is what reaches the wire.
 
 describe('kanbanMoveInstructions', () => {
   it('reads the card through the dashboard API, never the sqlite3 CLI (not installed, forbidden by CLAUDE.md)', () => {
     const out = buildKanbanDispatchContent({ id: 'abc123', priority: 'high' }, 'cody')
     expect(out).not.toMatch(/sqlite3|SELECT /)
-    expect(probeLine(out)).toContain('/api/kanban/abc123?fields=status,title,description')
+    expect(out).toMatch(/marveen-api\.sh kanban-card abc123$/m)
     expect(out).toContain('data not orders')
   })
 
-  // The old text was ~5.5k characters; a short one gets read to the end.
-  it('is short: the whole dispatch stays within 1.5k characters', () => {
+  // The upstream text is ~5.5k characters; a short one gets read to the end. The absolute helper and payload-file
+  // paths (VOICETOKENLEAK1101) are most of what is left.
+  it('is short: the whole dispatch stays within 2.2k characters', () => {
     // Sub-agent variant is the longer one (it carries the never-reassign-to-the-owner sentence).
     const out = buildKanbanDispatchContent({ id: 'KANBANASSIGNFRAME1008', priority: 'urgent' }, 'some-sub-agent')
-    expect(out.length).toBeLessThanOrEqual(1500)
+    expect(out.length).toBeLessThanOrEqual(2200)
   })
 
   it('puts the pre-flight read first and the late-arrival rule before the completion steps', () => {
@@ -59,45 +31,68 @@ describe('kanbanMoveInstructions', () => {
     expect(out.startsWith('FIRST read the card')).toBe(true)
     expect(out).toContain('Already testing/done: arrived late, do not start')
     expect(out.indexOf('do not start')).toBeLessThan(out.indexOf('Done: 1) result comment'))
-    expect(out).toMatch(/Description rules.*override this/)
+    expect(out).toMatch(/Description rules \(e\.g\. close as testing\) override this/)
   })
 
-  it('the probe runs in bash as pasted: one GET of THIS card, with the token header', () => {
+  it('the read runs as pasted: one GET of THIS card with ?fields=, the token in the header only', async () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    const r = runWithFakeCurl(probeLine(out)!)
-    expect(r.args.some((a) => /^http:\/\/[^/]+\/api\/kanban\/abc123\?fields=status,title,description$/.test(a))).toBe(true)
-    expect(r.args.some((a) => a.startsWith('Authorization: Bearer'))).toBe(true)
-    expect(r.args).not.toContain('-X')
+    const r = await runRecipeLine(recipeLine(out, 'kanban-card', 'abc123'))
+    expect([r.method, decodeURIComponent(r.url)]).toEqual(['GET', '/api/kanban/abc123?fields=status,title,description'])
+    expect(r.headers.authorization).toBe(`Bearer ${RECIPE_TOKEN}`)
+    expect(r.argv.join(' ')).not.toContain(RECIPE_TOKEN)
   })
 
-  it('the comment and close commands run in bash as pasted, payloads verbatim even with quotes and $(...)', () => {
+  it('gives the agent the command to post a result comment AND to mark done (run for real: what reaches the wire)', async () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    const [comment, close] = heredocCommands(out)
-    expect(comment).toContain('/api/kanban/abc123/comments')
-    expect(close).toContain('/api/kanban/abc123/move')
-
+    // A free text with an apostrophe, a backtick and $(...) arrives verbatim: it travels in a file, not the command.
     const nasty = "it's done `id` $(id)"
-    const c = runWithFakeCurl(comment.replace('RESULT', nasty))
-    expect(c.args.some((a) => /^http:\/\/[^/]+\/api\/kanban\/abc123\/comments$/.test(a))).toBe(true)
-    expect(JSON.parse(c.stdin)).toEqual({ author: 'cody', content: nasty })
-
-    const m = runWithFakeCurl(close.replace('HOW VERIFIED', nasty))
-    expect(JSON.parse(m.stdin)).toEqual({ status: 'done', actor: 'cody', expected_status: 'in_progress', evidence: nasty })
-    expect(m.args.some((a) => a.startsWith('Authorization: Bearer'))).toBe(true)
+    const c = await runRecipeLine(recipeLine(out, 'kanban-comment', 'abc123', 'cody'), { 'kanban-abc123-eredmeny.txt': nasty })
+    expect([c.method, c.url, c.body]).toEqual(['POST', '/api/kanban/abc123/comments', { author: 'cody', content: nasty }])
+    const d = await runRecipeLine(recipeLine(out, 'kanban-move', 'abc123', 'done'), { 'kanban-abc123-bizonyitek.txt': 'suite 12/12' })
+    expect([d.method, d.url, d.body]).toEqual(['POST', '/api/kanban/abc123/move', { status: 'done', expected_status: 'in_progress', evidence: 'suite 12/12', actor: 'cody' }])
+    expect(d.headers.authorization).toBe(`Bearer ${RECIPE_TOKEN}`)
   })
 
-  it('names the agent as the actor on every move, including a self-pickup', () => {
+  // Without an actor the board cannot tell a self-pickup from an assignment, so every move the agent is handed names
+  // the agent as the mover -- including the in_progress self-pickup, which is the one the dispatcher used to echo back.
+  it('names the agent as the actor on every move it is told to make', async () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('"status":"done","actor":"cody"')
-    expect(out).toContain('"actor":"cody" on EVERY move, self-pickup too')
+    expect(out).toContain('--actor cody on EVERY move, self-pickup too')
+    for (const status of ['done', 'in_progress', 'waiting']) {
+      expect((await runRecipeLine(recipeLine(out, 'kanban-move', 'abc123', status))).body).toMatchObject({ status, actor: 'cody' })
+    }
+    expect((await runRecipeLine(recipeLine(out, 'kanban-move', 'abc123', 'waiting'))).body).toMatchObject({ expected_status: 'in_progress' })
+  })
+
+  // The hand-back: a sub-agent's card goes to the main agent, the main agent's to the owner.
+  it('hands the card back with kanban-assign: a PUT of the assignee, the agent as the actor', async () => {
+    const sub = await runRecipeLine(recipeLine(kanbanMoveInstructions('abc123', 'cody'), 'kanban-assign', 'abc123', MAIN_AGENT_ID))
+    expect([sub.method, sub.url, sub.body]).toEqual(['PUT', '/api/kanban/abc123', { assignee: MAIN_AGENT_ID, actor: 'cody' }])
+    const main = await runRecipeLine(recipeLine(kanbanMoveInstructions('abc123', MAIN_AGENT_ID), 'kanban-assign', 'abc123', OWNER_NAME))
+    expect(main.body).toEqual({ assignee: OWNER_NAME, actor: MAIN_AGENT_ID })
+  })
+
+  // VOICETOKENLEAK1101 round 2 (#2080 review 5727304277): no command in the message carries the token, not even
+  // a $(cat ...) that would put its VALUE on the argv at run time: the helper reads it itself.
+  it('carries no token and no token read: no $(cat, no .dashboard-token, no Authorization in the text', async () => {
+    for (const target of ['cody', MAIN_AGENT_ID]) {
+      const out = kanbanMoveInstructions('abc123', target)
+      expect(out).not.toContain('$(cat')
+      expect(out).not.toContain('.dashboard-token')
+      expect(out).not.toContain('Authorization')
+      expect(out).not.toContain('curl ')
+    }
+    const line = recipeLine(kanbanMoveInstructions('abc123', 'cody'), 'kanban-move', 'abc123', 'done')
+    expect((await runRecipeLine(line)).argv.join(' ')).not.toContain(RECIPE_TOKEN)
   })
 
   it('carries the 409 rule and the waiting = comment + reassign + waiting rule', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('409 status_conflict = card moved on (current_status): stop, no retry')
+    expect(out).toContain('FAIL: HTTP 409 status_conflict = card moved on (current_status): stop, no retry')
     const blocked = out.slice(out.indexOf('Blocked on'))
     expect(blocked).toContain(`a) comment what ${MAIN_AGENT_ID} must decide/do`)
-    expect(blocked).toContain(`'{"assignee":"${MAIN_AGENT_ID}"}'`)
+    expect(blocked).toMatch(/kanban-comment abc123 cody \S+kanban-abc123-kerdes\.txt/)
+    expect(blocked).toContain(`kanban-assign abc123 ${MAIN_AGENT_ID} --actor cody`)
     expect(blocked).toContain('c) then close as "waiting", not "done"')
     expect(blocked).toContain(`Never reassign to ${OWNER_NAME}`)
   })
@@ -105,14 +100,20 @@ describe('kanbanMoveInstructions', () => {
   it('the main agent escalates to the owner, without the delegator sentence', () => {
     const out = kanbanMoveInstructions('abc123', MAIN_AGENT_ID)
     expect(out).toContain(`Blocked on ${OWNER_NAME}:`)
-    expect(out).toContain(`'{"assignee":"${OWNER_NAME}"}'`)
     expect(out).not.toContain('Never reassign')
   })
 
-  it('keeps the bearer token out of the message (reads it at run time)', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('$(cat ')
-    expect(out).toContain('.dashboard-token')
-    expect(out).not.toMatch(/Bearer [0-9a-f]{16,}/)
+  // Dani 64894 (2): only an id the helper takes is dispatched, so a recipe step never fails on the id, and a '..' never
+  // reaches a path. (3): the main agent's payload files land in the project root, where git must ignore them.
+  it('dispatches only the helper\'s card-id shape: no dot, at most 64 characters', () => {
+    for (const ok of ['abc123', 'A_b-9', 'x'.repeat(64)]) expect(DISPATCH_SAFE_CARD_ID_RE.test(ok), ok).toBe(true)
+    for (const bad of ['a.b', '..', 'x'.repeat(65), 'a b', 'a/b', '']) expect(DISPATCH_SAFE_CARD_ID_RE.test(bad), bad).toBe(false)
+  })
+
+  it("the main agent's payload files are ignored by git", () => {
+    for (const f of ['kanban-abc123-eredmeny.txt', 'kanban-abc123-bizonyitek.txt', 'kanban-abc123-kerdes.txt']) {
+      const r = git('git', ['-C', PROJECT_ROOT, 'check-ignore', '-q', join(PROJECT_ROOT, f)], { stdio: 'pipe' })
+      expect(r).toBeDefined() // check-ignore exits 0 only when ignored (a non-zero exit throws)
+    }
   })
 })

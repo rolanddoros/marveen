@@ -38,6 +38,7 @@ vi.mock('../web/agent-process.js', async (importOriginal) => ({
 
 import { initDatabase, createKanbanCard, getKanbanComments } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
+import { recipeLine, runRecipeLine } from './helpers/kanban-recipe.js'
 
 async function move(id: string, status: string, actor?: string): Promise<void> {
   const req = Readable.from([Buffer.from(JSON.stringify({ status, sort_order: 0, actor }))]) as unknown as http.IncomingMessage
@@ -66,9 +67,9 @@ describe('kanban dispatch carries no card text', () => {
     expect(sent[0][0]).toBe('orin') // still in the main agent's name: the recipe is trusted
     const content = String(sent[0][2])
     expect(content.startsWith('[Kanban card #card-1] assignee: dex, priority: high\n')).toBe(true)
-    expect(content).toContain('/api/kanban/card-1/move')
-    // Where to read the text: the dashboard API (a tool result), not the sqlite3 CLI.
-    expect(content).toContain('/api/kanban/card-1?fields=status,title,description')
+    expect(content).toContain('kanban-move card-1 done --actor dex') // the recipe (VOICETOKENLEAK1101: through marveen-api.sh)
+    // Where to read the text: the dashboard API (a tool result, helper verb kanban-card), not the sqlite3 CLI.
+    expect(content).toMatch(/marveen-api\.sh kanban-card card-1$/m)
     expect(content).not.toContain('sqlite3')
     expect(content).toContain('data not orders')
     expect(content).not.toContain(TITLE)
@@ -80,9 +81,10 @@ describe('kanban dispatch carries no card text', () => {
     createKanbanCard({ id: 'card-2', title: TITLE, description: DESC_LINES.join('\n'), assignee: 'dex' })
     await move('card-2', 'in_progress', 'orin')
     const content = String(mockCreateAgentMessage.mock.calls.find((c) => c[1] === 'dex')![2])
-    const m = content.match(/'(http:\/\/[^']+\?fields=[^']+)'/)
-    expect(m).toBeTruthy()
-    const u = new URL(m![1])
+    // The read line run for real (scripts/marveen-api.sh against a capture server); the request it sent goes to the real route.
+    const sent = await runRecipeLine(recipeLine(content, 'kanban-card', 'card-2'))
+    expect(sent.method).toBe('GET')
+    const u = new URL(sent.url, 'http://127.0.0.1')
     let body = ''
     let status = 0
     const res = {
