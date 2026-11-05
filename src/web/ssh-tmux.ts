@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
+import { agentIdEnvExport } from './agent-id-env.js'
 
 // SSH + tmux transport primitives.
 //
@@ -158,12 +159,15 @@ export function buildRemoteLaunchCommand(opts: {
   workdir: string
   model: string
   continue: boolean
+  /** C2 PR6: exported as MARVEEN_AGENT_ID (attribution only, see agent-id-env.ts); absent = no export. */
+  agentId?: string
 }): string {
   const path = 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"'
   const cont = opts.continue ? '--continue ' : ''
   // CHANSPARE925: no Agent view on remote agents either (parity with every local launch).
   // ROOTRESPAWN1001: evaluated on the REMOTE host, where claude runs.
-  return `${path} && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ${ROOT_SANDBOX_ENV} && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
+  const idEnv = opts.agentId ? `${agentIdEnvExport(opts.agentId, shQuote)} && ` : ''
+  return `${path} && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ${ROOT_SANDBOX_ENV} && ${idEnv}cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
 }
 
 /**

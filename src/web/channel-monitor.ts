@@ -12,6 +12,7 @@ import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { mainRelaunchSucceeded } from '../auto-restart.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { agentIdEnvExport } from './agent-id-env.js'
 import { launchableDistributionDefaultSync } from './default-model-guard.js'
 import { agentDir, listAgentNames, readAgentChannelProvider, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
 import { listKanbanCards, createAgentMessage } from '../db.js'
@@ -1122,6 +1123,8 @@ export function buildMainSessionRespawnCmd(opts: {
     // FLEETVENV923: same venv-first PATH as startAgentProcess and channels.sh.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
     `&& export ${opts.channelStateEnv.name}=${shSingleQuote(opts.channelStateEnv.dir)}`,
+    // C2 PR6: the agent identity for the API helper's defaults (attribution only, see agent-id-env.ts).
+    `&& ${agentIdEnvExport(MAIN_AGENT_ID, shSingleQuote)}`,
     // MCP startup-batch tuning (parity with channels.sh + startAgentProcess):
     // the --channels plugin is a stdio MCP server; the main session runs the
     // most MCP servers (filesystem/playwright/chrome + claude.ai connectors +

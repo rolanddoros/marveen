@@ -9,7 +9,8 @@ import {
 import { resolveFromPath } from '../../platform.js'
 import { APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
-import { fleetVenvPathPrefix } from '../agent-process.js'
+import { fleetVenvPathPrefix, shSingleQuote } from '../agent-process.js'
+import { agentIdEnvExport } from '../agent-id-env.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 import { exactTmuxTarget } from '../../tmux-target.js'
@@ -68,6 +69,9 @@ export async function spawnBackgroundTask(agentId: string, prompt: string): Prom
   const shellCmd = [
     // FLEETVENV923: the fleet venv's bin/ first, as in every agent launch.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
+    // C2 PR6: the requesting agent's name for the API helper's defaults (attribution only, see
+    // agent-id-env.ts). agent_id is caller input: single-quoted, one inert shell word.
+    agentIdEnvExport(agentId, shSingleQuote),
     `${CLAUDE} -p "$BG_PROMPT" --output-format text 2>&1`,
   ].join(' && ')
 

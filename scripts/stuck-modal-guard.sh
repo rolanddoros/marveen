@@ -410,7 +410,14 @@ run_guard() {
   . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
   local FLEET_VENV_PREFIX; FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
   # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  # C2 PR6: the agent identity for scripts/marveen-api.sh defaults (attribution only, src/web/agent-id-env.ts).
+  # MAIN_AGENT_ID is empty when CHANNELS_SESSION named the session: read it then, and export nothing
+  # rather than invent a name.
+  local _agent_id="${MAIN_AGENT_ID:-}" AGENT_ID_ENV=""
+  [ -n "$_agent_id" ] || _agent_id="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  _agent_id="${_agent_id//[^a-zA-Z0-9_-]/}"
+  [ -z "$_agent_id" ] || AGENT_ID_ENV="export MARVEEN_AGENT_ID=$(sh_single_quote "$_agent_id") && "
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${AGENT_ID_ENV}${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

@@ -71,7 +71,9 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-comment <card-id> <author> <content-file>
   kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
-A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
+A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line.
+Identity: memory-save <agent>, memory-move/memory-update <updated-by> and message <from> may be left out; they then
+default to $MARVEEN_AGENT_ID (set by the launcher). An explicit argument always wins."""
 
 
 class UsageError(Exception):
@@ -226,6 +228,23 @@ def check_category(value):
     return value
 
 
+# C2 PR6: the launcher exports the agent's canonical name into every session it starts (src/web/agent-id-env.ts).
+# ATTRIBUTION ONLY, not a security boundary: the value is self-asserted and the fleet shares one token (C5).
+IDENTITY_ENV = 'MARVEEN_AGENT_ID'
+
+
+def default_identity(args, n, index, verb):
+    """Exactly one positional short of n, and MARVEEN_AGENT_ID set: insert it at `index` (the identity slot).
+    An explicit argument (n positionals) always wins; without the variable nothing changes, and the count check in
+    positional() reports the missing argument exactly as before. An invalid value is refused, naming its source."""
+    ident = os.environ.get(IDENTITY_ENV, '')
+    if not ident or len(args) != n - 1 or any(a.startswith('--') for a in args):
+        return args
+    if not NAME_RE.fullmatch(ident):
+        fail_usage(f'{verb}: ${IDENTITY_ENV}={ident!r} is not a valid agent name; pass the name explicitly')
+    return args[:index] + [ident] + args[index:]
+
+
 def positional(args, n, verb):
     extra = [a for a in args if a.startswith('--')]
     if extra:
@@ -296,6 +315,7 @@ def build_request(verb, args):
             q['limit'] = check(limit, ID_RE, 'limit')
         return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'search_header': True}
     if verb == 'memory-save':
+        args = default_identity(args, 4, 0, verb)
         agent, category, keywords, content_file = positional(args, 4, verb)
         check(agent, NAME_RE, 'agent name')
         body = {'agent_id': agent, 'content': read_text(content_file), 'category': check_category(category), 'keywords': keywords}
@@ -310,6 +330,7 @@ def build_request(verb, args):
         q = {'agent': agent, 'category': check_category(category), 'limit': check(limit or '40', ID_RE, 'limit')}
         return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {}
     if verb == 'memory-move':
+        args = default_identity(args, 3, 2, verb)
         mem_id, category, updated_by = positional(args, 3, verb)
         check(mem_id, ID_RE, 'memory id')
         check(updated_by, NAME_RE, 'updated-by name')
@@ -317,6 +338,7 @@ def build_request(verb, args):
         # category-only PATCH: no agent_id, which would hand the row to another agent
         return 'PATCH', f'/api/memories/{mem_id}', {'category': check_category(category), 'updated_by': updated_by}, headers, {}
     if verb == 'memory-update':
+        args = default_identity(args, 3, 1, verb)
         mem_id, updated_by, content_file = positional(args, 3, verb)
         check(mem_id, ID_RE, 'memory id')
         check(updated_by, NAME_RE, 'updated-by name')
