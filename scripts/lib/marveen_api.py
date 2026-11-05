@@ -417,6 +417,18 @@ def build_request(verb, args):
         (approval_id,) = positional(args, 1, verb)
         check(approval_id, APPROVAL_ID_RE, 'approval id')
         return 'GET', f'/api/approvals/{approval_id}', None, headers, {}
+    if verb == 'approval-wait':
+        # Built here like every verb, so its request passes the schedule-write guard in main() and the verb pin
+        # (marveen-api-helper.test.ts); main() then polls it (approval_wait_loop) instead of sending it once.
+        raw = take_opt(args, '--timeout')
+        timeout_s = APPROVAL_WAIT_DEFAULT_S
+        if raw is not None:
+            if not raw.isdigit() or not 1 <= int(raw) <= APPROVAL_WAIT_MAX_S:
+                fail_usage(f'approval-wait: --timeout must be a whole number of seconds, 1..{APPROVAL_WAIT_MAX_S}')
+            timeout_s = int(raw)
+        (approval_id,) = positional(args, 1, verb)
+        check(approval_id, APPROVAL_ID_RE, 'approval id')
+        return 'GET', f'/api/approvals/{approval_id}', None, headers, {'approval_wait': (approval_id, timeout_s)}
     if verb == 'approval-consume':
         content_hash = take_opt(args, '--content-hash')
         approval_id, category, consumer = positional(args, 3, verb)
@@ -872,26 +884,12 @@ APPROVAL_POLL_S = 60
 APPROVAL_DECIDED = {'approved': 'ok', 'rejected': 'not_approved', 'timeout': 'not_approved'}
 
 
-def approval_wait_main(argv):
-    args, timeout_s = list(argv), APPROVAL_WAIT_DEFAULT_S
-    if '--timeout' in args:
-        i = args.index('--timeout')
-        raw = args[i + 1] if i + 1 < len(args) else ''
-        if not raw.isdigit() or not 1 <= int(raw) <= APPROVAL_WAIT_MAX_S:
-            print(f'FAIL: approval-wait: --timeout must be a whole number of seconds, 1..{APPROVAL_WAIT_MAX_S}',
-                  file=sys.stderr)
-            return EXIT['usage']
-        timeout_s = int(raw)
-        del args[i:i + 2]
-    if len(args) != 1 or not APPROVAL_ID_RE.fullmatch(args[0]):
-        print('FAIL: usage: approval-wait <approval-id> [--timeout <seconds>]', file=sys.stderr)
-        return EXIT['usage']
-    approval_id = args[0]
-    token = read_token()
+def approval_wait_loop(method, path, headers, token, approval_id, timeout_s):
+    """The polling of approval-wait. Its request (method, path) comes from build_request(), after main()'s guard."""
     deadline = time.monotonic() + timeout_s
     last_problem = ''
     while True:
-        status, text, _, failure = send_request('GET', f'/api/approvals/{approval_id}', None, {}, token)
+        status, text, _, failure = send_request(method, path, None, headers, token)
         if failure:
             last_problem = failure  # transient: the next poll may get through, the deadline decides
         elif status == 404:
@@ -943,8 +941,6 @@ def main(argv):
         return EXIT['ok']
     if argv[0] == 'message':
         return helper_message_main(argv[1:])
-    if argv[0] == 'approval-wait':
-        return approval_wait_main(argv[1:])
     verb, rest = argv[0], argv[1:]
     try:
         method, path, body, headers, flags = build_request(verb, rest)
@@ -956,6 +952,8 @@ def main(argv):
         print(f'FAIL: {refused}', file=sys.stderr)
         return EXIT['usage']
     token = read_token()
+    if flags.get('approval_wait'):
+        return approval_wait_loop(method, path, headers, token, *flags['approval_wait'])
     status, text, resp_headers, failure = send_request(method, path, body, headers, token)
     if failure:
         print(failure, file=sys.stderr)

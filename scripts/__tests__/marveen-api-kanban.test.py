@@ -185,6 +185,8 @@ guard_call = main_src.find('schedule_write_refused(method, path)')
 # C2 PR5 moved the request into send_request(), which main() must call only after the guard. A request is built in
 # exactly two places: send_request() and post_message(), whose one caller fixes the url to /api/messages.
 send_at = main_src.find('send_request(method, path')
+# approval-wait polls instead of sending once: its loop also starts only after the guard
+wait_at = main_src.find('approval_wait_loop(method, path')
 
 
 def _fn(name):
@@ -196,10 +198,10 @@ one_request = (src.count('urllib.request.Request(') == 2 and 'urllib.request.Req
                and 'urllib.request.Request(' in _fn('post_message') and src.count('post_message(') == 2  # its def and its one call
                and "url = f'{message_api_base()}/api/messages'" in _fn('send_message'))
 ok(paths and sched == ['/api/schedules', '/api/schedules'] and get_verb and guard_def and 0 <= guard_call < send_at
-   and one_request,
+   and 0 <= guard_call < wait_at and one_request,
    'P13 INVARIANS: the schedule route only in the guard constant and the one GET verb; the guard runs before the send',
-   'sched=%r get_verb=%s guard=%s guard_call=%d send=%d one_request=%s'
-   % (sched, bool(get_verb), bool(guard_def), guard_call, send_at, one_request))
+   'sched=%r get_verb=%s guard=%s guard_call=%d send=%d wait=%d one_request=%s'
+   % (sched, bool(get_verb), bool(guard_def), guard_call, send_at, wait_at, one_request))
 
 # --- P14-P16: the recipe sources name the helper, not a curl token header (source text) --------------
 tpl = open(TEMPLATE, encoding='utf-8').read()
