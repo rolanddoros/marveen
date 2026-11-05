@@ -32,7 +32,7 @@ ok() { N=$((N+1)); if [ "$2" = "0" ]; then echo "PASS  $1"; else echo "FAIL  $1$
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/msggate.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 BIN="$SANDBOX/bin"; mkdir -p "$BIN"
-printf 'test-token\n' > "$SANDBOX/token"
+printf 'test-token\n' > "$SANDBOX/.dashboard-token"
 
 # A stub API on 127.0.0.1: nothing leaves the machine, and each request is RECORDED -- that record is what turns
 # "was refused" into a measurable claim instead of an absence. (C2 PR4: the send is python now, not curl, so the
@@ -51,7 +51,7 @@ CY="$(python3 -c 'print(chr(0x43E))')"   # CYRILLIC SMALL LETTER O
 send() {  # send <content-or-dash> [extra env assignments via ENVX]
   : > "$SANDBOX/calls.txt"
   OUT="$(env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" \
-             MARVEEN_TOKEN_FILE="$SANDBOX/token" ${ENVX:-} \
+             MARVEEN_TOKEN_FILE="$SANDBOX/.dashboard-token" ${ENVX:-} \
              /bin/bash "$HELPER" igor hex "$1" 2>"$SANDBOX/err.txt")"
   RC=$?
   ERR="$(cat "$SANDBOX/err.txt")"
@@ -84,7 +84,7 @@ ok "  ...and the report masks the letter instead of pasting it" \
 # STDIN form takes the same route -- it is the form used for long messages.
 : > "$SANDBOX/calls.txt"
 OUT="$(printf 'stdin sz%sveg' "$CY" | env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" \
-        MARVEEN_TOKEN_FILE="$SANDBOX/token" /bin/bash "$HELPER" igor hex - 2>/dev/null)"
+        MARVEEN_TOKEN_FILE="$SANDBOX/.dashboard-token" /bin/bash "$HELPER" igor hex - 2>/dev/null)"
 ok "the STDIN form is gated too" "$([ "$?" = "5" ] && [ ! -s "$SANDBOX/calls.txt" ] && echo 0 || echo 1)"
 
 # --- THE RULE IS THE MIXED-SCRIPT WORD, not the presence of a script --------
