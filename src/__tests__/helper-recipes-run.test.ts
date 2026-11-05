@@ -65,7 +65,8 @@ describe('the generated helper recipes run for real', () => {
 
   it('memory-search with an accented query (memory-search block): the query is encoded, no 400 trap', async () => {
     const line = recipeLine(S.buildMemorySearchLabelBody(AGENT), 'memory-search', AGENT).replace('KULCSSZO', "'ékezetes keresés'")
-    const got = await runRecipeLine(line)
+    // a search answers a list (C2 PR3: the compact answer reads it; the capture server's default {"ok":true} is not one)
+    const got = await runRecipeLine(line, {}, '[]')
     expect(got.method).toBe('GET')
     const u = new URL(got.url, 'http://x')
     expect(u.pathname).toBe('/api/memories')
@@ -109,7 +110,7 @@ describe('the api-helper block recipes run for real', () => {
   })
 
   it('memory-list hot and memory-move: the agent own rows, a category-only PATCH with updated_by', async () => {
-    const list = await runRecipeLine(recipeLine(body(), 'memory-list', AGENT))
+    const list = await runRecipeLine(recipeLine(body(), 'memory-list', AGENT), {}, '[]') // a list, as the server answers
     const u = new URL(list.url, 'http://x')
     expect([list.method, u.pathname, u.searchParams.get('agent'), u.searchParams.get('category')]).toEqual(['GET', '/api/memories', AGENT, 'hot'])
     const move = await runRecipeLine(recipeLine(body(), 'memory-move').replace('<ID>', '5'))

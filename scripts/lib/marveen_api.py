@@ -76,9 +76,9 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
                 (--report = a report or notice nobody waits on: no receipt to the sender; --no-notify is the old name)
                 (exit 4: the message was already closed (409) - not an error, do not retry)
   directive-verify <msg-id>
-  memory-search <agent> <query> [--category hot|warm|cold|shared] [--strict] [--date <expr>] [--since <day>] [--until <day>] [--limit <n>]
+  memory-search <agent> <query> [--category hot|warm|cold|shared] [--strict] [--date <expr>] [--since <day>] [--until <day>] [--limit <n>] [--full]
   memory-save <agent> <hot|warm|cold|shared> <keywords> <content-file>
-  memory-list <agent> <hot|warm|cold|shared> [--limit <n>]
+  memory-list <agent> <hot|warm|cold|shared> [--limit <n>] [--full]
   memory-move <memory-id> <hot|warm|cold|shared> <updated-by>
   memory-update <memory-id> <updated-by> <content-file>
   daily-log <agent> <content-file>
@@ -108,6 +108,9 @@ kanban-list prints id, status, priority, assignee, last change (MM-DD HH:MM) and
 line, the newest change first; by default the 40 newest cards that are not done ("# shown N of M" when more match).
 --status picks the statuses, --all adds done and lifts the limit, --mine is the assignee in MARVEEN_AGENT_ID.
 kanban-card prints status, title, description (--full adds test_steps, done_evidence and the last 5 comments).
+memory-search prints the X-Memory-Search line first, then one tab-separated line per hit: id, category, date
+(YYYY-MM-DD) and the content on one line, cut at 160 ("# 0 hits" when none); --full: keywords and the whole content.
+memory-list prints its rows the same way (no label line).
 A write prints OK (create and comment: OK id=<id>) and the answer's other fields; NOT OK (exit 7) when the server
 accepted it but did not set the state: read the card back.
 Exit codes:
@@ -359,6 +362,7 @@ def build_verb_request(verb, args, raw=False):
         check(msg_id, ID_RE, 'message id')
         return 'GET', f'/api/messages/{msg_id}', None, headers, {}
     if verb == 'memory-search':
+        full = take_flag(args, '--full')
         category = take_opt(args, '--category')
         strict = take_flag(args, '--strict')
         date = take_opt(args, '--date')
@@ -380,7 +384,11 @@ def build_verb_request(verb, args, raw=False):
             q['until'] = until
         if limit is not None:
             q['limit'] = check(limit, ID_RE, 'limit')
-        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'search_header': True}
+        # C2 PR3: the request is unchanged; only the answer is compact (--full: keywords and the whole content).
+        if full and raw:
+            fail_usage('memory-search: --full shapes the compact answer; --json prints the body as it came')
+        return ('GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers,
+                {'search_header': True, 'format': 'memory-rows', 'full': full})
     if verb == 'memory-save':
         args = default_identity(args, 4, 0, verb)
         agent, category, keywords, content_file = positional(args, 4, verb)
@@ -391,11 +399,15 @@ def build_verb_request(verb, args, raw=False):
         headers['X-Agent-Id'] = agent
         return 'POST', '/api/memories', body, headers, {}
     if verb == 'memory-list':
+        # C2 PR3 (Johnny 11758 via Kevin 11762): the same compact rows as memory-search; the request is unchanged.
+        full = take_flag(args, '--full')
         limit = take_opt(args, '--limit')
         agent, category = positional(args, 2, verb)
         check(agent, NAME_RE, 'agent name')
         q = {'agent': agent, 'category': check_category(category), 'limit': check(limit or '40', ID_RE, 'limit')}
-        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {}
+        if full and raw:
+            fail_usage('memory-list: --full shapes the compact answer; --json prints the body as it came')
+        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'format': 'memory-rows', 'full': full}
     if verb == 'memory-move':
         args = default_identity(args, 3, 2, verb)
         mem_id, category, updated_by = positional(args, 3, verb)
@@ -1028,6 +1040,36 @@ def raw_exit(flags, text):
     return HELD_WRITE_EXIT if isinstance(answer, dict) and answer.get('ok') is False else EXIT['ok']
 
 
+SNIPPET_WIDTH = 160
+
+
+def local_day(ts):
+    try:
+        return time.strftime('%Y-%m-%d', time.localtime(int(ts)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return '--'
+
+
+def format_memory_rows(rows, full=False):
+    """memory-search and memory-list: one line per row, id, category, the day of the last
+    change (updated_at, else created_at) and the content on one line, cut at 160. --full: the keywords on the line and
+    the whole content under it, indented two spaces like the kanban blocks."""
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise ValueError('the memory answer is not a list of rows')
+    if not rows:
+        return '# 0 hits'
+    lines = []
+    for r in rows:
+        head = [one_line(r.get('id')), one_line(r.get('category')), local_day(r.get('updated_at') or r.get('created_at'))]
+        if full:
+            lines.append('\t'.join(head + ['keywords: ' + (one_line(r.get('keywords')) or '(none)')]))
+            text = str(r.get('content') if r.get('content') is not None else '')
+            lines += ['  ' + line for line in text.rstrip('\n').split('\n')] if text.strip() else ['  (none)']
+        else:
+            lines.append('\t'.join(head + [cut(one_line(r.get('content')), SNIPPET_WIDTH)]))
+    return '\n'.join(lines)
+
+
 def format_answer(verb, flags, texts):
     """(the compact text, the exit code)."""
     answers = [json.loads(t) for t in texts]
@@ -1036,6 +1078,8 @@ def format_answer(verb, flags, texts):
         return format_kanban_list(answers[0], flags.get('limit'), flags.get('all', False), flags.get('statuses_given', False)), EXIT['ok']
     if kind == 'kanban-card':
         return format_kanban_card(answers[0], answers[1] if len(answers) > 1 else None), EXIT['ok']
+    if kind == 'memory-rows':
+        return format_memory_rows(answers[0], flags.get('full', False)), EXIT['ok']
     if kind == 'write':
         text = format_write(verb, answers[0])
         return text, HELD_WRITE_EXIT if answers[0].get('ok') is False else EXIT['ok']
