@@ -400,8 +400,15 @@ w = [
      'OK\nid: abcd1234\nrenewed: false\ntook_over_from: null\n'),
     (('kanban-assign', 'abcd1234', 'tom'), '{"ok":true}', 'OK\n'),
 ]
-# the held move's exit code is the HELD_WRITE_EXIT constant (P34); every other write exits 0
-held_exit = int(re.search(r'^HELD_WRITE_EXIT = (\d+)$', open(API_PY, encoding='utf-8').read(), re.M).group(1))
+# the held move's exit code is the HELD_WRITE_EXIT constant (P34), read from the helper itself: it comes from the one
+# exit-code table (EXIT['not_applied'], 7); every other write exits 0
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location('marveen_api_under_test', API_PY)
+_api = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_api)
+held_exit = _api.HELD_WRITE_EXIT
+ok(held_exit == _api.EXIT['not_applied'] == 7 and (7, 'not_applied') in [(c, n) for c, n, _ in _api.EXIT_CODES],
+   'P34a HELD_WRITE_EXIT is EXIT_CODES 7 (not_applied), not a number of its own', repr(held_exit))
 res = [(run(*a, body=b), want, held_exit if i == 3 else 0) for i, (a, b, want) in enumerate(w)]
 held_json = run('kanban-move', 'abcd1234', 'done', '--json', body=w[3][1])
 ok(all(r[0] == code and r[1] == want for r, want, code in res) and held_json[0] == 0 and held_json[1] == w[3][1] + '\n',
