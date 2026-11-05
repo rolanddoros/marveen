@@ -27,8 +27,9 @@ CRON_RE = re.compile(r'^[0-9*/,\- A-Za-z?#LW]{1,100}$')
 
 USAGE = """usage: bash scripts/marveen-admin.sh <verb> [args]   (main agent only)
   schedule-create <name> <cron> <type> <agent> <prompt-file|-> [--description-file <f>] [--once] [--skip-if-busy]
-                <type>: task (always reports) or heartbeat (silent unless important); <cron> in Europe/Budapest,
-                one quoted word, e.g. "0 8 * * *". 409 (already exists) -> exit 4: use schedule-update.
+                <type>: task (always reports) or heartbeat (silent unless important); <cron> in the install zone
+                (SCHEDULER_TZ, else the host zone), one quoted word, e.g. "0 8 * * *".
+                409 (already exists) -> exit 4: use schedule-update.
   schedule-update <name> [--prompt-file <f>] [--description-file <f>] [--schedule <cron>] [--enabled true|false]
                 [--type task|heartbeat] [--agent <name>]
                 at least one change. Read the skill utemezett-feladat-modositas BEFORE changing a schedule.
