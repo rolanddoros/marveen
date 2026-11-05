@@ -937,7 +937,7 @@ def cut(text, width):
 
 
 def local_time(ts):
-    """MM-DD HH:MM in the host's local time (the install runs on Europe/Budapest); '--' for a missing value."""
+    """MM-DD HH:MM in the host's local time zone; '--' for a missing value."""
     try:
         return time.strftime('%m-%d %H:%M', time.localtime(int(ts)))
     except (TypeError, ValueError, OverflowError, OSError):
