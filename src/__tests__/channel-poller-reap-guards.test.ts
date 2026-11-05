@@ -21,7 +21,7 @@
 // A real tmux server is never touched: a fake tmux answers every query.
 import { describe, it, expect, afterAll, vi } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, chmodSync, mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -30,8 +30,10 @@ import {
   paneAncestorPids,
   reapChannelOrphans,
   reapDetachedChannelClaudes,
+  findOrphanChannelClaudes,
   type ProcRow,
 } from '../web/channel-poller-reap.js'
+import { spawnFakeChannelClaude, writeFakeTmux, processTable } from './helpers/fake-channel-claude.js'
 import { channelStateDir } from '../channel-provider.js'
 import { logger } from '../logger.js'
 
@@ -159,28 +161,16 @@ describe('cf075d41 reapChannelOrphans on real processes', () => {
 
 // The detached-claude path, with a needle that exists only in this test's argv
 // (a fake tmux makes every real `claude --channels` on the host look detached).
+// The stand-in runs under a fake tmux (helpers/fake-channel-claude.ts): a host with
+// a live dashboard reaps a bare one on its own (B2-1, measured).
 describe('cf075d41 reapDetachedChannelClaudes on real processes', () => {
   const needle = (tag: string) => `plugin:telegram@guards-cf075d41-${tag}-${process.pid}-${Date.now()}`
-  async function claudeWithChild(tag: string, n: string): Promise<{ claude: number; child: number }> {
-    // Double fork: the outer bash exits, so the fake claude is reparented away
-    // from the test runner. Under the runner it would inherit the runner's
-    // ancestry, and a runner inside a tmux pane puts a foreign tmux server
-    // above it (spared as another install's session, #2078).
-    const childFile = join(tmp, `dc-${tag}.pid`)
-    const claudeFile = join(tmp, `dc-${tag}.claude.pid`)
-    spawnWith('/bin/bash', ['-c',
-      `(exec -a claude /bin/bash -c 'sleep 300 & echo $! > ${childFile}; wait' x --channels ${n}) & echo $! > ${claudeFile}`], {})
-    for (let i = 0; i < 40 && !(existsSync(childFile) && existsSync(claudeFile)); i++) await sleep(50)
-    const claude = parseInt(readFileSync(claudeFile, 'utf-8').trim(), 10)
-    const child = parseInt(readFileSync(childFile, 'utf-8').trim(), 10)
-    kids.push(claude, child)
-    return { claude, child }
-  }
+  const claudeWithChild = (tag: string, n: string) => spawnFakeChannelClaude(tmp, `guards-${tag}`, n, baseEnv(), (pid) => kids.push(pid))
 
   it('(iii) a detached claude --channels that is the parent of a live pane leader: NOT stopped', async () => {
     const n = needle('pane-parent')
-    const { claude, child } = await claudeWithChild('pane-parent', n)
-    fakeTmuxPrints(`echo ${child}`) // the child is a live pane leader
+    const { tmux, claude, child } = await claudeWithChild('pane-parent', n)
+    writeFakeTmux(fakeTmux, [child], tmux) // the child is a live pane leader; the fake tmux is the test's server
     const warn = vi.spyOn(logger, 'warn')
     const reaped = reapDetachedChannelClaudes({ tmuxPath: fakeTmux, channelNeedle: n })
     await sleep(600)
@@ -194,12 +184,23 @@ describe('cf075d41 reapDetachedChannelClaudes on real processes', () => {
 
   it('(iv) positive control: a detached claude --channels with no live pane under it is still stopped', async () => {
     const n = needle('orphan')
-    const { claude } = await claudeWithChild('orphan', n)
-    fakeTmuxPrints('echo 4242')
+    const { tmux, claude } = await claudeWithChild('orphan', n)
+    writeFakeTmux(fakeTmux, [4242], tmux)
     const reaped = reapDetachedChannelClaudes({ tmuxPath: fakeTmux, channelNeedle: n })
     await sleep(600)
     expect(reaped).toEqual([claude])
     expect(alive(claude)).toBe(false)
+  })
+
+  it('(v) the live dashboard\'s periodic reap does not see the stand-in as an orphan (B2-1 cross-talk)', async () => {
+    // The live reap: no needle, the live panes (none of ours), the live tmux server (not our fake one). The same
+    // predicate the periodic reap runs, on the host's real process table.
+    const n = needle('live-view')
+    const { claude } = await claudeWithChild('live-view', n)
+    const LIVE_SERVER = 2 ** 22 + 1 // above the 64-bit pid_max default (2^22): surely not our fake tmux
+    expect(processTable().some((r) => r.pid === claude && r.command.includes(n))).toBe(true)
+    expect(findOrphanChannelClaudes(processTable(), new Set([4242]), undefined, LIVE_SERVER)).not.toContain(claude)
+    // ...while the test's own reaper, whose server IS the fake tmux, still judges it (the (iv) case).
   })
 })
 

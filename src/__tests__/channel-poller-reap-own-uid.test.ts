@@ -28,7 +28,7 @@
 // real-process test on a shared host could reach a live main poller of the same user.
 import { describe, it, expect, afterAll, vi } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, chmodSync, mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -41,6 +41,7 @@ import {
   type KillFn,
 } from '../web/channel-poller-reap.js'
 import { channelStateDir } from '../channel-provider.js'
+import { spawnFakeChannelClaude, writeFakeTmux } from './helpers/fake-channel-claude.js'
 import { logger } from '../logger.js'
 
 const errno = (code: string) => Object.assign(new Error(code), { code })
@@ -196,28 +197,16 @@ describe('35ea0375 reapChannelOrphans on real processes', () => {
 
 // The detached-claude path, with a needle that exists only in this test's argv
 // (a fake tmux makes every real `claude --channels` on the host look detached).
+// The stand-in runs under a fake tmux (helpers/fake-channel-claude.ts): a host with
+// a live dashboard reaps a bare one on its own (B2-1, measured).
 describe('35ea0375 reapDetachedChannelClaudes on real processes', () => {
   const needle = (tag: string) => `plugin:telegram@own-uid-35ea0375-${tag}-${process.pid}-${Date.now()}`
-  async function claudeWithChild(tag: string, n: string): Promise<{ claude: number; child: number }> {
-    // Double fork: the outer bash exits, so the fake claude is reparented away
-    // from the test runner. Under the runner it would inherit the runner's
-    // ancestry, and a runner inside a tmux pane puts a foreign tmux server
-    // above it (spared as another install's session, #2078).
-    const childFile = join(tmp, `dc-${tag}.pid`)
-    const claudeFile = join(tmp, `dc-${tag}.claude.pid`)
-    spawnWithEnv('/bin/bash', ['-c',
-      `(exec -a claude /bin/bash -c 'sleep 300 & echo $! > ${childFile}; wait' x --channels ${n}) & echo $! > ${claudeFile}`], {})
-    for (let i = 0; i < 40 && !(existsSync(childFile) && existsSync(claudeFile)); i++) await sleep(50)
-    const claude = parseInt(readFileSync(claudeFile, 'utf-8').trim(), 10)
-    const child = parseInt(readFileSync(childFile, 'utf-8').trim(), 10)
-    kids.push(claude, child)
-    return { claude, child }
-  }
+  const claudeWithChild = (tag: string, n: string) => spawnFakeChannelClaude(tmp, `own-uid-${tag}`, n, process.env, (pid) => kids.push(pid))
 
   it('a detached claude of another uid is spared and not returned as reaped', async () => {
     const n = needle('foreign')
-    const { claude } = await claudeWithChild('foreign', n)
-    fakeTmuxPrints('echo 4242')
+    const { tmux, claude } = await claudeWithChild('foreign', n)
+    writeFakeTmux(fakeTmux, [4242], tmux)
     const info = vi.spyOn(logger, 'info')
     const reaped = reapDetachedChannelClaudes({ tmuxPath: fakeTmux, channelNeedle: n, ownerOf: () => otherUid })
     await sleep(800)
@@ -229,8 +218,8 @@ describe('35ea0375 reapDetachedChannelClaudes on real processes', () => {
 
   it('positive control: the same shape owned by this uid is reaped', async () => {
     const n = needle('own')
-    const { claude } = await claudeWithChild('own', n)
-    fakeTmuxPrints('echo 4242')
+    const { tmux, claude } = await claudeWithChild('own', n)
+    writeFakeTmux(fakeTmux, [4242], tmux)
     const reaped = reapDetachedChannelClaudes({ tmuxPath: fakeTmux, channelNeedle: n, ownerOf: () => myUid })
     await sleep(800)
     expect(reaped).toEqual([claude])
