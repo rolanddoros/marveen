@@ -24,65 +24,75 @@
 // budget, and in a full run the two copies ran concurrently in two workers,
 // each loading the host for the other. That wrapper is gone; this runner is the
 // suite's one CI entry, with the 300 s budget below.
+//
+// C2 B2-5 (Kevin 11596): the suites no longer run in this file. One file ran all of them serially on one
+// worker (upstream CI run 42078141739: 192 cases, 509 s of a 788 s npm test). They run in the four
+// script-tests-runner.shard-<k>.test.ts files now, with the discovery, the shard rule and the run body in
+// setup/script-suites.ts. This file proves the split loses nothing: the shards together are exactly the
+// suites on disk, each one in exactly one shard, and every shard file runs its own share.
 import { describe, it, expect } from 'vitest'
-import { spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { SKIP_REASON, hasSkipReason, suiteOutcome } from './setup/suite-outcome.js'
+import { ROOT, SCRIPT_TESTS_DIR, SHARD_COUNT, discoverScriptSuites, nameHash, shardOf, suitesForShard } from './setup/script-suites.js'
 
-const ROOT = join(__dirname, '..', '..')
-const DIR = join(ROOT, 'scripts', '__tests__')
-
-// `*-test.py` is the older naming; both spellings are real suites in this tree.
-const SUITES = readdirSync(DIR)
-  .filter((f) => /\.test\.(sh|py)$/.test(f) || /-test\.py$/.test(f))
-  .sort()
+const SUITES = discoverScriptSuites()
+const SRC_TESTS = join(ROOT, 'src', '__tests__')
+const SHARD_FILE = /^script-tests-runner\.shard-(\d+)\.test\.ts$/
 
 describe('scripts/__tests__ suites', () => {
   it('finds the suites on disk (a rename must not silently empty this run)', () => {
     expect(SUITES.length).toBeGreaterThan(20)
   })
 
-  // The email gate suite must stay reachable from here (it has no other CI
-  // entry now) and must not be re-run by a second wrapper.
-  it('runs the email approval gate suite here, and no other test file re-runs it', () => {
+  // Read the directory here too, with this file's own pattern: the shard check below is built on
+  // discoverScriptSuites(), so a narrowed discovery would shrink both sides of it at once.
+  it('the discovery finds every *.test.sh, *.test.py and *-test.py in the directory, both kinds', () => {
+    const onDisk = readdirSync(SCRIPT_TESTS_DIR).filter((f) => f.endsWith('.test.sh') || f.endsWith('.test.py') || f.endsWith('-test.py'))
+    expect(SUITES).toEqual(onDisk.sort())
+    expect(SUITES.filter((f) => f.endsWith('.sh')).length).toBeGreaterThan(20)
+    expect(SUITES.filter((f) => f.endsWith('.py')).length).toBeGreaterThan(20)
+  })
+
+  it('the shards together are exactly the suites on disk, each suite in one shard, no shard empty', () => {
+    const shards = Array.from({ length: SHARD_COUNT }, (_, i) => suitesForShard(i + 1))
+    const all = shards.flat()
+    expect([...all].sort()).toEqual(SUITES)
+    expect(new Set(all).size).toBe(all.length)
+    for (const [i, share] of shards.entries()) expect(share.length, `shard ${i + 1}`).toBeGreaterThan(0)
+  })
+
+  it('the shard rule is a stable hash of the name, in 1..SHARD_COUNT', () => {
+    for (const name of SUITES) {
+      const k = shardOf(name)
+      expect(k).toBeGreaterThanOrEqual(1)
+      expect(k).toBeLessThanOrEqual(SHARD_COUNT)
+      expect(shardOf(name)).toBe(k)
+    }
+    // a changed hash would reshuffle every shard silently: pinned on the FNV-1a 32-bit test vectors
+    expect(['', 'a', 'foobar'].map(nameHash)).toEqual([0x811c9dc5, 0xe40c292c, 0xbf9cf968])
+    expect(['email-approval-gate.test.py', 'wait-for.test.sh', 'approval-wait.test.py'].map(shardOf)).toEqual([1, 2, 4])
+  })
+
+  it('one shard file per shard, and each runs its own share through the shared run body', () => {
+    const files = readdirSync(SRC_TESTS).filter((f) => SHARD_FILE.test(f)).sort()
+    expect(files.map((f) => Number(f.match(SHARD_FILE)![1])).sort((a, b) => a - b))
+      .toEqual(Array.from({ length: SHARD_COUNT }, (_, i) => i + 1))
+    for (const f of files) {
+      const k = f.match(SHARD_FILE)![1]
+      const src = readFileSync(join(SRC_TESTS, f), 'utf-8')
+      expect(src, f).toContain(`it.for(suitesForShard(${k}))`)
+      expect(src, f).toContain('runScriptSuite(name, ctx)')
+      expect(src.match(/suitesForShard\(/g)?.length, f).toBe(1)
+    }
+  })
+
+  // The email gate suite must stay reachable from the shards (it has no other CI entry now) and must not
+  // be re-run by a second wrapper.
+  it('runs the email approval gate suite in one shard, and no other test file re-runs it', () => {
     expect(SUITES).toContain('email-approval-gate.test.py')
-    const SRC_TESTS = join(ROOT, 'src', '__tests__')
     const rerunners = readdirSync(SRC_TESTS)
       .filter((f) => f.endsWith('.ts') && f !== 'script-tests-runner.test.ts')
       .filter((f) => readFileSync(join(SRC_TESTS, f), 'utf-8').includes("'email-approval-gate.test.py'"))
     expect(rerunners).toEqual([])
-  })
-
-  // it.for, not it.each: the case function gets the test context, and ctx.skip() makes the
-  // outcome a SKIPPED test that the reporter counts and shows. An early `return` from an `it`
-  // is counted as a pass, which is the silent skip this branch exists to prevent. The title is the
-  // bare file name (no "passes"), so the line reads correctly whether the suite passed or skipped.
-  it.for(SUITES)('%s', { timeout: 310_000 }, (name, ctx) => {
-    const runner = name.endsWith('.py') ? 'python3' : 'bash'
-    const res = spawnSync(runner, [join(DIR, name)], {
-      encoding: 'utf-8',
-      timeout: 300_000,
-      cwd: ROOT,
-    })
-    if (suiteOutcome(res.status) === 'skip') {
-      // A suite whose positive control cannot be met on this platform has
-      // measured NOTHING here. Failing it is a false alarm (see wait-for on
-      // macOS); passing it silently is worse, because a skip would then be
-      // indistinguishable from a green run. So it is a counted skip, and the
-      // reason is required to be there -- a bare 77 with no explanation is a
-      // failure. The streams are joined with a newline so that the marker on
-      // stderr starts a line even when stdout did not end with one.
-      const why = `${res.stdout ?? ''}\n${res.stderr ?? ''}`
-      expect(hasSkipReason(why), `${name} exited 77 without a "SKIP (control unmet)" line:\n${why}`).toBe(true)
-      const line = why.split('\n').find((l) => SKIP_REASON.test(l)) ?? 'control unmet'
-      ctx.skip(`${name}: ${line}`)
-      return
-    }
-    if (res.status !== 0) {
-      console.error(`--- ${name} stdout ---\n${res.stdout ?? ''}`)
-      console.error(`--- ${name} stderr ---\n${res.stderr ?? ''}`)
-    }
-    expect(res.status).toBe(0)
   })
 })
