@@ -307,7 +307,7 @@ describe('channels.sh tmux auth wiring (source pin)', () => {
       expect(l).not.toMatch(/\s-e\s/)
     }
     expect(SH).not.toContain('TMUX_AUTH_ENV')
-    const paneCmds = SH.split('\n').filter(l => l.includes('${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}'))
+    const paneCmds = SH.split('\n').filter(l => l.includes('${STATE_DIR_ENV}${AGENT_ID_ENV}${MCP_BATCH_ENV}${CFG_ENV}'))  // C2 PR6 added AGENT_ID_ENV
     expect(paneCmds).toHaveLength(2)
     for (const l of paneCmds) expect(l.trim().startsWith('"${AUTH_PANE_ENV}${STATE_DIR_ENV}')).toBe(true)
   })
