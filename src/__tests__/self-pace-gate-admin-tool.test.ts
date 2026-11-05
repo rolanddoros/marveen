@@ -68,6 +68,20 @@ describe('self-pace-gate: the main agent\'s schedule-write tool (marveen-admin.s
     ]) expect(deny(c), c).toBe(false)
   })
 
+  it('a bare *.py / *.sh glob is every such file, not evidence of the tool; a glob with its name still is', () => {
+    for (const c of [
+      'sed -i s/a/b/ scripts/hooks/*.py',
+      'chmod +x scripts/*.sh',
+      'python3 -m py_compile scripts/lib/*.py',
+      'shellcheck scripts/?.sh',
+    ]) expect(deny(c), c).toBe(false)
+    for (const c of [
+      'bash scripts/marveen-*.sh schedule-create x',
+      'python3 scripts/lib/*admin.py schedule-update x --enabled false',
+      'bash scripts/*-admin.sh schedule-create x',
+    ]) expect(deny(c), c).toBe(true)
+  })
+
   // gateDecision returns only the verdict; the text is chosen in the hook's main path, so this runs the hook itself.
   it('the deny message names the tool, so the agent knows to ask the main agent (hook end to end)', () => {
     const hook = join(REPO, 'scripts', 'self-pace-gate.mjs')

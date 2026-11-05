@@ -1422,9 +1422,10 @@ function globRefs(text, opts) {
         const parent = i > 0
           ? prev.replace(/\[[^\]]*\]|[*?]/g, '').length >= 2 && STORE_PARENTS.some((p) => globMatchesName(prev, p))
           : !!opts?.parentCtx
-        // a file name target needs literal text beyond its extension: `*.ts`
-        // or `*.db` alone is every such file, not evidence of this one
-        const stem = seg.replace(/\.[cm]?[jt]s$|\.db$/i, '').replace(/\[[^\]]*\]|[*?]/g, '').length
+        // a file name target needs literal text beyond its extension: `*.ts`,
+        // `*.db`, `*.sh` or `*.py` alone is every such file, not evidence of
+        // this one (.sh/.py since marveen-admin.sh / marveen_admin.py, C2 PR5)
+        const stem = seg.replace(/\.[cm]?[jt]s$|\.db$|\.sh$|\.py$/i, '').replace(/\[[^\]]*\]|[*?]/g, '').length
         for (const name of GLOB_TARGETS) {
           if (!globMatchesName(seg, name)) continue
           if (FILE_GLOB_TARGETS.has(name) && !bracket && stem < 3) continue
