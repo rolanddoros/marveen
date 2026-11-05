@@ -44,12 +44,15 @@ EXIT_CODES = (
     (0, 'ok', 'done'),
     (1, 'server_error', 'the server answered with an error (message: no message id after 3 tries); the body is on stderr'),
     (2, 'usage', 'usage error or no token; nothing was sent'),
-    (3, 'unreachable', 'the dashboard could not be reached or did not answer in time; read back before retrying a write'),
-    (4, 'conflict', 'already closed or consumed (HTTP 409): not an error, do not retry'),
+    (3, 'unreachable', 'unreachable or timeout (read back before retrying a write); approval-wait: no decision before '
+                       '--timeout, call again'),
+    (4, 'conflict', 'already closed or consumed (HTTP 409): not an error, do not retry; approval-wait: approved, but '
+                    'already consumed or past the use window: request a new approval'),
     (5, 'content_rejected', 'message: the homoglyph gate refused the text; nothing was sent, rewrite the word'),
     (6, 'checker_error', 'message: the homoglyph checker failed; the message was NOT sent, retry is safe'),
     (7, 'not_applied', 'accepted but not applied: the server answered 2xx but did not set the requested state (a kanban '
                        'write held with ok:false, NOT OK); read back, do not just retry'),
+    (8, 'not_approved', 'approval-wait: decided but NOT approved (rejected, or timed out on the server): do not act'),
 )
 EXIT = {name: code for code, name, _ in EXIT_CODES}
 CATEGORIES = ('hot', 'warm', 'cold', 'shared')
@@ -86,6 +89,11 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>] [--payload-file <json-file>]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
+  approval-wait <approval-id> [--timeout <seconds>]
+                (polls every 60 s until decided; default --timeout 540, under the Bash tool's 600 s limit: call it
+                 with timeout 600000 and, on exit 3 (still pending), call it again. It never consumes: run
+                 approval-consume yourself, after exit 0. 0 = approved, 8 = rejected or expired, 2 = unknown id,
+                 4 = approved but already consumed or past the use window: request a new approval)
   skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
                 (each --ref-file goes as references/<its file name>, markdown only)
   kanban-list [--mine | --assignee <name>] [--status <s>[,<s>...]] [--all] [--limit <n>]
@@ -472,6 +480,19 @@ def build_verb_request(verb, args, raw=False):
         (approval_id,) = positional(args, 1, verb)
         check(approval_id, APPROVAL_ID_RE, 'approval id')
         return 'GET', f'/api/approvals/{approval_id}', None, headers, {}
+    if verb == 'approval-wait':
+        # Built here like every verb, so its request passes the schedule-write guard in main() and the verb pin
+        # (marveen-api-helper.test.ts); main() then polls it (approval_wait_loop) instead of sending it once.
+        raw = take_opt(args, '--timeout')
+        timeout_s = APPROVAL_WAIT_DEFAULT_S
+        if raw is not None:
+            # ASCII digits only: str.isdigit() also takes '²' (int() then raises) and Arabic-Indic digits (Ron 11870)
+            if not re.fullmatch(r'[0-9]{1,6}', raw) or not 1 <= int(raw) <= APPROVAL_WAIT_MAX_S:
+                fail_usage(f'approval-wait: --timeout must be a whole number of seconds, 1..{APPROVAL_WAIT_MAX_S}')
+            timeout_s = int(raw)
+        (approval_id,) = positional(args, 1, verb)
+        check(approval_id, APPROVAL_ID_RE, 'approval id')
+        return 'GET', f'/api/approvals/{approval_id}', None, headers, {'approval_wait': (approval_id, timeout_s)}
     if verb == 'approval-consume':
         content_hash = take_opt(args, '--content-hash')
         approval_id, category, consumer = positional(args, 3, verb)
@@ -1086,6 +1107,101 @@ def format_answer(verb, flags, texts):
     raise ValueError(f'no compact form for {verb}')
 
 
+def send_request(method, path, body, headers, token, timeout=30):
+    """One request to the dashboard: (status, text, headers, None), or (None, None, None, <FAIL line>) when nothing
+    usable came back. A timeout means the request may have been processed: the line says to read back."""
+    data = json.dumps(body).encode('utf-8') if body is not None else None
+    req = urllib.request.Request(api_base() + path, data=data, method=method)
+    req.add_header('Authorization', f'Bearer {token}')
+    if data is not None:
+        req.add_header('Content-Type', 'application/json')
+    for k, v in headers.items():
+        req.add_header(k, v)
+    try:
+        with OPENER.open(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode('utf-8', 'replace'), resp.headers, None
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode('utf-8', 'replace'), e.headers, None
+    except (urllib.error.URLError, OSError) as e:
+        if isinstance(e, TimeoutError) or isinstance(getattr(e, 'reason', None), TimeoutError):
+            # The request may have been sent and processed; only the answer is missing.
+            return None, None, None, (f'FAIL: the dashboard at {api_base()} did not answer in {timeout} s; read back '
+                                      'before you retry a write.')
+        return None, None, None, f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).'
+
+
+# --- approval-wait (C2 PR5, Johnny 11800) ----------------------------------------------------------------------
+# Polls GET /api/approvals/<id> in-process, so no LLM turn is spent per poll: at once, then every POLL seconds, a
+# last time at the deadline. It NEVER consumes: the approval is single-use, consume stays an explicit step after an
+# approved answer (CLAUDE.md APPROVALCONSUME1022). The default deadline stays under the Claude Code Bash tool's
+# 600 s limit (its default is 120 s), so the recipe is "call it with timeout 600000; on 3 call it again".
+APPROVAL_WAIT_DEFAULT_S = 540
+APPROVAL_WAIT_MAX_S = 86400
+APPROVAL_POLL_S = 60
+APPROVAL_DECIDED = {'approved': 'ok', 'rejected': 'not_approved', 'timeout': 'not_approved'}
+# The generic consume's default use window (CATEGORY_CONSUME_DEFAULT_WINDOW_S in src/db.ts, 1800 s; the email path's
+# EMAIL_APPROVAL_WINDOW_S defaults to the same). An approved row resolved longer ago than this, or already consumed, is
+# not one the caller can still act on, so approval-wait answers 4, not 0 (Ron 11870, Kevin 11876).
+APPROVAL_USE_WINDOW_S = 1800
+
+
+def approved_but_unusable(row):
+    """Why an approved row can no longer be consumed (consumeCategoryApproval in src/db.ts), or '' if it can."""
+    if row.get('consumed_at') is not None:
+        return 'already consumed'
+    resolved = row.get('resolved_at')
+    if isinstance(resolved, bool) or not isinstance(resolved, (int, float)):
+        return 'no resolved_at on the row'  # the consume needs it, so it would refuse
+    if time.time() - resolved > APPROVAL_USE_WINDOW_S:
+        return f'approved more than {APPROVAL_USE_WINDOW_S} s ago, past the use window'
+    return ''
+
+
+def approval_wait_loop(method, path, headers, token, approval_id, timeout_s):
+    """The polling of approval-wait. Its request (method, path) comes from build_request(), after main()'s guard."""
+    deadline = time.monotonic() + timeout_s
+    last_problem = ''
+    while True:
+        status, text, _, failure = send_request(method, path, None, headers, token)
+        if failure:
+            last_problem = failure  # transient: the next poll may get through, the deadline decides
+        elif status == 404:
+            print(f'FAIL: approval-wait: no approval {approval_id} (HTTP 404); nothing to wait for.', file=sys.stderr)
+            return EXIT['usage']
+        elif status in (401, 403):
+            print(f'FAIL: HTTP {status}: {text[:300]}', file=sys.stderr)
+            return EXIT['server_error']
+        elif 200 <= status < 300:
+            try:
+                row = json.loads(text)
+                state = row.get('status')
+            except (ValueError, AttributeError):
+                row, state = None, None
+            if state == 'approved':
+                unusable = approved_but_unusable(row)
+                if unusable:
+                    print(f'status=approved id={approval_id}: {unusable}; do not act, request a new approval')
+                    return EXIT['conflict']
+            if state in APPROVAL_DECIDED:
+                outcome = APPROVAL_DECIDED[state]
+                note = ('' if outcome == 'ok' else
+                        ': decided, NOT approved -- do not act')
+                print(f'status={state} id={approval_id}{note}')
+                return EXIT[outcome]
+            if state != 'pending':
+                print(f'FAIL: approval-wait: unexpected status {state!r} for {approval_id}', file=sys.stderr)
+                return EXIT['server_error']
+            last_problem = ''
+        else:
+            last_problem = f'HTTP {status}: {text[:300]}'  # a 5xx: transient, like a dropped connection
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            tail = f' (last problem: {last_problem})' if last_problem else ''
+            print(f'status=pending id={approval_id}: no decision within {timeout_s} s; call approval-wait again{tail}')
+            return EXIT['unreachable']
+        time.sleep(min(APPROVAL_POLL_S, remaining))
+
+
 def main(argv):
     if argv and argv[0] == '--agent-msg':
         # scripts/agent-msg.sh, run directly: check_env() runs in agent_msg_main, after the argv (see ENV GATE).
@@ -1119,26 +1235,13 @@ def main(argv):
             print(f'FAIL: {refused}', file=sys.stderr)
             return EXIT['usage']
     token = read_token()
+    if flags.get('approval_wait'):
+        return approval_wait_loop(method, path, headers, token, *flags['approval_wait'])
     texts = []
     for method, path, body in calls:
-        data = json.dumps(body).encode('utf-8') if body is not None else None
-        req = urllib.request.Request(api_base() + path, data=data, method=method)
-        req.add_header('Authorization', f'Bearer {token}')
-        if data is not None:
-            req.add_header('Content-Type', 'application/json')
-        for k, v in headers.items():
-            req.add_header(k, v)
-        try:
-            with OPENER.open(req, timeout=30) as resp:
-                status, text, resp_headers = resp.status, resp.read().decode('utf-8', 'replace'), resp.headers
-        except urllib.error.HTTPError as e:
-            status, text, resp_headers = e.code, e.read().decode('utf-8', 'replace'), e.headers
-        except (urllib.error.URLError, OSError) as e:
-            if isinstance(e, TimeoutError) or isinstance(getattr(e, 'reason', None), TimeoutError):
-                # The request may have been sent and processed; only the answer is missing.
-                print(f'FAIL: the dashboard at {api_base()} did not answer in 30 s; read back before you retry a write.', file=sys.stderr)
-                return EXIT['unreachable']
-            print(f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).', file=sys.stderr)
+        status, text, resp_headers, failure = send_request(method, path, body, headers, token)
+        if failure:
+            print(failure, file=sys.stderr)
             return EXIT['unreachable']
         if flags.get('search_header'):
             # The search answers leniently; the label travels only in this header (#1374). Its ABSENCE

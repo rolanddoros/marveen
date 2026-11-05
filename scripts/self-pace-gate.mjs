@@ -1163,8 +1163,15 @@ const STORE_PARENTS = ['.claude', '.claude-config', '.channels-config']
 // test files that share the prefix (schedule-registry-shell-paths.test.ts)
 // out of it. The tool may not exist on a given install; the rule does not
 // depend on it.
-const SCHEDULE_CLI_REF_RX = /schedule-registry(?:-cli)?(?:\.[cm]?[jt]s)?(?![\w.-])/i
-const SCHEDULE_CLI_NAMES = ['schedule-registry-cli.js', 'schedule-registry-cli.ts', 'schedule-registry.js', 'schedule-registry.ts']
+// The main agent's schedule-write tool (C2 PR5) is matched the same way, by
+// both names: scripts/marveen-admin.sh and the module behind it,
+// lib/marveen_admin.py (callable directly, so the .sh name alone would not
+// do). It has no read-only verbs, so only the shared exemptions apply (a
+// read-only file command on it, git on its source, a mention in message
+// data). The lookahead keeps its test files (marveen-admin.test.py) out. A
+// renamed copy is a stated limit: the real gate is a per-agent token (C5).
+const SCHEDULE_CLI_REF_RX = /schedule-registry(?:-cli)?(?:\.[cm]?[jt]s)?(?![\w.-])|marveen[-_]admin(?:\.sh|\.py)?(?![\w.-])/i
+const SCHEDULE_CLI_NAMES = ['schedule-registry-cli.js', 'schedule-registry-cli.ts', 'schedule-registry.js', 'schedule-registry.ts', 'marveen-admin.sh', 'marveen_admin.py']
 // An SQL write on a schedule table (scheduled_tasks, scheduled_task_registry,
 // ...), whatever program runs it: the sqlite3 CLI, python, node, a heredoc.
 const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into|delete\s+from|update(?:\s+or\s+\w+)?|drop\s+(?:table|trigger|view)(?:\s+if\s+exists)?|alter\s+table|create\s+(?:temp\w*\s+)?(?:table|view)(?:\s+if\s+not\s+exists)?)\s+(?:\w+\.)?scheduled_task|\bcreate\s+(?:temp\w*\s+)?trigger\b[\s\S]{0,300}?\bon\s+(?:\w+\.)?scheduled_task/i
@@ -1398,7 +1405,7 @@ function globRefs(text, opts) {
     if (!/[*?[\]{}]/.test(word)) continue
     const flat = word.replace(/[{},]/g, '').toLowerCase()
     // a glob character can stand for any letters, so then always enumerate
-    const mayBrace = /[*?[]/.test(word) || ['schedules', 'scheduled-tasks', 'schedule-registry', 'claudeclaw.db'].some((t) => isSubsequence(t, flat))
+    const mayBrace = /[*?[]/.test(word) || ['schedules', 'scheduled-tasks', 'schedule-registry', 'marveen-admin', 'marveen_admin', 'claudeclaw.db'].some((t) => isSubsequence(t, flat))
     const exps = /[{}]/.test(word) ? (mayBrace ? expandBraces(word, BRACE_EXPANSION_CAP) : [word.replace(/[{}]/g, '')]) : [word]
     if (!exps) return { api: true, dir: true, cli: true, db: true } // too many expansions to prove harmless
     for (const e of exps) {
@@ -1416,11 +1423,16 @@ function globRefs(text, opts) {
           ? prev.replace(/\[[^\]]*\]|[*?]/g, '').length >= 2 && STORE_PARENTS.some((p) => globMatchesName(prev, p))
           : !!opts?.parentCtx
         // a file name target needs literal text beyond its extension: `*.ts`
-        // or `*.db` alone is every such file, not evidence of this one
-        const stem = seg.replace(/\.[cm]?[jt]s$|\.db$/i, '').replace(/\[[^\]]*\]|[*?]/g, '').length
+        // or `*.db` alone is every such file, not evidence of this one.
+        // For .sh/.py (marveen-admin.sh / marveen_admin.py, C2 PR5) only the
+        // fully bare `*.sh` / `*.py` (stem 0) passes: one name per extension
+        // in each directory, so `*n.py` already picks out marveen_admin.py.
+        const shPy = /\.(?:sh|py)$/i.test(seg)
+        const stem = seg.replace(/\.[cm]?[jt]s$|\.db$|\.sh$|\.py$/i, '').replace(/\[[^\]]*\]|[*?]/g, '').length
+        const bareExt = shPy ? stem === 0 : stem < 3
         for (const name of GLOB_TARGETS) {
           if (!globMatchesName(seg, name)) continue
-          if (FILE_GLOB_TARGETS.has(name) && !bracket && stem < 3) continue
+          if (FILE_GLOB_TARGETS.has(name) && !bracket && bareExt) continue
           if (bracket || literal >= 3 || (name === SCHEDULE_DIR_NAME && parent)) return name
         }
         return seg
@@ -3266,7 +3278,7 @@ const GATE_MSG =
   '<repo>/store/.dashboard-token, vagy a sajat <repo>/agents/<nev>/.dashboard-token utja -- relativ ut, ~ vagy ' +
   '$HOME nem), se ~/.claude/scheduled-tasks/ iras (olvasni ls/cat/grep/sed -n lehet, ' +
   'de NE cd-vel a store-ba -- abszolut uttal hivatkozz ra), se schedule-registry-cli register/unregister ' +
-  '(csak status es verify), se utemezes-tabla SQL-iras vagy a claudeclaw.db fajl felulirasa, ' +
+  '(csak status es verify), se marveen-admin.sh / marveen_admin.py (a fo agens utemezo-eszkoze), se utemezes-tabla SQL-iras vagy a claudeclaw.db fajl felulirasa, ' +
   'se /loop self-pace. ' +
   'Kivetel: hosszu tesztfutashoz EGYETLEN azonnali, idozito nelkuli `systemd-run --user --collect -p RuntimeMaxSec=<1..7200> [--unit=NEV] <parancs>` megengedett, onallo parancskent (--on-*/--timer-property, -E/--setenv/Environment=, claude, utemezo, tmux, sleep es /api/ nelkul). ' +
   'Ha csak egy dokumentumot irsz, ami az utemezo API-t vagy a store-t emliti ' +
