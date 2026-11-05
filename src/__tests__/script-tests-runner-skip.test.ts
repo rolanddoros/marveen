@@ -18,7 +18,7 @@ import { SKIP_EXIT, hasSkipReason, suiteOutcome } from './setup/suite-outcome.js
 //            silent-skip shape this fleet keeps paying for.
 //
 // So there is a third answer, and this file pins it rather than trusting the
-// loop in script-tests-runner.test.ts to keep getting it right.
+// loop in setup/script-suites.ts (runScriptSuite) to keep getting it right.
 
 describe('the suite runner tells a SKIP apart from a pass and from a failure', () => {
   it('0 is a pass, 77 is a skip, anything else is a failure', () => {
@@ -72,7 +72,8 @@ describe('the suite runner tells a SKIP apart from a pass and from a failure', (
   // test green and only changes the reporter from skipped back to passed, and the real suite always prints
   // the marker, so dropping the assertion is invisible too. Measured by the reviewer with both mutants.
   describe('the runner itself (source pin)', () => {
-    const src = readFileSync(join(__dirname, 'script-tests-runner.test.ts'), 'utf-8')
+    // the run body moved out of the runner into the shared module when the runner was sharded (C2 B2-5)
+    const src = readFileSync(join(__dirname, 'setup', 'script-suites.ts'), 'utf-8')
     const open = src.indexOf("if (suiteOutcome(res.status) === 'skip') {")
     const close = src.indexOf('if (res.status !== 0) {', open)
     const branch = open >= 0 && close > open ? src.slice(open, close) : ''
