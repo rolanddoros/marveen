@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
+// @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision as selfPaceDecision } from '../../scripts/self-pace-gate.mjs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
