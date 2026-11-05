@@ -41,7 +41,8 @@ EXIT_CODES = (
     (0, 'ok', 'done'),
     (1, 'server_error', 'the server answered with an error (message: no message id after 3 tries); the body is on stderr'),
     (2, 'usage', 'usage error or no token; nothing was sent'),
-    (3, 'unreachable', 'the dashboard could not be reached or did not answer in time; read back before retrying a write'),
+    (3, 'unreachable', 'unreachable or timeout (read back before retrying a write); approval-wait: no decision before '
+                       '--timeout, call again'),
     (4, 'conflict', 'already closed or consumed (HTTP 409): not an error, do not retry'),
     (5, 'content_rejected', 'message: the homoglyph gate refused the text; nothing was sent, rewrite the word'),
     (6, 'checker_error', 'message: the homoglyph checker failed; the message was NOT sent, retry is safe'),

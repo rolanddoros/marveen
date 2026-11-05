@@ -235,6 +235,9 @@ def main():
                            capture_output=True, text=True, env=env, timeout=60)
         check('--help lists approval-wait and code 8', r.returncode == 0 and 'approval-wait <approval-id>' in r.stdout
               and '  8  ' in r.stdout, r.stdout[-400:])
+        row3 = [line for line in r.stdout.splitlines() if line.startswith('  3  ')]
+        check('  ...and row 3 says what it means for approval-wait (Kevin 11827, Johnny 11798)',
+              len(row3) == 1 and 'approval-wait: no decision before --timeout, call again' in row3[0], row3)
     finally:
         srv.shutdown()
         shutil.rmtree(inst, ignore_errors=True)
