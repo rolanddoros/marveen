@@ -30,6 +30,9 @@ assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected '$2', 
 
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 REAL_WATCHDOG="$INSTALL_DIR/scripts/hooks/telegram_progress_watchdog.py"
+# C2 PR4d: the watchdog gates TELEGRAM_API_BASE through ../lib/env_gate.py next to its own copy (fail closed
+# without it), so every copy below gets the module at that place too; case (4) pins the fail-closed side.
+REAL_ENV_GATE="$INSTALL_DIR/scripts/lib/env_gate.py"
 
 TMP="$(mktemp -d)"
 trap 'kill "$STUB_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
@@ -91,6 +94,8 @@ echo ""
 echo "(1) __file__ derivation from <root>/scripts/hooks/ (MARVEEN_ROOT unset)"
 R1="$TMP/case1"; HOME1="$TMP/home1"
 mkdir -p "$R1/scripts/hooks" "$HOME1"
+mkdir -p "$R1/scripts/lib"
+cp "$REAL_ENV_GATE" "$R1/scripts/lib/env_gate.py"
 cp "$REAL_WATCHDOG" "$R1/scripts/hooks/telegram_progress_watchdog.py"
 plant_marker "$R1" a1
 : > "$REQLOG"
@@ -110,6 +115,8 @@ echo ""
 echo "(2) mutation: run from ~/.claude/hooks-style path -> ~/marveen, finds nothing"
 R2="$TMP/case2"; HOME2="$TMP/home2"
 mkdir -p "$R2/.claude/hooks" "$HOME2"
+mkdir -p "$R2/.claude/lib"
+cp "$REAL_ENV_GATE" "$R2/.claude/lib/env_gate.py"
 cp "$REAL_WATCHDOG" "$R2/.claude/hooks/telegram_progress_watchdog.py"
 plant_marker "$R2" a2
 : > "$REQLOG"
@@ -128,6 +135,39 @@ MARVEEN_ROOT="$R2" HOME="$HOME2" TELEGRAM_API_BASE="$API_BASE" \
   TELEGRAM_WATCHDOG_FORCE_AGENT_UP=0 \
   python3 "$R2/.claude/hooks/telegram_progress_watchdog.py"
 assert_eq "MARVEEN_ROOT override reaches the marker: fired" "1" "$(count editMessageText)"
+
+# ---------------------------------------------------------------------------
+# (4) The bot-token gate (C2 PR4d): the same run as (3), which fired, sends NOTHING when the copy has no
+#     ../lib/env_gate.py (fail closed), and nothing when TELEGRAM_API_BASE names a host that is neither the Bot
+#     API nor loopback. This stub listens on 127.0.0.1 only, so for the second half the refusal line is the proof;
+#     telegram-bot-token-gate.test.py measures it with a reachable stub on 127.0.0.2.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(4) the bot-token gate: no module -> nothing sent; a non-allowed base -> nothing sent"
+mv "$R2/.claude/lib/env_gate.py" "$R2/.claude/lib/env_gate.py.off"
+plant_marker "$R2" a4  # (3) fired and dropped its marker: a fresh one, or "nothing sent" proves nothing
+: > "$REQLOG"
+ERR4="$(MARVEEN_ROOT="$R2" HOME="$HOME2" TELEGRAM_API_BASE="$API_BASE" \
+  TELEGRAM_WATCHDOG_FORCE_AGENT_UP=0 \
+  python3 "$R2/.claude/hooks/telegram_progress_watchdog.py" 2>&1 >/dev/null)"
+assert_eq "no env_gate.py next to the copy: nothing sent" "0" "$(count editMessageText)"
+case "$ERR4" in *"cannot be loaded"*) pass "  ...and it says why (cannot be loaded)";; *) fail "  ...no 'cannot be loaded' line: $ERR4";; esac
+mv "$R2/.claude/lib/env_gate.py.off" "$R2/.claude/lib/env_gate.py"
+plant_marker "$R2" a5
+: > "$REQLOG"
+ERR4="$(MARVEEN_ROOT="$R2" HOME="$HOME2" TELEGRAM_API_BASE="http://127.0.0.2:$PORT" \
+  TELEGRAM_WATCHDOG_FORCE_AGENT_UP=0 \
+  python3 "$R2/.claude/hooks/telegram_progress_watchdog.py" 2>&1 >/dev/null)"
+assert_eq "TELEGRAM_API_BASE off loopback, not the Bot API: nothing sent" "0" "$(count editMessageText)"
+case "$ERR4" in *"neither https://api.telegram.org nor loopback"*) pass "  ...and it says why";; *) fail "  ...no refusal line: $ERR4";; esac
+# control: the very same run with the allowed (loopback) base fires for a fresh marker (a6) AND for the two
+# markers the refused runs left in place (a4, a5): refused means nothing delivered and nothing dropped
+plant_marker "$R2" a6
+: > "$REQLOG"
+MARVEEN_ROOT="$R2" HOME="$HOME2" TELEGRAM_API_BASE="$API_BASE" \
+  TELEGRAM_WATCHDOG_FORCE_AGENT_UP=0 \
+  python3 "$R2/.claude/hooks/telegram_progress_watchdog.py"
+assert_eq "control: the allowed base delivers a6 and the two markers the refused runs kept" "3" "$(count editMessageText)"
 
 echo ""
 echo "==========================================="

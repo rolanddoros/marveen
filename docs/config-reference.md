@@ -537,6 +537,12 @@ helyéről számolt install `.env`-je, sosem környezeti változóból jön. A r
 tölti be (`.git/hooks/marveen-lib/env_gate.py`, a `scripts/install-review-gate-hook.sh` másolja oda), így nem függ
 attól, mi van épp a checkoutban; új modul csak újratelepítéssel kerül oda. A
 `scripts/skill.ts` (skill-registry) címe a saját `SKILL_REGISTRY_BASE` változója, nem a `MARVEEN_API_BASE`.
+Az érvénytelen URL-t és a `felhasználó:jelszó@` részt tartalmazó címet is elutasítja, és az elutasító szöveg a
+felhasználói adatot sosem írja ki. A Telegram bot-tokenre ugyanez a kapu vonatkozik: a `TELEGRAM_API_BASE`-t olvasó
+python küldők (`marveen-commands.py`, `telegram_fallback_send.py`, `telegram_progress.py`,
+`telegram_progress_clear.py`, `telegram_progress_watchdog.py`) csak a `https://api.telegram.org` címre (alapérték)
+vagy loopback címre (a tesztek stubja) küldik, és a saját `scripts/hooks/` mappájuk melletti `scripts/lib/env_gate.py`-t
+töltik be: nélküle semmit nem küldenek. A `scripts/lib/send-telegram.sh` (bash) még nincs lefedve.
 
 ### toolDeny -- ágensenkénti eszköz-tiltás (kontextus-fogantyú)
 

@@ -15,8 +15,10 @@ Run:  python3 scripts/__tests__/env-gate-callers.test.py
 """
 import http.server
 import importlib.util
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -77,6 +79,13 @@ def make_install(prefix, token='gate-token'):
     with open(os.path.join(inst, 'store', '.dashboard-token'), 'w') as f:
         f.write(token + '\n')
     return inst
+
+
+def load_gate(inst):
+    spec = importlib.util.spec_from_file_location('env_gate_t', os.path.join(inst, 'scripts', 'lib', 'env_gate.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def write_env(inst, text):
@@ -197,6 +206,170 @@ def main():
               and other_reqs[0]['path'] == '/api/commands/dispatch', (err, other_reqs))
         os.remove(os.path.join(inst, '.env'))
 
+        # C2 PR4d: a malformed base is a clean refusal in every caller (it raised ValueError before, Ron 11828), and a
+        # base with user:password@ is refused (not an origin) without ever printing the secret part (Kevin 11853).
+        def helper(base):
+            r = subprocess.run([sys.executable, os.path.join(inst, 'scripts', 'lib', 'marveen_api.py'), 'kanban-list'],
+                               capture_output=True, text=True, env=dict(base_env, MARVEEN_API_BASE=base), timeout=60,
+                               stdin=subprocess.DEVNULL)
+            return r.returncode, r.stdout + r.stderr
+
+        def agent_msg(base):
+            r = subprocess.run(['bash', os.path.join(inst, 'scripts', 'agent-msg.sh'), 'dani', 'samu', 'szia'],
+                               capture_output=True, text=True, env=dict(base_env, MARVEEN_API_BASE=base), timeout=60,
+                               stdin=subprocess.DEVNULL)
+            return r.returncode, r.stdout + r.stderr
+
+        port = local_api.rsplit(':', 1)[1]
+        secret = 's3cr3t-pw'
+        for label, base, secret_part in [
+            ('an unclosed IPv6 bracket', 'http://[', None),
+            ('a non-numeric port', 'http://127.0.0.1:abc', None),
+            ('user:password@ on loopback', 'http://dani:%s@127.0.0.1:%s' % (secret, port), secret),
+            ('user@ only', 'http://%s@127.0.0.1:%s' % (secret, port), secret),
+            ('a password with an unencoded slash', 'http://dani:%s/x@127.0.0.1:%s' % (secret, port), secret),
+            ('user:password@ on a non-http scheme', 'ftp://dani:%s@127.0.0.1' % secret, secret),
+        ]:
+            outs = []
+            reset()
+            rc, out = helper(base)
+            outs.append(out)
+            check('helper, %s: exit 2, refused, nothing arrives' % label,
+                  rc == 2 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
+            reset()
+            rc, out = agent_msg(base)
+            outs.append(out)
+            check('agent-msg.sh, %s: exit 2, refused, nothing arrives' % label,
+                  rc == 2 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
+            reset()
+            rc, out = jegyzetek(base)
+            outs.append(out)
+            check('jegyzetek, %s: exit 1, refused, nothing arrives' % label,
+                  rc == 1 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
+            reset()
+            try:
+                (res, err), (names, note) = hook(base)
+            except Exception as e:  # the hook must refuse, not raise
+                res, err, note = None, 'RAISED %r' % e, None
+            outs.append(err or '')
+            check('hook, %s: dispatch refused by the env gate (no exception), menu not asked' % label,
+                  res is None and err and err.startswith('env-kapu:') and note == 'EnvGateRefused'
+                  and not local_reqs, (res, err, note))
+            if secret_part:
+                check('  ...%s: the secret part is in no output of the four callers' % label,
+                      all(secret_part not in o for o in outs), [o for o in outs if secret_part in o])
+        # the mask keeps the rest readable: the host is still named
+        rc, out = jegyzetek('http://dani:%s@127.0.0.1:%s' % (secret, port))
+        check('the refusal names the base with the userinfo masked', '***@127.0.0.1' in out and secret not in out, out)
+
+        # --- Ron 11828 pins (the code was right; nothing held it) ------------------------------------------------
+        # K3: the hook's third token path, run_stop (turn-ended), runs the gate too.
+        hold = os.path.join(inst, 'store', 'main-model-hold.json')
+        with open(hold, 'w') as f:
+            json.dump({'until': 1}, f)  # an expired /model hold: run_stop notifies the dashboard
+        sd = tempfile.mkdtemp(prefix='env-gate-callers-sd-')
+
+        def stop(base):
+            saved = {k: os.environ.get(k) for k in GATE_VARS + ('TELEGRAM_STATE_DIR',)}
+            for k in GATE_VARS:
+                os.environ.pop(k, None)
+            os.environ.update(MARVEEN_API_BASE=base, TELEGRAM_STATE_DIR=sd)
+            saved_stdin = sys.stdin
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    'marveen_commands_stop', os.path.join(inst, 'scripts', 'hooks', 'marveen-commands.py'))
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                mod.is_main_session = lambda payload: True
+                sys.stdin = io.StringIO('{}')
+                try:
+                    mod.run_stop()
+                except SystemExit:
+                    pass
+            finally:
+                sys.stdin = saved_stdin
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+        reset()
+        stop(local_api)
+        check('K3 control: run_stop on loopback posts turn-ended with the token', [r['path'] for r in local_reqs] ==
+              ['/api/commands/turn-ended'] and local_reqs[0]['auth'] == 'Bearer gate-token', local_reqs)
+        reset()
+        stop(other_api)
+        check('K3: run_stop with a base off loopback: refused, nothing arrives', not other_reqs and not local_reqs,
+              other_reqs)
+        os.remove(hold)
+        shutil.rmtree(sd, ignore_errors=True)
+
+        # M3/M4/J3: MARVEEN_INSTALL_DIR names a root whose .env allows 127.0.0.2 AND whose env_gate.py allows
+        # everything. The helper, agent-msg.sh and jegyzetek take their root and their gate module from their own
+        # file, so both are ignored.
+        with open(os.path.join(fake, 'scripts', 'lib', 'env_gate.py'), 'w') as f:
+            f.write('def check_env(root, environ=None):\n    return None\n\n\n'
+                    'def normalise_base(raw):\n    return raw.strip().rstrip("/")\n\n\n'
+                    'def env_file_values(root, *keys):\n    return {}\n')
+        for label, run_it, code in [
+            ('helper', lambda: subprocess.run(
+                [sys.executable, os.path.join(inst, 'scripts', 'lib', 'marveen_api.py'), 'kanban-list'],
+                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+                env=dict(base_env, MARVEEN_API_BASE=other_api, MARVEEN_INSTALL_DIR=fake)), 2),
+            ('agent-msg.sh', lambda: subprocess.run(
+                ['bash', os.path.join(inst, 'scripts', 'agent-msg.sh'), 'dani', 'samu', 'szia'],
+                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+                env=dict(base_env, MARVEEN_API_BASE=other_api, MARVEEN_INSTALL_DIR=fake)), 2),
+            ('jegyzetek', lambda: subprocess.run(
+                [sys.executable, os.path.join(inst, 'scripts', 'jegyzetek.py'), 'lista'],
+                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+                env=dict(base_env, MARVEEN_API_BASE=other_api, MARVEEN_INSTALL_DIR=fake)), 1),
+        ]:
+            reset()
+            r = run_it()
+            check('M3/M4/J3 %s: a MARVEEN_INSTALL_DIR with a permissive .env and gate module opens nothing' % label,
+                  r.returncode == code and 'neither loopback' in (r.stdout + r.stderr) and not other_reqs,
+                  (r.returncode, (r.stdout + r.stderr)[-300:], other_reqs))
+
+        # J2: jegyzetek runs the gate BEFORE it opens the token file. The token file is a FIFO with no writer: opened
+        # first, the run would hang until the timeout; gated first, it is refused at once (Ron's PR4b method).
+        fifo_dir = tempfile.mkdtemp(prefix='env-gate-callers-fifo-')
+        fifo = os.path.join(fifo_dir, '.dashboard-token')
+        os.mkfifo(fifo)
+        reset()
+        try:
+            r = subprocess.run([sys.executable, os.path.join(inst, 'scripts', 'jegyzetek.py'), 'lista'],
+                               capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                               env=dict(base_env, MARVEEN_API_BASE=other_api, MARVEEN_TOKEN_FILE=fifo))
+            check('J2: jegyzetek refuses before it opens the token file (a writerless FIFO does not hang it)',
+                  r.returncode == 1 and 'neither loopback' in (r.stdout + r.stderr) and not other_reqs,
+                  (r.returncode, r.stdout + r.stderr))
+        except subprocess.TimeoutExpired:
+            check('J2: jegyzetek refuses before it opens the token file (a writerless FIFO does not hang it)', False,
+                  'hung on the FIFO: the token file was opened before the gate')
+            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)  # release a reader stuck on it
+            os.close(fd)
+        shutil.rmtree(fifo_dir, ignore_errors=True)
+
+        # H4: a .env origin is http(s) too: the same host under another scheme in AGENT_API_ORIGIN opens nothing.
+        gate = load_gate(inst)
+        with open(os.path.join(inst, '.env'), 'w') as f:
+            f.write('AGENT_API_ORIGIN=ftp://127.0.0.2:%s\n' % port)
+        refusal = gate.check_env(inst, {'MARVEEN_API_BASE': 'ftp://127.0.0.2:%s' % port})
+        control = gate.check_env(inst, {'MARVEEN_API_BASE': 'http://127.0.0.2:%s' % port})
+        check('H4: a non-http(s) .env origin is refused, by the scheme rule', refusal is not None
+              and 'http:// or https://' in refusal, refusal)
+        check('  ...control: the same host over http is not that .env origin either', control is not None
+              and 'neither loopback' in control, control)
+        os.remove(os.path.join(inst, '.env'))
+
+        # S1: scripts/skill.ts talks to the skill registry through its OWN variable; MARVEEN_API_BASE (where the
+        # dashboard token goes) is not read there (docs/config-reference.md states it).
+        skill_src = open(os.path.join(ROOT, 'scripts', 'skill.ts'), encoding='utf-8').read()
+        check('S1: skill.ts reads SKILL_REGISTRY_BASE and never MARVEEN_API_BASE',
+              'process.env.SKILL_REGISTRY_BASE' in skill_src and not re.search(
+                  r"""(?:process\.)?env(?:\.|\[\s*['"])MARVEEN_API_BASE""", skill_src))
+
         # env_gate.py missing: fail closed, even on loopback
         os.rename(os.path.join(inst, 'scripts', 'lib', 'env_gate.py'), os.path.join(inst, 'scripts', 'lib', 'gone.py'))
         reset()
@@ -207,6 +380,11 @@ def main():
         (res, err), (names, note) = hook(local_api)
         check('hook, env_gate.py missing: refused, nothing arrives', res is None and err and 'cannot be loaded' in err
               and not local_reqs, (res, err, local_reqs))
+        # M2 (Ron 11828): the helper's own "missing module = refuse" branch, and agent-msg.sh through it
+        reset()
+        for label, (rc, out) in (('helper', helper(local_api)), ('agent-msg.sh', agent_msg(local_api))):
+            check('M2 %s, env_gate.py missing: exit 2, "cannot be loaded", no traceback, nothing arrives' % label,
+                  rc == 2 and 'cannot be loaded' in out and 'Traceback' not in out and not local_reqs, (rc, out))
     finally:
         local.shutdown()
         other.shutdown()
