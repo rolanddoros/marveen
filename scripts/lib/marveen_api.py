@@ -423,7 +423,8 @@ def build_request(verb, args):
         raw = take_opt(args, '--timeout')
         timeout_s = APPROVAL_WAIT_DEFAULT_S
         if raw is not None:
-            if not raw.isdigit() or not 1 <= int(raw) <= APPROVAL_WAIT_MAX_S:
+            # ASCII digits only: str.isdigit() also takes '²' (int() then raises) and Arabic-Indic digits (Ron 11870)
+            if not re.fullmatch(r'[0-9]{1,6}', raw) or not 1 <= int(raw) <= APPROVAL_WAIT_MAX_S:
                 fail_usage(f'approval-wait: --timeout must be a whole number of seconds, 1..{APPROVAL_WAIT_MAX_S}')
             timeout_s = int(raw)
         (approval_id,) = positional(args, 1, verb)

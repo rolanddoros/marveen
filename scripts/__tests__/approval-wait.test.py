@@ -4,6 +4,7 @@
 What is pinned:
   - the exit codes Johnny decided (11800): 0 ONLY for approved; 8 for decided but not approved (rejected, or the
     server-side timeout); 3 when still pending at the end of --timeout; 2 for an unknown id (404) and usage errors;
+  - --timeout takes ASCII digits only ('²' used to crash int(), Arabic-Indic digits were taken);
   - it polls at once, then every APPROVAL_POLL_S seconds, and a last time at the deadline;
   - a 5xx or a dropped connection is transient (the next poll decides); 401/403 stops at once (exit 1);
   - it NEVER consumes: every request is a GET on /api/approvals/<id>, never /consume;
@@ -202,6 +203,12 @@ def main():
             ('--timeout -5', ['a1', '--timeout', '-5']),
             ('--timeout over the maximum', ['a1', '--timeout', str(mod.APPROVAL_WAIT_MAX_S + 1)]),
             ('--timeout without a value', ['a1', '--timeout']),
+            ('--timeout superscript two', ['a1', '--timeout', '\u00b2']),
+            ('--timeout Arabic-Indic three', ['a1', '--timeout', '\u0663']),
+            ('--timeout fullwidth five', ['a1', '--timeout', '\uff15']),
+            ('--timeout with a sign', ['a1', '--timeout', '+5']),
+            ('--timeout with spaces', ['a1', '--timeout', ' 5 ']),
+            ('--timeout with leading zeros past six digits', ['a1', '--timeout', '0000005']),
             ('no id', []),
             ('two ids', ['a1', 'a2']),
             ('an id with a slash', ['../consume']),
