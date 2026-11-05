@@ -112,6 +112,9 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
       'bash scripts/marveen-api.sh kanban-comment abcd1234 heartbeat /tmp/c.txt',
       // C2 PR1: kanban-assign (a PUT of the assignee) passed the gate until it was added to the verb list
       'bash scripts/marveen-api.sh kanban-assign abcd1234 tom --actor heartbeat',
+      // C2 PR2: kanban-archive, new with the verb
+      'bash scripts/marveen-api.sh kanban-archive abcd1234',
+      'bash scripts/marveen-api.sh kanban-archive abcd1234 --json',
     ]) denied(command)
   })
   it('denies the other spellings of the same call', () => {
@@ -132,6 +135,7 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
       'H=scripts/marveen-api.sh; "$H" kanban-move abcd1234 done',
       'H=scripts/marveen-api.sh; ${H} kanban-claim abcd1234 heartbeat',
       'H=scripts/marveen-api.sh; bash "$H" kanban-assign abcd1234 tom',
+      'H=scripts/marveen-api.sh; "$H" kanban-archive abcd1234',
       'P=scripts/lib/marveen_api.py; python3.11 "$P" kanban-create heartbeat high /tmp/t.txt',
       // a backslash-newline is joined by the shell before it splits words
       'bash scripts/marveen-api.sh kanban-mo\\\nve abcd1234 done',
@@ -140,6 +144,10 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
   it('allows the read verbs, the help and the report message', () => {
     for (const command of [
       'bash scripts/marveen-api.sh kanban-list',
+      // C2 PR2: the read options stay reads
+      'bash scripts/marveen-api.sh kanban-list --mine --status planned,in_progress --limit 10',
+      'bash scripts/marveen-api.sh kanban-list --all --json',
+      'bash scripts/marveen-api.sh kanban-card abcd1234 --full',
       'bash scripts/marveen-api.sh agents-list',
       'bash scripts/marveen-api.sh --help',
       'bash scripts/marveen-api.sh message heartbeat marveen /tmp/jelolt.txt',
@@ -216,11 +224,12 @@ describe('kanban-write-gate parity with the helper USAGE (C2 PR1)', () => {
   const verbs = usageKanbanVerbs(readFileSync(HELPER, 'utf-8'))
   const writes = verbs.filter((verb) => !KANBAN_READ_VERBS.includes(verb))
 
-  it('reads the write verbs from USAGE: at least the six known ones, kanban-assign among them', () => {
+  it('reads the write verbs from USAGE: at least the seven known ones, kanban-assign and kanban-archive among them', () => {
     // The blind-spot guard: a USAGE that stopped parsing would leave nothing to check and pass empty.
-    expect(writes.length).toBeGreaterThanOrEqual(6)
+    expect(writes.length).toBeGreaterThanOrEqual(7)
     expect(writes).toEqual(
-      expect.arrayContaining(['kanban-create', 'kanban-move', 'kanban-claim', 'kanban-release', 'kanban-comment', 'kanban-assign']),
+      expect.arrayContaining(['kanban-create', 'kanban-move', 'kanban-claim', 'kanban-release', 'kanban-comment', 'kanban-assign',
+        'kanban-archive']),
     )
     // Every read verb on the list is still a verb of the helper, so the list cannot go stale and hide one.
     expect(verbs).toEqual(expect.arrayContaining(KANBAN_READ_VERBS))

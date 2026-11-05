@@ -481,6 +481,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     '        "kanban-list": [], "kanban-card": ["c-1"], "schedules-list": [], "kanban-create": ["dani", "normal", f],',
     '        "kanban-move": ["c-1", "done"], "kanban-claim": ["c-1", "dani"], "kanban-release": ["c-1", "dani"],',
     '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "agents-list": [],',
+    '        "kanban-archive": ["c-1"],',
     '    }',
     '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',
     '    built = [[v] + list(m.build_request(v, s[v])[:2]) for v in verbs if v != "message"]',
@@ -555,9 +556,10 @@ describe('marveen-api.sh: schedules are read only', () => {
       expect(m.code, `message ${base}`).toBe(2)
     }
     expect(seen).toHaveLength(0)
-    // the origin itself, with or without a trailing slash, still works
+    // the origin itself, with or without a trailing slash, still works (--json: the plain GET /api/kanban, and the
+    // stub's {"ok":true} is printed as it came instead of being read as a board, C2 PR2)
     for (const base of [origin, `${origin}/`]) {
-      expect((await run(['kanban-list'], { MARVEEN_API_BASE: base })).code, base).toBe(0)
+      expect((await run(['kanban-list', '--json'], { MARVEEN_API_BASE: base })).code, base).toBe(0)
     }
     expect(seen.map((s) => s.url)).toEqual(['/api/kanban', '/api/kanban'])
   })
