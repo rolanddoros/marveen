@@ -7,7 +7,7 @@
 # itself (scripts/lib/marveen_api.py, never in an argv) and takes every payload from a file.
 #
 # Usage: bash scripts/marveen-api.sh <verb> [args]   (bash scripts/marveen-api.sh --help lists them)
-#   message <from> <to> <content-file> [--priority high|normal]
+#   message [<from>] <to> <content-file> [--priority high|normal]   (<from> defaults to $MARVEEN_AGENT_ID)
 #     runs the existing scripts/agent-msg.sh (its checks, retries and failure log), the text from
 #     the file on its stdin.
 #   every other verb: scripts/lib/marveen_api.py.
@@ -32,6 +32,15 @@ if [ "${1:-}" = "message" ]; then
       *) ARGS+=("$1"); shift ;;
     esac
   done
+  # C2 PR6: <from> left out -> the launcher-exported MARVEEN_AGENT_ID (attribution only, not a security boundary);
+  # an explicit <from> always wins, and without the variable the count check below fails as before.
+  if [ "${#ARGS[@]}" -eq 2 ] && [ -n "${MARVEEN_AGENT_ID:-}" ]; then
+    if ! [[ "$MARVEEN_AGENT_ID" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
+      echo "FAIL: message: \$MARVEEN_AGENT_ID='$MARVEEN_AGENT_ID' is not a valid agent name; pass <from> explicitly" >&2
+      exit 2
+    fi
+    ARGS=("$MARVEEN_AGENT_ID" "${ARGS[@]}")
+  fi
   if [ "${#ARGS[@]}" -ne 3 ]; then
     echo "FAIL: usage: bash scripts/marveen-api.sh message <from> <to> <content-file> [--priority high|normal]" >&2
     exit 2

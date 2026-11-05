@@ -709,6 +709,8 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   if (WORKER_AUTOUPDATE && ctx === ctxSlow && autoUpdaterEnv.startsWith('export')) {
     logger.warn({ session: ctx.session }, 'WORKERAUTOUPDATE1011: WORKER_AUTOUPDATE is on but claude is not a native install; the slow worker stays pinned')
   }
+  // C2 PR6: the worker is a shared, multi-caller session (heartbeat, digest, review, scaffold), not an
+  // agent, so it carries NO MARVEEN_AGENT_ID: any name would misattribute (agent-id-env.ts). Unset, never inherited.
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
@@ -716,6 +718,7 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
     // CHANSPARE925: no Agent view (Left would background the worker into the daemon).
     `export CLAUDE_CODE_DISABLE_AGENT_VIEW=1; ` +
+    `unset MARVEEN_AGENT_ID; ` +
     // ROOTRESPAWN1001: IS_SANDBOX=1 on a root host (see root-sandbox-env.ts).
     `${ROOT_SANDBOX_ENV}; ` +
     customEnvPrefix +
