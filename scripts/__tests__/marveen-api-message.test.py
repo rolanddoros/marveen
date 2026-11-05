@@ -278,6 +278,15 @@ def main():
         rc, out, err = helper(['--help'])
         check('--help prints every code of the table', rc == 0 and all(
             ('  %d  %s' % (c, text)) in out for c, _, text in mod.EXIT_CODES), out[-600:])
+        # The template teaches the codes in prose until C1 generates that block from EXIT_CODES (Johnny, Kevin 11694):
+        # its list must name exactly the table's codes, in order, so the two cannot drift.
+        tpl = read(os.path.join(ROOT, 'templates', 'CLAUDE.md.template'))
+        start = tpl.find('A kilépési kód:')
+        para = tpl[start:tpl.find('\n\n', start)] if start >= 0 else ''
+        import re as _re0
+        listed = [int(m.group(1)) for m in _re0.finditer(r'(?:^|[;:]\s)(\d) =', ' '.join(para.split()))]
+        check('the template\'s exit-code list names exactly the EXIT_CODES codes, in order',
+              listed == [c for c, _, _ in mod.EXIT_CODES], (listed, para[:200]))
         src = read(os.path.join(ROOT, 'scripts', 'lib', 'marveen_api.py'))
         import re as _re
         literal = [m.group(0) for m in _re.finditer(r'(?:return|sys\.exit\()\s*[0-9]+\b', src)]

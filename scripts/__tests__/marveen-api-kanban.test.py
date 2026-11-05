@@ -10,9 +10,9 @@ recipe sources name only the helper. The one curl recipe with a token header lef
 the schedule creation: the helper deliberately has no schedule verb (P13), so it cannot become a way
 around the self-pace gate. P14-P16 read the recipe source text; they do not measure a runtime argv.
 
-The message verb is a named exception: marveen-api.sh hands it to
-scripts/agent-msg.sh, which still puts the token on curl's argv. P18 pins that the recipes say so
-instead of claiming the opposite; fixing agent-msg.sh is a separate step.
+The message verb used to be a named exception (marveen-api.sh handed it to scripts/agent-msg.sh, and the recipes
+said it put the token on curl's argv). Since C2 PR4 it is a python verb like the others, and P18 pins that no recipe
+names that exception any more.
 
 The helper runs against a local stub API on 127.0.0.1 (MARVEEN_API_BASE) with a dummy token file
 (MARVEEN_TOKEN_FILE), so nothing reaches a real dashboard.
@@ -217,10 +217,12 @@ ok(rc == 0 and len(seen) >= 1 and seen[-1]['body'] and seen[-1]['body'].get('to'
    'P17 INVARIANS: message keeps a <system>/<agent> recipient',
    'rc=%d n=%d %s' % (rc, len(seen), (seen[-1]['body'] if seen else None, err[:120])))
 
-# --- P18: the message verb's argv token is a named exception ---------------------
-# scripts/agent-msg.sh is out of this change and still puts the token on curl's argv. A recipe must not
-# claim the opposite for `message`: the template names the exception where it says the helper keeps
-# the token off the command line, and every federation message recipe names it next to the call.
+# --- P18: no recipe claims an argv exception for the message verb (C2 PR4) -------------
+# The recipes used to name an exception: "the message verb (agent-msg.sh) puts the token and the text on curl's argv".
+# That stopped being true with #2439 (VOICETOKENLEAK1101 round 3: the token by process substitution, the body on
+# stdin), and since C2 PR4 there is no curl at all: the send is urllib inside scripts/lib/marveen_api.py, the token is
+# on no argv and in no child's environment (src/__tests__/agent-msg-token-argv.test.ts). So the check is inverted: no
+# recipe may name that exception any more, and the template's helper claim stands for message too.
 def sentences(s):
     return re.split(r'(?<=[.!?])\s+', re.sub(r'\s+', ' ', s))
 
@@ -230,24 +232,22 @@ def names_exception(s):
 
 
 CLAIM = re.compile(r'nem kerül a\s+parancssorba|never reaches the\s+command line')
-bad_pars = [tpl.count('\n', 0, tpl.find(p)) + 1 for p in re.split(r'\n\s*\n', tpl) if CLAIM.search(p) and not names_exception(p)]
-ok(names_exception(tpl) and not bad_pars,
-   'P18a template: the message verb argv token is named where the helper claim stands',
-   'exception named=%s unqualified claim in the paragraph at lines %s' % (names_exception(tpl), bad_pars))
+ok(not names_exception(tpl) and CLAIM.search(tpl) is not None,
+   'P18a template: the helper keeps the token off the command line, message included; no argv exception is named',
+   'exception named=%s claim present=%s' % (names_exception(tpl), CLAIM.search(tpl) is not None))
 
 calls = [m.start() for m in re.finditer(r'(?:marveen-api\.sh|\$\{helper\}) message ', onb)]
-bare = []
+named = []
 for i in calls:
     fence = onb.find('\\`\\`\\`', i)
     # the window runs to the end of the paragraph after the closing fence (the note under the call)
     after = onb.find('\n\n', fence if fence >= 0 else i)
     end = onb.find('\n\n', after + 2) if after >= 0 else -1
-    if not names_exception(onb[i:end if end >= 0 else len(onb)]):
-        bare.append(onb.count('\n', 0, i) + 1)
-claims = [onb.count('\n', 0, m.start()) + 1 for m in CLAIM.finditer(onb)]
-ok(len(calls) >= 4 and not bare and not claims,
-   'P18b federation onboarding: each message recipe names the agent-msg.sh argv exception, none claims the opposite',
-   'calls=%d without the exception at lines %s, claim at lines %s' % (len(calls), bare, claims))
+    if names_exception(onb[i:end if end >= 0 else len(onb)]):
+        named.append(onb.count('\n', 0, i) + 1)
+ok(len(calls) >= 4 and not named and not names_exception(onb),
+   'P18b federation onboarding: no message recipe names an agent-msg.sh argv exception',
+   'calls=%d exception named at lines %s' % (len(calls), named))
 
 # --- P19-P20: review follow-ups -------------------------------------------------------
 # A `$`-anchored pattern with re.match lets a trailing newline through ('abcd1234\n' reached
