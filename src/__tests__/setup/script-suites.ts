@@ -50,12 +50,54 @@ export function suitesForShard(shard: number): string[] {
   return discoverScriptSuites().filter((name) => shardOf(name) === shard)
 }
 
+// What a failed suite says in its FAILURE MESSAGE, not only in the console dump (Kevin 12087/12094).
+// The dump below stays, but in a full run it lands somewhere in hundreds of KB, away from the failure
+// entry: a channels-auth-probe failure that was a real TS7016 read only "expected 1 to be +0" in the
+// JSON report, and the triage had to dig the cause out of stderr. So the message carries, by name:
+// the exit (or signal / timeout), the first DIGEST_MATCHES tsc error lines, the first DIGEST_MATCHES
+// FAIL lines, and the last DIGEST_TAIL other stderr lines (context), cut at DIGEST_MAX_BYTES.
+export const DIGEST_MATCHES = 5
+export const DIGEST_TAIL = 15
+export const DIGEST_MAX_BYTES = 3072
+const TSC_ERROR = /error TS\d+:/
+const FAIL_LINE = /^\s*FAIL\b/
+
+export function failureDigest(name: string, res: { status: number | null; signal?: NodeJS.Signals | null; error?: Error; stdout?: string | null; stderr?: string | null }): string {
+  const out = (res.stdout ?? '').split('\n')
+  const err = (res.stderr ?? '').split('\n')
+  const all = [...out, ...err].map((l) => l.trimEnd())
+  const timedOut = (res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT'
+  const head = res.status !== null ? `${name} exited ${res.status}`
+    : timedOut ? `${name} timed out after ${SUITE_TIMEOUT_MS / 1000} s`
+    : `${name} was killed by ${res.signal ?? 'an unknown signal'}`
+  const parts = [head]
+  const section = (title: string, re: RegExp) => {
+    const hits = all.filter((l) => re.test(l))
+    if (hits.length === 0) return
+    const first = hits.slice(0, DIGEST_MATCHES)
+    parts.push(`${title} (first ${first.length} of ${hits.length}):`, ...first.map((l) => `  ${l.trim()}`))
+  }
+  section('tsc errors', TSC_ERROR)
+  section('FAIL lines', FAIL_LINE)
+  // the tail is context: tsc and FAIL lines are summarised above with their count, never re-listed here
+  const tail = err.map((l) => l.trimEnd()).filter((l) => l !== '' && !TSC_ERROR.test(l) && !FAIL_LINE.test(l)).slice(-DIGEST_TAIL)
+  if (tail.length > 0) parts.push(`stderr, last ${tail.length} line(s):`, ...tail.map((l) => `  ${l}`))
+  let text = parts.join('\n')
+  if (Buffer.byteLength(text) > DIGEST_MAX_BYTES) {
+    const mark = '\n... (cut at 3 KB; the full stdout/stderr is in the console dump)'
+    const room = DIGEST_MAX_BYTES - Buffer.byteLength(mark)
+    text = Buffer.from(text).subarray(0, room).toString('utf-8').replace(/\uFFFD+$/, '') + mark
+  }
+  return text
+}
+
 // Runs one suite. The case function gets the test context: ctx.skip() makes the outcome a SKIPPED test
 // that the reporter counts and shows. An early `return` from an `it` is counted as a pass, which is the
 // silent skip this branch exists to prevent (pinned by script-tests-runner-skip.test.ts).
-export function runScriptSuite(name: string, ctx: { skip: (note?: string) => void }): void {
+// `dir` is for the runner's own tests (a throwaway suite); the shards always use SCRIPT_TESTS_DIR.
+export function runScriptSuite(name: string, ctx: { skip: (note?: string) => void }, dir: string = SCRIPT_TESTS_DIR): void {
   const runner = name.endsWith('.py') ? 'python3' : 'bash'
-  const res = spawnSync(runner, [join(SCRIPT_TESTS_DIR, name)], {
+  const res = spawnSync(runner, [join(dir, name)], {
     encoding: 'utf-8',
     timeout: SUITE_TIMEOUT_MS,
     cwd: ROOT,
@@ -78,5 +120,5 @@ export function runScriptSuite(name: string, ctx: { skip: (note?: string) => voi
     console.error(`--- ${name} stdout ---\n${res.stdout ?? ''}`)
     console.error(`--- ${name} stderr ---\n${res.stderr ?? ''}`)
   }
-  expect(res.status).toBe(0)
+  expect(res.status, failureDigest(name, res)).toBe(0)
 }
