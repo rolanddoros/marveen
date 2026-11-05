@@ -136,6 +136,20 @@ def main():
               and (why is None or why in refused), (base, refused))
         check('  ...the refusal does not show the secret part', secret not in (refused or ''), refused)
 
+    # U1 (Ron 11906): an '@' OUTSIDE the netloc. The cases above with u:pw/x@host stop at "not a valid URL" (the
+    # password parses as a bad port), so they never reach shown()'s second branch; these parse, and do.
+    root = tempfile.mkdtemp(prefix='bot-token-gate-root-')
+    for value in ('http://127.0.0.1/%s@x' % secret, 'http://127.0.0.1?k=%s@x' % secret,
+                  'http://127.0.0.1#%s@x' % secret, 'https://api.telegram.org/%s@x' % secret):
+        base, refused = tab(value)
+        check('U1 telegram: %r refused, "(not shown: it contains @)", no secret' % value,
+              base is None and '(not shown: it contains @)' in (refused or '') and secret not in (refused or ''),
+              refused)
+        refused = gate.check_env(root, {'MARVEEN_API_BASE': value})
+        check('U1 dashboard: %r refused, "(not shown: it contains @)", no secret' % value,
+              refused is not None and '(not shown: it contains @)' in refused and secret not in refused, refused)
+    shutil.rmtree(root, ignore_errors=True)
+
     # --- the five senders --------------------------------------------------------------------------------------------
     local, local_api, local_reqs = make_stub('127.0.0.1')
     other, other_api, other_reqs = make_stub('127.0.0.2')
