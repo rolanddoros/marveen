@@ -95,8 +95,7 @@ Ez a rendszer össze van kötve más, azonos keretrendszerű példányokkal. A t
 bash scripts/marveen-api.sh message ${id.mainAgentId} <rendszer>/<ügynök> uzenet.txt
 \`\`\`
 
-(Az \`uzenet.txt\` az üzenet szövege: előbb írd meg a Write eszközzel. Kivétel: a \`message\`
-(\`agent-msg.sh\`) a tokent és a szöveget argv-ben adja a curlnek.)
+(Az \`uzenet.txt\` az üzenet szövege: előbb írd meg a Write eszközzel.)
 
 FONTOS kivétel az inter-agent szabályok alól: a \`/\`-t tartalmazó címekre NEM
 vonatkozik a "csak futó tmux-os ügynök" és a "/api/agents-lista" szabály — a
@@ -141,8 +140,7 @@ as \`<system>/<agent>\` through the USUAL message API — for example:
 bash scripts/marveen-api.sh message ${id.mainAgentId} <system>/<agent> message.txt
 \`\`\`
 
-(\`message.txt\` is the message text: write it with your file tool first. Exception:
-\`message\` (\`agent-msg.sh\`) puts the token and the text on curl's argv.)
+(\`message.txt\` is the message text: write it with your file tool first.)
 
 IMPORTANT exception to the inter-agent rules: addresses containing \`/\` are
 NOT subject to the "only running tmux agents" and "/api/agents list" rules —
@@ -214,8 +212,7 @@ tmux-os ügynök / a Főnök" szabály alól:
 bash ${helper} message <sajat-neved> <rendszer>/<ügynök> uzenet.txt
 \`\`\`
 
-(Az \`uzenet.txt\` az üzenet szövege: előbb írd meg a Write eszközzel. Kivétel: a \`message\`
-(\`agent-msg.sh\`) a tokent és a szöveget argv-ben adja a curlnek.)
+(Az \`uzenet.txt\` az üzenet szövege: előbb írd meg a Write eszközzel.)
 
 - Egy-ugrás: föderációból jött feladatot NE delegálj tovább másik társnak.
 - Ne küldj tartalom nélküli nyugtázást ("köszi", "ok") a hídon; egy feladatra
@@ -240,8 +237,7 @@ agents / the boss" rule:
 bash ${helper} message <your-own-id> <system>/<agent> message.txt
 \`\`\`
 
-(\`message.txt\` is the message text: write it with your file tool first. Exception:
-\`message\` (\`agent-msg.sh\`) puts the token and the text on curl's argv.)
+(\`message.txt\` is the message text: write it with your file tool first.)
 
 - One hop: do NOT re-delegate a federated task to another partner system.
 - Do not send content-free acknowledgements ("thanks", "ok") over the bridge;

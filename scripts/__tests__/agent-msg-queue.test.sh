@@ -24,17 +24,18 @@ trap 'rm -rf "$SANDBOX"' EXIT
 BIN="$SANDBOX/bin"; mkdir -p "$BIN"
 printf 'test-token\n' > "$SANDBOX/token"
 
-# curl stub: nothing leaves the machine; the response body comes from STUB_JSON.
-cat > "$BIN/curl" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n200' "${STUB_JSON:-}"
-STUB
-chmod +x "$BIN/curl"
-# No sleeping between retries in the malformed-response case.
-printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/sleep"; chmod +x "$BIN/sleep"
+# A stub API on 127.0.0.1 (C2 PR4: the send is python now, not curl): nothing leaves the machine, and each
+# answer is the reply file as send() writes it.
+python3 "$HERE/lib/msg-stub-server.py" "$SANDBOX/port" "$SANDBOX/calls.txt" "$SANDBOX/reply.json" &
+SRV=$!
+trap 'kill "$SRV" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
+for _ in $(seq 50); do [ -s "$SANDBOX/port" ] && break; sleep 0.1; done
+[ -s "$SANDBOX/port" ] || { echo "FATAL: the stub API did not start" >&2; exit 2; }
+API="http://127.0.0.1:$(cat "$SANDBOX/port")"
 
 send() {  # send <json> [warn_at]
-  OUT="$(env PATH="$BIN:$PATH" STUB_JSON="$1" MARVEEN_TOKEN_FILE="$SANDBOX/token" \
+  printf '%s' "$1" > "$SANDBOX/reply.json"
+  OUT="$(env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" MARVEEN_TOKEN_FILE="$SANDBOX/token" \
              ${2:+MARVEEN_QUEUE_WARN_AT="$2"} \
              /bin/bash "$HELPER" igor hex "tiszta szoveg" 2>"$SANDBOX/err.txt")"
   RC=$?
@@ -96,8 +97,11 @@ ok "queued without queue: plain OK id, queued suffix, rc 0" \
 ok "  ...and the QUEUED note is on stderr" \
    "$(printf '%s' "$ERR" | grep -q '^QUEUED id=12  NOTE: ' && echo 0 || echo 1)" "err: $ERR"
 
+: > "$SANDBOX/calls.txt"
 send 'not json'
 ok "malformed response is still a FAIL (the id check drives it)" "$([ "$RC" = "1" ] && echo 0 || echo 1)" "rc=$RC out='$OUT'"
+TRIES="$(wc -l < "$SANDBOX/calls.txt" | tr -d ' ')"
+ok "  ...after three tries, not one" "$([ "$TRIES" = "3" ] && echo 0 || echo 1)" "tries=$TRIES"
 
 echo "--- $((N-FAILS))/$N passed"
 [ "$FAILS" = "0" ]

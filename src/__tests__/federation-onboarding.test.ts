@@ -53,7 +53,7 @@ describe('renderFederationBlock', () => {
     expect(block).toContain('`teodor` (https://teodor.example)')
     expect(block).toContain('párosítás folyamatban') // unpaired peer marked
     expect(block).toContain('NEM')                    // explicit exception to the tmux/agents-list rule
-    expect(block).toContain('marveen-api.sh message')  // the recipe goes through the helper (the message verb's agent-msg.sh argv exception is named)
+    expect(block).toContain('marveen-api.sh message')  // the recipe goes through the helper
     expect(block).toContain('SAJÁT csatornádon')      // binary-results rule
   })
 

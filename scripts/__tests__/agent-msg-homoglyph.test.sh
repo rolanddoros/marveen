@@ -34,18 +34,15 @@ trap 'rm -rf "$SANDBOX"' EXIT
 BIN="$SANDBOX/bin"; mkdir -p "$BIN"
 printf 'test-token\n' > "$SANDBOX/token"
 
-# curl stub: nothing leaves the machine, and the call is RECORDED -- that record
-# is what turns "was refused" into a measurable claim instead of an absence.
-cat > "$BIN/curl" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$@" >> "${CURL_CALLS:-/dev/null}"
-# VOICETOKENLEAK1101 round 3: the JSON body comes on stdin (--data-binary @-), not on the argv: record it too.
-for a in "$@"; do
-  if [ "$a" = "@-" ]; then cat >> "${CURL_CALLS:-/dev/null}"; printf '\n' >> "${CURL_CALLS:-/dev/null}"; break; fi
-done
-printf '{"id":4242}\n200'
-STUB
-chmod +x "$BIN/curl"
+# A stub API on 127.0.0.1: nothing leaves the machine, and each request is RECORDED -- that record is what turns
+# "was refused" into a measurable claim instead of an absence. (C2 PR4: the send is python now, not curl, so the
+# record is the server's, one request body per line.)
+python3 "$HERE/lib/msg-stub-server.py" "$SANDBOX/port" "$SANDBOX/calls.txt" "$SANDBOX/no-reply-file" &
+SRV=$!
+trap 'kill "$SRV" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
+for _ in $(seq 50); do [ -s "$SANDBOX/port" ] && break; sleep 0.1; done
+[ -s "$SANDBOX/port" ] || { echo "FATAL: the stub API did not start" >&2; exit 2; }
+API="http://127.0.0.1:$(cat "$SANDBOX/port")"
 for t in python3 sed tail cat printf date mktemp rm; do
   p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$BIN/$t"
 done
@@ -53,7 +50,7 @@ done
 CY="$(python3 -c 'print(chr(0x43E))')"   # CYRILLIC SMALL LETTER O
 send() {  # send <content-or-dash> [extra env assignments via ENVX]
   : > "$SANDBOX/calls.txt"
-  OUT="$(env PATH="$BIN:$PATH" CURL_CALLS="$SANDBOX/calls.txt" \
+  OUT="$(env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" \
              MARVEEN_TOKEN_FILE="$SANDBOX/token" ${ENVX:-} \
              /bin/bash "$HELPER" igor hex "$1" 2>"$SANDBOX/err.txt")"
   RC=$?
@@ -64,13 +61,13 @@ send() {  # send <content-or-dash> [extra env assignments via ENVX]
 # POSITIVE CONTROL: clean text must still go out. A gate that refuses
 # everything would pass every "was not sent" assertion below.
 ENVX= send "tiszta magyar szoveg, arvizturo tukorfurogep"
-ok "clean text is still sent" "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED"
+ok "clean text is still sent" "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED"
 ok "  ...and the helper reports the id" "$(printf '%s' "$OUT" | grep -q 'id=4242' && echo 0 || echo 1)" "out: $OUT"
 
 # THE ASSERTION THAT FAILS WITHOUT THE GATE.
 ENVX= send "szennyezett sz${CY}veg egy lathatatlan betuvel"
-ok "contaminated text is REFUSED" "$([ "$RC" = "3" ] && echo 0 || echo 1)" "rc=$RC (expected 3)"
-ok "  ...and NOTHING was sent" "$([ "$CALLED" = "no" ] && echo 0 || echo 1)" "curl was called anyway"
+ok "contaminated text is REFUSED" "$([ "$RC" = "5" ] && echo 0 || echo 1)" "rc=$RC (expected 5)"
+ok "  ...and NOTHING was sent" "$([ "$CALLED" = "no" ] && echo 0 || echo 1)" "a request reached the API anyway"
 ok "  ...and the refusal names the letter" "$(printf '%s' "$ERR" | grep -qi 'CYRILLIC' && echo 0 || echo 1)" "stderr: $ERR"
 # The message must steer to the right fix, or the next person reaches for the
 # override and the gate ends up switched off.
@@ -86,9 +83,9 @@ ok "  ...and the report masks the letter instead of pasting it" \
 
 # STDIN form takes the same route -- it is the form used for long messages.
 : > "$SANDBOX/calls.txt"
-OUT="$(printf 'stdin sz%sveg' "$CY" | env PATH="$BIN:$PATH" CURL_CALLS="$SANDBOX/calls.txt" \
+OUT="$(printf 'stdin sz%sveg' "$CY" | env PATH="$BIN:$PATH" MARVEEN_API_BASE="$API" \
         MARVEEN_TOKEN_FILE="$SANDBOX/token" /bin/bash "$HELPER" igor hex - 2>/dev/null)"
-ok "the STDIN form is gated too" "$([ "$?" = "3" ] && [ ! -s "$SANDBOX/calls.txt" ] && echo 0 || echo 1)"
+ok "the STDIN form is gated too" "$([ "$?" = "5" ] && [ ! -s "$SANDBOX/calls.txt" ] && echo 0 || echo 1)"
 
 # --- THE RULE IS THE MIXED-SCRIPT WORD, not the presence of a script --------
 # Requested in the 2026-09-24 review: this gate refused a plain Russian quote
@@ -97,14 +94,14 @@ ok "the STDIN form is gated too" "$([ "$?" = "3" ] && [ ! -s "$SANDBOX/calls.txt
 # depends on which script they happened to call.
 ENVX= send "Idezet oroszul: Идёт дождь -- ennyi"
 ok "a pure foreign-language quote is SENT (not a mixed word)" \
-   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED err: $ERR"
+   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED err: $ERR"
 ENVX= send "A kesleltetes Δ = 12 ms volt"
 ok "a standalone Greek symbol is SENT (technical notation)" \
-   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED err: $ERR"
+   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED err: $ERR"
 # ...but Greek INSIDE a Latin word is still the bug this gate exists for.
 GR="$(python3 -c 'print(chr(0x3BF))')"   # GREEK SMALL LETTER OMICRON
 ENVX= send "gorog hom${GR}glifa egy szoban"
-ok "Greek mixed INTO a Latin word is refused" "$([ "$RC" = "3" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC"
+ok "Greek mixed INTO a Latin word is refused" "$([ "$RC" = "5" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC"
 ok "  ...and the refusal names GREEK" "$(printf '%s' "$ERR" | grep -qi 'GREEK' && echo 0 || echo 1)" "stderr: $ERR"
 
 # --- UNIT AND FORMULA NOTATION IS NOT A MIXED-SCRIPT WORD -------------------
@@ -125,13 +122,13 @@ SUP2="$(python3 -c 'print(chr(0xB2))')"   # SUPERSCRIPT TWO
 SUB2="$(python3 -c 'print(chr(0x2082))')" # SUBSCRIPT TWO
 ENVX= send "a kesleltetes 40 ${MU}s volt"
 ok "the micro sign in a unit is SENT (40 us)" \
-   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED err: $ERR"
+   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED err: $ERR"
 ENVX= send "a felulet 100 m${SUP2} volt"
 ok "a superscript digit is SENT (100 m2)" \
-   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED err: $ERR"
+   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED err: $ERR"
 ENVX= send "a keplet H${SUB2}O marad"
 ok "a subscript digit is SENT (H2O)" \
-   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED err: $ERR"
+   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED err: $ERR"
 # ...and the exception must stay NARROW. "Every non-letter is neutral" would be
 # the tempting simplification, and it would let ROMAN NUMERAL ONE through --
 # a non-letter that looks exactly like a latin I. That is the homoglyph this
@@ -139,7 +136,7 @@ ok "a subscript digit is SENT (H2O)" \
 RN1="$(python3 -c 'print(chr(0x2160))')"  # ROMAN NUMERAL ONE
 ENVX= send "verz${RN1}o egy szoban"
 ok "the neutral list stays narrow: ROMAN NUMERAL ONE is still refused" \
-   "$([ "$RC" = "3" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED"
+   "$([ "$RC" = "5" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED"
 
 # --- THE TWO PATHS MUST NOT DRIFT -------------------------------------------
 # The anti-drift guarantee is not "we copied the rule carefully", it is this
@@ -193,7 +190,7 @@ ok "the send gate and the outgoing-copy hook agree on the whole corpus" "$PARITY
 # has to get the refusal, not a silently rewritten message.
 ENVX="TISZTIT=1" send "tisztitando sz${CY}veg"
 ok "TISZTIT=1 no longer cleans: the text is still REFUSED" \
-   "$([ "$RC" = "3" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC curl-called=$CALLED"
+   "$([ "$RC" = "5" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC sent=$CALLED"
 
 # --- A BROKEN CHECKER IS NOT A VERDICT ON THE TEXT --------------------------
 # Measured in the review: a checker exiting 0 with EMPTY stdout made this
@@ -224,13 +221,14 @@ sys.exit(0 if sent == 'ezt a szoveget kell elkuldeni' else 1)
 
 # A CRASHING checker must get its own message and its own exit code: "refused"
 # would send the author off to rewrite a word that may be perfectly fine.
+# (C2: the helper's one scheme, EXIT_CODES in marveen_api.py: 5 = refused, 6 = checker error, not sent.)
 cat > "$SANDBOX/crash-checker.py" <<'CC'
 import sys
 raise SystemExit(9)
 CC
 ENVX="MARVEEN_HOMOGLYPH_BIN=$SANDBOX/crash-checker.py" send "tiszta szoveg torott checkerrel"
 ok "a CRASHING checker is not reported as a refusal" \
-   "$([ "$RC" = "4" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC (expected 4) curl-called=$CALLED"
+   "$([ "$RC" = "6" ] && [ "$CALLED" = "no" ] && echo 0 || echo 1)" "rc=$RC (expected 6) sent=$CALLED"
 ok "  ...and it says the checker crashed, not that the text was refused" \
    "$(printf '%s' "$ERR" | grep -q 'CRASHED' && echo 0 || echo 1)" "stderr: $ERR"
 

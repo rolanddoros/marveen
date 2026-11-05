@@ -6,6 +6,9 @@
 // A curl stub first on PATH records the argv and the environment it was started with and the header source it got,
 // then runs the real curl, so what is checked is what a ps or a child's environment would show, and what reached a
 // capture server.
+// C2 PR4: agent-msg.sh is now a shim over scripts/lib/marveen_api.py, which sends with urllib. For it the check is
+// that no curl runs at all, and that no child (the python3 it execs, the homoglyph checker that one starts) carries
+// the token on its argv or in its environment: a python3 stub first on PATH records both, then runs the real one.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { createServer, type Server, type IncomingMessage } from 'node:http'
 import { execFile, execFileSync } from 'node:child_process'
@@ -43,6 +46,16 @@ writeFileSync(join(stubDir, 'curl'), [
   `exec "${REAL_CURL}" "\${args[@]}"`,
 ].join('\n') + '\n')
 chmodSync(join(stubDir, 'curl'), 0o755)
+const REAL_PYTHON = execFileSync('/bin/sh', ['-c', 'command -v python3'], { encoding: 'utf-8' }).trim()
+const pyArgvLog = join(dir, 'python-argv.log')
+const pyEnvLog = join(dir, 'python-env.log')
+writeFileSync(join(stubDir, 'python3'), [
+  '#!/bin/bash',
+  `printf '%s\\n' "$@" >> "${pyArgvLog}"`,
+  `env >> "${pyEnvLog}"`,
+  `exec "${REAL_PYTHON}" "$@"`,
+].join('\n') + '\n')
+chmodSync(join(stubDir, 'python3'), 0o755)
 
 interface Seen { method: string; url: string; headers: IncomingMessage['headers']; body: string }
 let seen: Seen[] = []
@@ -70,6 +83,8 @@ beforeEach(() => {
   writeFileSync(argvLog, '')
   writeFileSync(hdrLog, '')
   writeFileSync(envLog, '')
+  writeFileSync(pyArgvLog, '')
+  writeFileSync(pyEnvLog, '')
 })
 
 function run(script: string, args: string[], env: Record<string, string>): Promise<{ code: number; out: string }> {
@@ -90,8 +105,8 @@ function expectHeaderNotArgv(argv: string, env: string, headers: string): void {
   expect(argv.split('\n').some((a) => /^@\/dev\/fd\/\d+$/.test(a))).toBe(true)
 }
 
-describe('agent-msg.sh: the token and the message text are not on curl\'s argv', () => {
-  it('the server gets the token header and the body; the curl argv and env carry neither; nothing on disk', async () => {
+describe('agent-msg.sh (C2 PR4: python, no curl): the token is on no child\'s argv and in no child\'s environment', () => {
+  it('the server gets the token header and the body; no curl runs; no python child carries the token; nothing on disk', async () => {
     const tmp = mkdtempSync(join(dir, 'tmp-'))
     const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', CONTENT], {
       MARVEEN_API_BASE: `http://127.0.0.1:${port()}`, MARVEEN_TOKEN_FILE: tokenFile, TMPDIR: tmp,
@@ -100,24 +115,29 @@ describe('agent-msg.sh: the token and the message text are not on curl\'s argv',
     expect(seen).toHaveLength(1)
     expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
     expect(JSON.parse(seen[0].body)).toMatchObject({ from: 'dani', to: 'samu', content: CONTENT })
-    const argv = readFileSync(argvLog, 'utf-8')
-    expect(argv).toContain('--data-binary') // not vacuous: the stub really ran
-    expect(argv).not.toContain(CONTENT)
-    expectHeaderNotArgv(argv, readFileSync(envLog, 'utf-8'), readFileSync(hdrLog, 'utf-8'))
+    expect(readFileSync(argvLog, 'utf-8')).toBe('') // no curl at all
+    const pyArgv = readFileSync(pyArgvLog, 'utf-8')
+    expect(pyArgv).toContain('--agent-msg') // not vacuous: the shim's python3 ran through the stub
+    // the homoglyph checker is a python3 child too, and it got the text on stdin, not on its argv
+    expect(pyArgv).toContain('homoglyph.py')
+    expect(pyArgv).not.toContain(TOKEN)
+    expect(pyArgv).not.toContain('Bearer')
+    expect(readFileSync(pyEnvLog, 'utf-8')).not.toContain(TOKEN)
     expect(readdirSync(tmp)).toEqual([])
   })
 
-  // Dani 65583: an exported TOKEN in the caller's environment kept its export attribute through the plain assignment,
-  // so curl's environment carried the dashboard token.
-  it('a TOKEN the caller exported does not carry the dashboard token into curl\'s environment', async () => {
+  // Dani 65583: an exported TOKEN in the caller's environment must not become a way for the dashboard token into a
+  // child's environment. The caller's own value may pass through (it is the caller's), the dashboard token never.
+  it('a TOKEN the caller exported does not carry the dashboard token into any child\'s environment', async () => {
     const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', 'x'], {
       MARVEEN_API_BASE: `http://127.0.0.1:${port()}`, MARVEEN_TOKEN_FILE: tokenFile, TOKEN: 'ambient-foreign-value',
     })
     expect(r.code, r.out).toBe(0)
     expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
-    const env = readFileSync(envLog, 'utf-8')
+    const env = readFileSync(pyEnvLog, 'utf-8')
+    expect(env).toContain('ambient-foreign-value') // not vacuous: the children's environment was recorded
     expect(env).not.toContain(TOKEN)
-    expect(env).not.toMatch(/^TOKEN=/m)
+    expect(env.split('\n').filter((l) => l.startsWith('TOKEN=')).every((l) => l === 'TOKEN=ambient-foreign-value')).toBe(true)
   })
 
   it('unchanged: the exit code says what happened (an answer with no message id is a failure, not "sent")', async () => {
@@ -131,7 +151,7 @@ describe('agent-msg.sh: the token and the message text are not on curl\'s argv',
     expect(seen.length).toBeGreaterThan(before)
   })
 
-  it('an empty token file stops before curl: nothing is sent, no empty Bearer', async () => {
+  it('an empty token file stops before anything is sent: no request, no empty Bearer', async () => {
     const empty = join(mkdtempSync(join(dir, 'e-')), '.dashboard-token')
     writeFileSync(empty, '\n')
     const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', 'x'], {
