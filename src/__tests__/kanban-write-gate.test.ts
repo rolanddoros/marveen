@@ -16,6 +16,7 @@ import {
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID } from '../config.js'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -109,6 +110,8 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
       'bash scripts/marveen-api.sh kanban-claim abcd1234 heartbeat',
       'bash scripts/marveen-api.sh kanban-release abcd1234 heartbeat',
       'bash scripts/marveen-api.sh kanban-comment abcd1234 heartbeat /tmp/c.txt',
+      // C2 PR1: kanban-assign (a PUT of the assignee) passed the gate until it was added to the verb list
+      'bash scripts/marveen-api.sh kanban-assign abcd1234 tom --actor heartbeat',
     ]) denied(command)
   })
   it('denies the other spellings of the same call', () => {
@@ -128,6 +131,7 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
       // the helper run straight from a variable: a parameter expansion is a runner, too
       'H=scripts/marveen-api.sh; "$H" kanban-move abcd1234 done',
       'H=scripts/marveen-api.sh; ${H} kanban-claim abcd1234 heartbeat',
+      'H=scripts/marveen-api.sh; bash "$H" kanban-assign abcd1234 tom',
       'P=scripts/lib/marveen_api.py; python3.11 "$P" kanban-create heartbeat high /tmp/t.txt',
       // a backslash-newline is joined by the shell before it splits words
       'bash scripts/marveen-api.sh kanban-mo\\\nve abcd1234 done',
@@ -178,6 +182,65 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
     expect({ status: c.status, decision: JSON.parse(c.stdout).hookSpecificOutput.permissionDecision }).toEqual({ status: 0, decision: 'deny' })
     const b = run('{not json')
     expect({ status: b.status, stdout: b.stdout }).toEqual({ status: 0, stdout: '' })
+  })
+})
+
+/**
+ * C2 PR1 (fork-audit C1-C2-design.md, risk 3): kanban-assign was a write verb of the helper that the gate's
+ * verb list did not name, so the heartbeat worker could reassign a card. The verb list now has a source it is
+ * held to: the helper's own USAGE text. Every kanban verb USAGE names is a write unless it is on the explicit
+ * read list below, so a new verb fails here until it is either gated or declared a read -- the fail-closed
+ * direction. The test reads USAGE, never the gate's regex, so it does not measure the gate against itself.
+ */
+describe('kanban-write-gate parity with the helper USAGE (C2 PR1)', () => {
+  const HELPER = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'lib', 'marveen_api.py')
+  /** The helper's kanban verbs that only read the board; every other kanban verb is a write. */
+  const KANBAN_READ_VERBS = ['kanban-list', 'kanban-card']
+
+  /** The kanban verbs a USAGE text names, one per usage line, in its order. */
+  function usageKanbanVerbs(source: string): string[] {
+    const usage = /^USAGE = """([\s\S]*?)"""/m.exec(source)?.[1]
+    if (usage === undefined) throw new Error('no USAGE = """...""" block in marveen_api.py')
+    return [...usage.matchAll(/^\s+(kanban-[a-z][a-z-]*)(?=\s|$)/gm)].map((match) => match[1] as string)
+  }
+
+  /** The write verbs a call through the helper (direct, and through a path variable) would get past the gate. */
+  function ungated(verbs: readonly string[]): string[] {
+    return verbs.filter(
+      (verb) =>
+        !bash(`bash scripts/marveen-api.sh ${verb} abcd1234 x`).deny ||
+        !bash(`H=scripts/marveen-api.sh; bash "$H" ${verb} abcd1234 x`).deny,
+    )
+  }
+
+  const verbs = usageKanbanVerbs(readFileSync(HELPER, 'utf-8'))
+  const writes = verbs.filter((verb) => !KANBAN_READ_VERBS.includes(verb))
+
+  it('reads the write verbs from USAGE: at least the six known ones, kanban-assign among them', () => {
+    // The blind-spot guard: a USAGE that stopped parsing would leave nothing to check and pass empty.
+    expect(writes.length).toBeGreaterThanOrEqual(6)
+    expect(writes).toEqual(
+      expect.arrayContaining(['kanban-create', 'kanban-move', 'kanban-claim', 'kanban-release', 'kanban-comment', 'kanban-assign']),
+    )
+    // Every read verb on the list is still a verb of the helper, so the list cannot go stale and hide one.
+    expect(verbs).toEqual(expect.arrayContaining(KANBAN_READ_VERBS))
+  })
+
+  it('denies every write verb USAGE names', () => {
+    expect(ungated(writes)).toEqual([])
+  })
+
+  it('allows the read verbs', () => {
+    for (const verb of KANBAN_READ_VERBS) {
+      expect({ verb, deny: bash(`bash scripts/marveen-api.sh ${verb}`).deny }).toEqual({ verb, deny: false })
+    }
+  })
+
+  it('would catch a new write verb the gate does not name', () => {
+    // The check itself can fail: a verb added to USAGE and not to the gate is reported by name.
+    const added = usageKanbanVerbs('USAGE = """usage:\n  kanban-list\n  kanban-frobnicate <card-id>\n"""')
+    expect(added).toEqual(['kanban-list', 'kanban-frobnicate'])
+    expect(ungated(added.filter((verb) => !KANBAN_READ_VERBS.includes(verb)))).toEqual(['kanban-frobnicate'])
   })
 })
 
