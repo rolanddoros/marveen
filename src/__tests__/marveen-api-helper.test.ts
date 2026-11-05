@@ -145,6 +145,7 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen[0].method).toBe('PUT')
     expect(seen[0].url).toBe('/api/memories/7')
     expect(JSON.parse(seen[0].body)).toEqual({ content: 'új', updated_by: 'dani' })
+    reply = { status: 200, body: '[]' } // a listing answers a list (C2 PR3: memory-list reads it compactly)
     expect((await run(['memory-list', 'dani', 'hot'])).code).toBe(0)
     expect(seen[1].method).toBe('GET')
     expect(seen[1].url).toBe('/api/memories?agent=dani&category=hot&limit=40')
@@ -482,6 +483,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     '        "kanban-list": [], "kanban-card": ["c-1"], "schedules-list": [], "kanban-create": ["dani", "normal", f],',
     '        "kanban-move": ["c-1", "done"], "kanban-claim": ["c-1", "dani"], "kanban-release": ["c-1", "dani"],',
     '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "agents-list": [],',
+    '        "kanban-archive": ["c-1"],',
     '    }',
     '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',
     '    built = [[v] + list(m.build_request(v, s[v])[:2]) for v in verbs if v != "message"]',
@@ -556,9 +558,10 @@ describe('marveen-api.sh: schedules are read only', () => {
       expect(m.code, `message ${base}`).toBe(2)
     }
     expect(seen).toHaveLength(0)
-    // the origin itself, with or without a trailing slash, still works
+    // the origin itself, with or without a trailing slash, still works (--json: the plain GET /api/kanban, and the
+    // stub's {"ok":true} is printed as it came instead of being read as a board, C2 PR2)
     for (const base of [origin, `${origin}/`]) {
-      expect((await run(['kanban-list'], { MARVEEN_API_BASE: base })).code, base).toBe(0)
+      expect((await run(['kanban-list', '--json'], { MARVEEN_API_BASE: base })).code, base).toBe(0)
     }
     expect(seen.map((s) => s.url)).toEqual(['/api/kanban', '/api/kanban'])
   })
@@ -569,5 +572,84 @@ describe('marveen-api.sh: schedules are read only', () => {
       expect(r.stdout, base).toMatch(/only reads schedules/)
     }
     expect((await py(['guard-base', 'http://127.0.0.1:1', '/api/kanban/c-1/comments'])).stdout.trim()).toBe('ALLOWED')
+  })
+})
+
+// C2 PR3: memory-search answers compactly. The X-Memory-Search line stays first (#1374); then one line per hit. The
+// request is the same in every form; --json prints today's output byte for byte. TZ=UTC0 pins the dates.
+describe('marveen-api.sh memory-search: the compact answer (C2 PR3)', () => {
+  const LABEL = 'strict=false; relaxed=false; hits=2'
+  const ROWS = [
+    { id: 7, category: 'warm', created_at: 1700000000, updated_at: null, keywords: 'a, b', content: 'line one\n\tline two', match_kind: 'strict' },
+    { id: 8, category: 'cold', created_at: 1700000000, updated_at: 1700100000, keywords: '', content: 'x'.repeat(200), match_kind: 'strict' },
+  ]
+  const search = (extra: string[] = []) => run(['memory-search', 'dani', 'kulcs', ...extra], { TZ: 'UTC0' })
+
+  it('the label line first, then id, category, the day of the last change and the content on one line, cut at 160', async () => {
+    reply = { status: 200, body: JSON.stringify(ROWS), headers: { 'X-Memory-Search': LABEL } }
+    const r = await search()
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stdout).toBe(`X-Memory-Search: ${LABEL}\n7\twarm\t2023-11-14\tline one line two\n8\tcold\t2023-11-16\t${'x'.repeat(159)}\u2026\n`)
+  })
+
+  it('no hit: the label line, then "# 0 hits"; a missing label is still printed as MISSING', async () => {
+    reply = { status: 200, body: '[]', headers: { 'X-Memory-Search': 'strict=true; relaxed=true; hits=0' } }
+    expect((await search()).stdout).toBe('X-Memory-Search: strict=true; relaxed=true; hits=0\n# 0 hits\n')
+    reply = { status: 200, body: '[]' }
+    expect((await search()).stdout).toMatch(/^X-Memory-Search: MISSING[^\n]*\n# 0 hits\n$/)
+  })
+
+  it('--full: the keywords on the row line and the whole content under it, indented two spaces', async () => {
+    reply = { status: 200, body: JSON.stringify(ROWS), headers: { 'X-Memory-Search': LABEL } }
+    const r = await search(['--full'])
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stdout).toBe(`X-Memory-Search: ${LABEL}\n7\twarm\t2023-11-14\tkeywords: a, b\n  line one\n  \tline two\n`
+      + `8\tcold\t2023-11-16\tkeywords: (none)\n  ${'x'.repeat(200)}\n`)
+  })
+
+  it('--json: the label line and the body as they came; every form sends the same request; --full --json exits 2', async () => {
+    const body = JSON.stringify(ROWS)
+    reply = { status: 200, body, headers: { 'X-Memory-Search': LABEL } }
+    const plain = await search(['--strict'])
+    const full = await search(['--strict', '--full'])
+    const json = await search(['--strict', '--json'])
+    expect(json.code, json.stderr).toBe(0)
+    expect(json.stdout).toBe(`X-Memory-Search: ${LABEL}\n${body}\n`)
+    expect(plain.code + full.code).toBe(0)
+    expect(new Set(seen.map((s) => s.url)).size).toBe(1)
+    expect(seen).toHaveLength(3)
+    const both = await search(['--full', '--json'])
+    expect([both.code, seen.length]).toEqual([2, 3])
+  })
+
+  it('an answer that is not a list of rows: exit 1, the label line still first, --json named', async () => {
+    reply = { status: 200, body: '{"ok":true}', headers: { 'X-Memory-Search': LABEL } }
+    const r = await search()
+    expect(r.code).toBe(1)
+    expect(r.stdout).toBe(`X-Memory-Search: ${LABEL}\n`)
+    expect(r.stderr).toMatch(/could not be read.*--json/)
+  })
+
+  it('memory-list: the same compact rows (no label line), --full the same, --json the body as it came; one request each', async () => {
+    reply = { status: 200, body: JSON.stringify(ROWS) }
+    const list = (extra: string[] = []) => run(['memory-list', 'dani', 'hot', ...extra], { TZ: 'UTC0' })
+    const plain = await list()
+    expect([plain.code, plain.stdout]).toEqual([0, `7\twarm\t2023-11-14\tline one line two\n8\tcold\t2023-11-16\t${'x'.repeat(159)}…\n`])
+    const full = await list(['--full'])
+    expect(full.stdout).toBe(`7\twarm\t2023-11-14\tkeywords: a, b\n  line one\n  \tline two\n8\tcold\t2023-11-16\tkeywords: (none)\n  ${'x'.repeat(200)}\n`)
+    const json = await list(['--json'])
+    expect([json.code, json.stdout]).toEqual([0, JSON.stringify(ROWS) + '\n'])
+    expect(seen).toHaveLength(3)
+    expect(new Set(seen.map((s) => s.url))).toEqual(new Set(['/api/memories?agent=dani&category=hot&limit=40']))
+    reply = { status: 200, body: '[]' }
+    expect((await list()).stdout).toBe('# 0 hits\n')
+    expect([(await list(['--full', '--json'])).code, seen.length]).toEqual([2, 4])
+  })
+
+  it('the template says the rows are cut at the helper\'s width and points to --full (Ron, PR3)', () => {
+    const tpl = readFileSync(join(REPO, 'templates', 'CLAUDE.md.template'), 'utf-8')
+    const width = readFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), 'utf-8').match(/^SNIPPET_WIDTH = (\d+)$/m)?.[1]
+    expect(width).toBe('160')
+    expect(tpl).toContain(`a tartalom ${width} karakternél levágva): mielőtt egy sorra döntést építesz, olvasd el egészben a \`--full\` kapcsolóval`)
   })
 })

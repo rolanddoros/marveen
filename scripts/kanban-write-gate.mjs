@@ -20,7 +20,9 @@
 //   - Write-method calls to the dashboard kanban API (/api/kanban with
 //     -X POST/PUT/PATCH/DELETE or a data flag).
 //   - The write verbs of scripts/marveen-api.sh (kanban-create, -move, -claim,
-//     -release, -comment): see KANBAN_HELPER_WRITE_RX below.
+//     -release, -comment, -assign, -archive): see KANBAN_HELPER_WRITE_RX below. The list
+//     is held to the helper's USAGE by a parity test (kanban-write-gate.test.ts):
+//     a write verb added to the helper and not here fails the build.
 //
 // What must PASS (the worker's actual duties):
 //   - every kanban READ: sqlite3 SELECT, GET /api/kanban/heartbeat-summary;
@@ -64,7 +66,9 @@ const DATA_FLAG_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?|-
 // a backslash-newline joined before the split (`kanban-mo\<newline>ve`). The read verbs (kanban-list, agents-list),
 // --help and `message` (the worker's report) pass. A write hidden in a function, an alias or a variable verb stays
 // out of reach: the gate catches the worker's mistake, not a determined detour.
-const KANBAN_HELPER_VERB = String.raw`(?:^|\s)kanban-(?:create|move|claim|release|comment)(?=$|[\s;|&)])`
+// `assign` was missing until C2 PR1: kanban-assign (a PUT of the card's assignee) passed the worker's gate.
+// `archive` came with the verb in C2 PR2.
+const KANBAN_HELPER_VERB = String.raw`(?:^|\s)kanban-(?:create|move|claim|release|comment|assign|archive)(?=$|[\s;|&)])`
 const KANBAN_HELPER_WRITE_RX = new RegExp(String.raw`marveen[-_]api\.(?:sh|py)\b.*?` + KANBAN_HELPER_VERB)
 const KANBAN_RUNNER_WRITE_RX = new RegExp(
   String.raw`(?:^|\s)(?:(?:\S*/)?(?:bash|sh|dash|zsh|python3?)|\$\{?[A-Za-z_]\w*\}?)(?=\s).*?` + KANBAN_HELPER_VERB)

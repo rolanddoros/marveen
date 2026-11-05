@@ -36,7 +36,7 @@ TEMPLATE = os.path.join(ROOT, 'templates', 'CLAUDE.md.template')
 ONBOARDING = os.path.join(ROOT, 'src', 'web', 'federation', 'onboarding.ts')
 TOKEN = 'tok' + 'e' * 40 + '1234'
 SEEN = []
-REPLY = {'status': 200, 'body': '{"ok":true}'}
+REPLY = {'status': 200, 'body': '{"ok":true}', 'queue': []}
 FAILS = []
 
 
@@ -52,7 +52,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(n) if n else b''
         SEEN.append({'method': self.command, 'path': self.path, 'headers': dict(self.headers),
                      'body': json.loads(raw) if raw else None})
-        out = REPLY['body'].encode()
+        # C2 PR2: a verb that sends two requests (kanban-card --full) gets the queued bodies in order
+        out = (REPLY['queue'].pop(0) if REPLY['queue'] else REPLY['body']).encode()
         self.send_response(REPLY['status'])
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(out)))
@@ -80,11 +81,12 @@ def fpath(name, content):
     return p
 
 
-def run(*args, status=200, body='{"ok":true}'):
+def run(*args, status=200, body='{"ok":true}', queue=(), env_extra=None):
     SEEN.clear()
-    REPLY['status'], REPLY['body'] = status, body
-    env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'MARVEEN_TOKEN_FILE': TOKFILE,
-           'MARVEEN_API_BASE': 'http://127.0.0.1:%d' % SRV.server_address[1]}
+    REPLY['status'], REPLY['body'], REPLY['queue'] = status, body, list(queue)
+    # TZ=UTC0: the compact list prints local times, so the expected strings below are UTC
+    env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'MARVEEN_TOKEN_FILE': TOKFILE, 'TZ': 'UTC0',
+           'MARVEEN_API_BASE': 'http://127.0.0.1:%d' % SRV.server_address[1], **(env_extra or {})}
     p = subprocess.run(['bash', HELPER, *args], env=env, capture_output=True, text=True, timeout=60)
     return p.returncode, p.stdout, p.stderr, list(SEEN)
 
@@ -99,14 +101,22 @@ def one(seen, method, path, body):
 
 
 # --- P1-P7: what each kanban verb sends -------------------------------------------------------------
-rc, out, err, seen = run('kanban-list', body='[{"id":"abcd1234"}]')
+LIST_Q = '?fields=id,status,priority,assignee,updated_at,title'
+rc, out, err, seen = run('kanban-list', body='[{"id":"abcd1234","status":"planned","priority":"normal","assignee":"dani","updated_at":0,"title":"t"}]')
+g, d = one(seen, 'GET', '/api/kanban' + LIST_Q, None)
+ok(rc == 0 and g and out == 'abcd1234\tplanned\tnormal\tdani\t01-01 00:00\tt\n',
+   'P1 kanban-list: GET /api/kanban with the six list fields, token header, one compact line per card', 'rc=%d %s out=%r %s' % (rc, d, out, err[:160]))
+RAW_BOARD = '[{"id":"abcd1234","status":"done","title":"x\\ty"}]'
+rc, out, err, seen = run('kanban-list', '--json', body=RAW_BOARD)
 g, d = one(seen, 'GET', '/api/kanban', None)
-ok(rc == 0 and g and 'abcd1234' in out, 'P1 kanban-list: GET /api/kanban, token header, body on stdout', 'rc=%d %s %s' % (rc, d, err[:160]))
+ok(rc == 0 and g and out == RAW_BOARD + '\n', 'P1a kanban-list --json: the plain GET /api/kanban, the body byte for byte (a done card too)',
+   'rc=%d %s out=%r' % (rc, d, out))
 
 # fork A6: the dispatch's first step, one card's three fields (single-card GET, ?fields=)
 rc, out, err, seen = run('kanban-card', 'abcd1234', body='{"id":"abcd1234","status":"in_progress"}')
 g, d = one(seen, 'GET', '/api/kanban/abcd1234?fields=status,title,description', None)
-ok(rc == 0 and g and 'in_progress' in out, 'P1b kanban-card: GET /api/kanban/<id>?fields=status,title,description, body on stdout', 'rc=%d %s %s' % (rc, d, err[:160]))
+ok(rc == 0 and g and out == 'status: in_progress\ntitle: \ndescription: (none)\n',
+   'P1b kanban-card: GET /api/kanban/<id>?fields=status,title,description, the three fields labelled', 'rc=%d %s out=%r %s' % (rc, d, out, err[:160]))
 rc, out, err, seen = run('kanban-card', '../x')
 ok(rc == 2 and not seen, 'P1c kanban-card: a card id that leaves the path segment is refused, nothing sent', 'rc=%d n=%d' % (rc, len(seen)))
 
@@ -143,7 +153,8 @@ ok(rc == 0 and g and '"dani"' in out, 'P7 agents-list: GET /api/agents', 'rc=%d 
 # --- P8-P12: the error branches (each with its own token) ---------------------------------------------
 rc, out, err, seen = run('kanban-move', 'abcd1234', 'done', '--expected-status', 'in_progress', status=409,
                          body='{"error":"status_conflict","current_status":"testing"}')
-ok(rc == 1 and len(seen) == 1 and 'HTTP 409' in err and 'current_status' in err, 'P8 409 on move: exit 1, the conflict body on stderr', 'rc=%d n=%d err=%s' % (rc, len(seen), err[:200]))
+ok(rc == 4 and len(seen) == 1 and 'HTTP 409' in err and 'current_status' in err and out == '',
+   'P8 409 on move: exit 4 (a conflict, C2 exit-code table), the conflict body on stderr', 'rc=%d n=%d err=%s' % (rc, len(seen), err[:200]))
 
 rc, out, err, seen = run('kanban-claim', 'abcd1234', 'dani', status=404, body='{"ok":false,"reason":"claim_lock_disabled"}')
 ok(rc == 1 and len(seen) == 1 and 'claim_lock_disabled' in err, 'P9 claim with the lock off: exit 1, the reason on stderr', 'rc=%d n=%d err=%s' % (rc, len(seen), err[:200]))
@@ -307,6 +318,179 @@ WRITE_VERBS = ['kanban-create', 'kanban-move', 'kanban-claim', 'kanban-release',
 ok('marveen-api.sh' in desc and all(v in desc for v in WRITE_VERBS),
    'P23 developer-junior profile: the description says marveen-api.sh also gives the kanban write verbs',
    'missing: %s' % [v for v in ['marveen-api.sh'] + WRITE_VERBS if v not in desc])
+
+# --- P24-P33: C2 PR2, the compact kanban answers, the list filters, kanban-card --full, kanban-archive -------------
+# Each output is pinned as a whole string (TZ=UTC0 in run()): a formatter that drops a field, a line or the
+# truncation note fails here by name.
+from urllib.parse import urlsplit, parse_qs
+
+
+def card(i, status='planned', ts=None, title=None, assignee='dani', prio='normal'):
+    return {'id': 'c%02d' % i, 'status': status, 'priority': prio, 'assignee': assignee,
+            'updated_at': 1700000000 + i * 60 if ts is None else ts, 'title': title or 'card %d' % i}
+
+
+board = [card(1, ts=1700000000), card(2, 'done', ts=1700000300),
+         card(3, 'in_progress', ts=1700000600, title='tab\there\nnew line  and   spaces', assignee=None),
+         card(4, 'waiting', ts=1700000120, title='x' * 80, prio='urgent')]
+rc, out, err, seen = run('kanban-list', body=json.dumps(board))
+want = ('c03\tin_progress\tnormal\t-\t11-14 22:23\ttab here new line and spaces\n'
+        'c04\twaiting\turgent\tdani\t11-14 22:15\t' + 'x' * 71 + '\u2026\n'
+        'c01\tplanned\tnormal\tdani\t11-14 22:13\tcard 1\n')
+ok(rc == 0 and out == want, 'P24 kanban-list: not done, newest change first, one line per card, title on one line and cut at 72, no assignee = -',
+   'rc=%d out=%r' % (rc, out))
+
+rc, out, err, seen = run('kanban-list', '--assignee', 'Sára Tüttő', '--status', 'planned,done', body=json.dumps(board))
+q = parse_qs(urlsplit(seen[0]['path']).query) if seen else {}
+ok(rc == 0 and len(seen) == 1 and urlsplit(seen[0]['path']).path == '/api/kanban'
+   and q == {'assignee': ['Sára Tüttő'], 'status': ['planned,done'], 'fields': ['id,status,priority,assignee,updated_at,title']}
+   and 'c02\tdone' in out,
+   'P25 kanban-list --assignee/--status: the server filters (assignee=, status=), and a done card asked for is shown',
+   'rc=%d seen=%r out=%r %s' % (rc, [x['path'] for x in seen], out[:120], err[:120]))
+
+rc, out, err, seen = run('kanban-list', '--mine', body='[]', env_extra={'MARVEEN_AGENT_ID': 'dani'})
+q = parse_qs(urlsplit(seen[0]['path']).query) if seen else {}
+res = [run('kanban-list', '--mine', env_extra=e) for e in ({}, {'MARVEEN_AGENT_ID': ''}, {'MARVEEN_AGENT_ID': 'Dani X'})]
+both = run('kanban-list', '--mine', '--assignee', 'tom', env_extra={'MARVEEN_AGENT_ID': 'dani'})
+ok(rc == 0 and q.get('assignee') == ['dani'] and out == '# 0 cards\n'
+   and all(r[0] == 2 and not r[3] for r in res) and 'MARVEEN_AGENT_ID is not set' in res[0][2]
+   and 'not a valid agent name' in res[2][2] and both[0] == 2 and not both[3],
+   'P26 kanban-list --mine: assignee from MARVEEN_AGENT_ID; unset, empty or malformed -> exit 2, nothing sent; '
+   'with --assignee -> exit 2; an empty answer says # 0 cards',
+   'rc=%d q=%r out=%r | %s | both=%d' % (rc, q, out, ' / '.join('rc=%d n=%d %s' % (r[0], len(r[3]), r[2][:60]) for r in res), both[0]))
+
+many = [card(i, ts=1700000000 + i) for i in range(45)] + [card(99, 'done', ts=1800000000)]
+r40 = run('kanban-list', body=json.dumps(many))
+r2 = run('kanban-list', '--limit', '2', body=json.dumps(many))
+rall = run('kanban-list', '--all', body=json.dumps(many))
+rall3 = run('kanban-list', '--all', '--limit', '3', body=json.dumps(many))
+bad = [run('kanban-list', *a) for a in (('--limit', '0'), ('--limit', 'x'), ('--limit', '5', '--json'))]
+l40, l2, lall, lall3 = (r[1].rstrip('\n').split('\n') for r in (r40, r2, rall, rall3))
+ok(len(l40) == 41 and l40[-1] == '# shown 40 of 45 (--limit <n> or --all for more)' and l40[0].startswith('c44\t')
+   and l2 == [l40[0], l40[1], '# shown 2 of 45 (--limit <n> or --all for more)']
+   and len(lall) == 46 and lall[0].startswith('c99\tdone') and not lall[-1].startswith('#')
+   and lall3[-1] == '# shown 3 of 46 (--limit <n> or --all for more)'
+   and all(b[0] == 2 and not b[3] for b in bad),
+   'P27 kanban-list limit: 40 by default with a "# shown N of M" line, --limit n, --all = done too and no limit, '
+   '--all --limit n; --limit 0 / not a number / with --json -> exit 2, nothing sent',
+   'n40=%d last=%r n2=%r nall=%d first=%r last3=%r bad=%r' % (len(l40), l40[-1], l2[-1:], len(lall), lall[0][:12], lall3[-1:], [(b[0], len(b[3])) for b in bad]))
+
+CARD = {'id': 'abcd1234', 'status': 'in_progress', 'title': 'Fix\tthe gate',
+        'description': 'first line\nstatus: done\n\n  indented\n'}
+rc, out, err, seen = run('kanban-card', 'abcd1234', body=json.dumps(CARD))
+ok(rc == 0 and out == 'status: in_progress\ntitle: Fix the gate\ndescription:\n  first line\n  status: done\n  \n    indented\n',
+   'P28 kanban-card: labelled fields, the description indented two spaces (a "status:" line in it cannot pass for the label)',
+   'rc=%d out=%r' % (rc, out))
+raw = json.dumps(CARD)
+rc, out, err, seen = run('kanban-card', 'abcd1234', '--json', body=raw)
+g, d = one(seen, 'GET', '/api/kanban/abcd1234?fields=status,title,description', None)
+ok(rc == 0 and g and out == raw + '\n', 'P28b kanban-card --json: the same request, the body byte for byte', 'rc=%d %s out=%r' % (rc, d, out))
+
+FULL = dict(CARD, description=None, test_steps='1. run it', done_evidence=None)
+comments = [{'id': i, 'card_id': 'abcd1234', 'author': 'a%d' % i, 'content': 'c%d\nmore' % i, 'created_at': 1700000000 + i * 60}
+            for i in range(7)]
+rc, out, err, seen = run('kanban-card', 'abcd1234', '--full', queue=[json.dumps(FULL), json.dumps(comments)])
+want = ('status: in_progress\ntitle: Fix the gate\ndescription: (none)\ntest_steps:\n  1. run it\ndone_evidence: (none)\n'
+        'comments: 7 (the last 5)\n'
+        + ''.join('- a%d 11-14 %s:\n  c%d\n  more\n' % (i, ['22:15', '22:16', '22:17', '22:18', '22:19'][i - 2], i) for i in range(2, 7)))
+paths = [x['path'] for x in seen]
+fj = run('kanban-card', 'abcd1234', '--full', '--json')
+ok(rc == 0 and out == want and paths == ['/api/kanban/abcd1234?fields=status,title,description,test_steps,done_evidence',
+                                         '/api/kanban/abcd1234/comments'] and fj[0] == 2 and not fj[3],
+   'P29 kanban-card --full: test_steps, done_evidence and the last 5 comments (a second GET); --full --json -> exit 2, nothing sent',
+   'rc=%d paths=%r out=%r fj=%d' % (rc, paths, out, fj[0]))
+rc, out, err, seen = run('kanban-card', 'abcd1234', '--full', status=404, body='{"error":"Kártya nem található"}')
+ok(rc == 1 and len(seen) == 1 and 'HTTP 404' in err, 'P29b kanban-card --full on a missing card: exit 1 after the first GET, no second one',
+   'rc=%d n=%d %s' % (rc, len(seen), err[:120]))
+
+w = [
+    (('kanban-create', 'dani', 'high', fpath('t3.txt', 'Uj')), '{"ok":true,"id":"k9"}', 'OK id=k9\n'),
+    (('kanban-comment', 'abcd1234', 'dani', fpath('c3.txt', 'x')),
+     '{"id":12,"card_id":"abcd1234","author":"dani","content":"x","created_at":1,"automated":0}', 'OK id=12\n'),
+    (('kanban-comment', 'abcd1234', 'dani', fpath('c4.txt', 'x')),
+     '{"id":13,"card_id":"abcd1234","author":"dani","content":"x","created_at":1,"archived":true}', 'OK id=13\narchived: true\n'),
+    (('kanban-move', 'abcd1234', 'done', '--actor', 'dani'),
+     '{"ok":false,"status":"testing","evidence_required":true,"note":"Move it to done again with evidence."}',
+     'NOT OK\nstatus: testing\nevidence_required: true\nnote: Move it to done again with evidence.\n'),
+    (('kanban-claim', 'abcd1234', 'dani'), '{"id":"abcd1234","ok":true,"renewed":false,"took_over_from":null}',
+     'OK\nid: abcd1234\nrenewed: false\ntook_over_from: null\n'),
+    (('kanban-assign', 'abcd1234', 'tom'), '{"ok":true}', 'OK\n'),
+]
+# the held move's exit code is the HELD_WRITE_EXIT constant (P34), read from the helper itself: it comes from the one
+# exit-code table (EXIT['not_applied'], 7); every other write exits 0
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location('marveen_api_under_test', API_PY)
+_api = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_api)
+held_exit = _api.HELD_WRITE_EXIT
+ok(held_exit == _api.EXIT['not_applied'] == 7 and (7, 'not_applied') in [(c, n) for c, n, _ in _api.EXIT_CODES],
+   'P34a HELD_WRITE_EXIT is EXIT_CODES 7 (not_applied), not a number of its own', repr(held_exit))
+res = [(run(*a, body=b), want, held_exit if i == 3 else 0) for i, (a, b, want) in enumerate(w)]
+held_json = run('kanban-move', 'abcd1234', 'done', '--json', body=w[3][1])
+ok(all(r[0] == code and r[1] == want for r, want, code in res) and held_json[0] == held_exit and held_json[1] == w[3][1] + '\n',
+   'P30 writes: OK (create/comment: OK id=<id>, the comment echo dropped), NOT OK for a held move, every other field on its '
+   'own line; --json the body as it came',
+   ' | '.join('rc=%d out=%r' % (r[0], r[1]) for r, _, _ in res) + ' | json=%r' % held_json[1])
+
+rc, out, err, seen = run('kanban-archive', 'abcd1234')
+g, d = one(seen, 'POST', '/api/kanban/abcd1234/archive', None)
+nf = run('kanban-archive', 'abcd1234', status=404, body='{"error":"Kártya nem található"}')
+bad = [run('kanban-archive', *a) for a in (('../x',), (), ('a', 'b'))]
+ok(rc == 0 and g and out == 'OK\n' and nf[0] == 1 and 'HTTP 404' in nf[2] and all(b[0] == 2 and not b[3] for b in bad),
+   'P31 kanban-archive: POST /api/kanban/<id>/archive with no body, OK; 404 -> exit 1; a bad id or argument count -> exit 2, nothing sent',
+   'rc=%d %s out=%r nf=%d bad=%r' % (rc, d, out, nf[0], [(b[0], len(b[3])) for b in bad]))
+
+res = [run(*a, status=409, body='{"error":"held","claimed_by":"tom"}') for a in
+       (('kanban-claim', 'abcd1234', 'dani'), ('kanban-archive', 'abcd1234'), ('kanban-create', 'dani', 'low', fpath('t4.txt', 'x')))]
+ok(all(r[0] == 4 and 'HTTP 409' in r[2] and 'claimed_by' in r[2] for r in res),
+   'P32 every kanban write exits 4 on HTTP 409, the body on stderr', ' | '.join('rc=%d %s' % (r[0], r[2][:60]) for r in res))
+
+lst = run('kanban-list', body='not json')
+crd = run('kanban-card', 'abcd1234', body='[1]')
+wr = run('kanban-assign', 'abcd1234', 'tom', body='not json')
+ok(lst[0] == 1 and 'could not be read' in lst[2] and lst[1] == '' and crd[0] == 1 and 'not an object' in crd[2]
+   and wr[0] == 0 and wr[1] == 'OK\n' and 'WARN' in wr[2] and len(wr[3]) == 1,
+   'P33 an answer the compact form cannot read: a read fails (exit 1, --json named); a done write says OK and warns (no retry)',
+   'list=%d %r card=%d %r write=%d %r %r' % (lst[0], lst[2][:80], crd[0], crd[2][:60], wr[0], wr[1], wr[2][:60]))
+
+# P34: the held write's exit code is one constant (Kevin 11746: open between 7 and 1, 0 until decided). The test reads it
+# from the source, so switching the constant is the one-line change, and a held write that ignores it fails here.
+held = run('kanban-move', 'abcd1234', 'done', body='{"ok":false,"status":"testing","evidence_required":true}')
+fine = run('kanban-move', 'abcd1234', 'done', body='{"ok":true}')
+ok(held[0] == held_exit and held[1].startswith('NOT OK\n') and fine[0] == 0 and fine[1] == 'OK\n',
+   'P34 a held write (2xx, ok:false) exits HELD_WRITE_EXIT (%d now) and prints NOT OK; an applied write exits 0' % held_exit,
+   'held=%d %r fine=%d %r' % (held[0], held[1][:20], fine[0], fine[1]))
+
+# P35 (Ron 11856): --json changes stdout only, never the exit code. Each pair: the same answer, compact and --json.
+def pair(*a, status=200, body='{"ok":true}'):
+    return run(*a, status=status, body=body)[0], run(*a, '--json', status=status, body=body)[0]
+HELD_BODY = '{"ok":false,"status":"testing","evidence_required":true}'
+pairs = {
+    'held move (7)': pair('kanban-move', 'abcd1234', 'done', body=HELD_BODY),
+    'applied move (0)': pair('kanban-move', 'abcd1234', 'done'),
+    '409 move (4)': pair('kanban-move', 'abcd1234', 'done', status=409, body='{"error":"status_conflict","current_status":"done"}'),
+    '409 claim (4)': pair('kanban-claim', 'abcd1234', 'dani', status=409, body='{"error":"held","claimed_by":"tom"}'),
+    '404 claim (1)': pair('kanban-claim', 'abcd1234', 'dani', status=404, body='{"ok":false,"reason":"claim_lock_disabled"}'),
+    'list (0)': pair('kanban-list', body='[]'),
+    'card (0)': pair('kanban-card', 'abcd1234', body='{"status":"planned","title":"t","description":""}'),
+}
+want = {'held move (7)': held_exit, 'applied move (0)': 0, '409 move (4)': 4, '409 claim (4)': 4, '404 claim (1)': 1,
+        'list (0)': 0, 'card (0)': 0}
+ok(all(pairs[k] == (want[k], want[k]) for k in want),
+   'P35 --json changes stdout only: the exit code with and without it is the same (held write 7, 409 4, 404 1, reads 0)',
+   repr(pairs))
+
+# P36 (Ron 11856): the template teaches the compact kanban answers, not the old JSON array, and the exit codes PR2 set.
+TPL = open(os.path.join(ROOT, 'templates', 'CLAUDE.md.template'), encoding='utf-8').read()
+flat = ' '.join(TPL.split())
+needs = ['Kártyák listázása: kártyánként egy tabulátorral tagolt sor (id, status, priority, assignee, utolsó változás MM-DD HH:MM, title)',
+         '`# shown N of M`', '`--mine`', '`--assignee <név>`', '`--status <státusz>`', '`--all`', '`--limit <n>`',
+         '`--full`', '`kanban-archive KARTYA_ID`', 'JSON csak `--json`-nal jön',
+         'HTTP 409 (a kilépési kód 4', '409 esetén (kilépési kód 4)', '(NOT OK, kilépési kód 7)']
+missing = [n for n in needs if n not in flat]
+ok(not missing and 'JSON tömb' not in flat,
+   'P36 the template: the compact kanban-list row, its filters, kanban-card --full, kanban-archive, JSON only with --json; '
+   'a kanban 409 exits 4, a held done exits 7', 'missing=%r json_array_left=%s' % (missing, 'JSON tömb' in flat))
 
 SRV.shutdown()
 print('FAIL: %d' % len(FAILS) if FAILS else 'OK')
