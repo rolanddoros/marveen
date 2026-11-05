@@ -20,7 +20,12 @@
 
 set -u
 
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIPPED=()
+# Positive control per case (B2-1): case (h) relies on chmod 300 making the directory
+# unlistable. Root ignores modes, so there the scan succeeds and the case measures nothing.
+# Such a case is SKIPPED and named, the rest still runs, and the suite then exits 77 with a
+# "SKIP (control unmet)" line (script-tests-runner counts it), never a silent green.
+unmet() { SKIPPED+=("$1"); echo "  SKIP case: $1 -- control unmet: $2"; }
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1 -- got: $2"; }
 
@@ -189,11 +194,16 @@ echo "(h) An unreadable memory directory is a failed scan, not a clean one"
 UNMEM="$TMP/unreadable"; mkdir -p "$UNMEM"
 echo "- [x](x.md)" > "$UNMEM/MEMORY.md"
 chmod 300 "$UNMEM"
-RC=0
-RES="$(python3 "$CHECK" "$UNMEM/MEMORY.md" 2>/dev/null)" || RC=$?
-chmod 700 "$UNMEM"
-if [ "$RC" = 2 ]; then pass "the checker exits 2 (could not run)"; else fail "the checker exits 2" "rc=$RC res=$RES"; fi
-if [ "$(printf '%s' "$RES" | jq -r '.orphans // "nincs"')" = "nincs" ]; then pass "and it reports NO orphan number rather than 0"; else fail "no orphan number on a failed scan" "$RES"; fi
+if [ -r "$UNMEM" ]; then
+  chmod 700 "$UNMEM"
+  unmet "(h) unreadable memory directory" "chmod 300 left it listable (running as root)"
+else
+  RC=0
+  RES="$(python3 "$CHECK" "$UNMEM/MEMORY.md" 2>/dev/null)" || RC=$?
+  chmod 700 "$UNMEM"
+  if [ "$RC" = 2 ]; then pass "the checker exits 2 (could not run)"; else fail "the checker exits 2" "rc=$RC res=$RES"; fi
+  if [ "$(printf '%s' "$RES" | jq -r '.orphans // "nincs"')" = "nincs" ]; then pass "and it reports NO orphan number rather than 0"; else fail "no orphan number on a failed scan" "$RES"; fi
+fi
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -316,5 +326,10 @@ if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gat
 echo ""
 
 echo "======================================="
-echo "PASS: $PASS   FAIL: $FAIL"
+echo "PASS: $PASS   FAIL: $FAIL   SKIPPED: ${#SKIPPED[@]}"
 [ "$FAIL" -eq 0 ] || exit 1
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+  echo "SKIP (control unmet): ${#SKIPPED[@]} case(s) could not be measured here (chmod does not deny root): ${SKIPPED[*]}"
+  exit 77
+fi
+exit 0

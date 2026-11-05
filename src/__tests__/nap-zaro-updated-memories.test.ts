@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn } from 'node:child_process'
-import { createServer, type Server } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { closeAll, listenOnLocalhost, localhostAddresses } from './setup/localhost-bind.js'
 
 // NAPZAROFRISS918: the nap-zaro SKILL.md's step-2 Python block (heredoc `<<'PY'`)
 // now reports updated memories separately from new ones (spec 17-18. döntés). This
@@ -49,12 +50,12 @@ function runScript(port: number, since: number): Promise<{ status: number | null
 }
 
 describe('nap-zaro SKILL.md step-2: uj + frissitett emlekek (NAPZAROFRISS918)', () => {
-  let server: Server
+  let servers: Server[] = []
   let port: number
 
   beforeAll(async () => {
     const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8'))
-    server = createServer((req, res) => {
+    const handler = (req: IncomingMessage, res: ServerResponse): void => {
       res.setHeader('Content-Type', 'application/json')
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (url.pathname === '/api/memories') {
@@ -67,16 +68,16 @@ describe('nap-zaro SKILL.md step-2: uj + frissitett emlekek (NAPZAROFRISS918)', 
         res.statusCode = 404
         res.end('{}')
       }
-    })
-    // the shipped script connects to "localhost", which this environment resolves to
-    // ::1 first (IPv6) -- bind there explicitly instead of 127.0.0.1, or the python
-    // process tries the wrong address family first.
-    await new Promise<void>((resolve) => server.listen(0, '::1', resolve))
-    port = (server.address() as { port: number }).port
+    }
+    // the shipped script connects to "localhost", and which address that is depends on the
+    // host: ::1 first on one, 127.0.0.1 only on another (this one), no ::1 at all on an
+    // IPv4-only host. Binding a single family made this suite red wherever it guessed wrong
+    // (B2-1), so the stub listens on every address localhost resolves to, on one port.
+    ;({ port, servers } = await listenOnLocalhost(() => createServer(handler)))
   })
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await closeAll(servers)
   })
 
   it('lists new and updated memories separately, no duplication, tail shown for updated', async () => {
@@ -124,5 +125,59 @@ describe('nap-zaro SKILL.md step-2: uj + frissitett emlekek (NAPZAROFRISS918)', 
     const { status, stdout } = await runScript(1, 1000)
     expect(status).not.toBe(0)
     expect(stdout).not.toContain('-- uj emlekek: 0')
+  })
+})
+
+describe('localhost stub binding follows the host resolver (B2-1)', () => {
+  const fake = (...addrs: Array<[string, number]>) => async () => addrs.map(([address, family]) => ({ address, family }))
+
+  it('an IPv4-only host: binds 127.0.0.1 only, never ::1', async () => {
+    expect(await localhostAddresses(fake(['127.0.0.1', 4]))).toEqual(['127.0.0.1'])
+  })
+
+  it('a dual-stack host that answers ::1 first: binds both, IPv4 first, duplicates dropped', async () => {
+    expect(await localhostAddresses(fake(['::1', 6], ['127.0.0.1', 4], ['::1', 6]))).toEqual(['127.0.0.1', '::1'])
+  })
+
+  it('an IPv6-only answer: binds ::1', async () => {
+    expect(await localhostAddresses(fake(['::1', 6]))).toEqual(['::1'])
+  })
+
+  it('a dual-stack answer: the stub listens on BOTH addresses, on the one port (skipped where ::1 cannot bind)', async (ctx) => {
+    const probe = createServer()
+    const v6 = await new Promise<boolean>((resolve) => {
+      probe.once('error', () => resolve(false))
+      probe.listen(0, '::1', () => probe.close(() => resolve(true)))
+    })
+    if (!v6) ctx.skip('this host cannot bind ::1 (IPv4-only)')
+    const { port: p, servers: ss, addresses } = await listenOnLocalhost(
+      () => createServer((_req, res) => res.end('ok')),
+      fake(['::1', 6], ['127.0.0.1', 4]),
+    )
+    try {
+      expect(addresses).toEqual(['127.0.0.1', '::1'])
+      expect(ss).toHaveLength(2)
+      for (const host of ['127.0.0.1', '[::1]']) {
+        expect(await (await fetch(`http://${host}:${p}/`)).text()).toBe('ok')
+      }
+    } finally {
+      await closeAll(ss)
+    }
+  })
+
+  it('every address localhost resolves to on THIS host answers on the one port', async () => {
+    const { port: p, servers: ss, addresses } = await listenOnLocalhost(() =>
+      createServer((_req, res) => res.end('ok')),
+    )
+    try {
+      expect(addresses).toEqual(await localhostAddresses())
+      for (const a of addresses) {
+        const host = a.includes(':') ? `[${a}]` : a
+        const body = await (await fetch(`http://${host}:${p}/`)).text()
+        expect(body).toBe('ok')
+      }
+    } finally {
+      await closeAll(ss)
+    }
   })
 })

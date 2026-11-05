@@ -3,6 +3,7 @@
 // bound to the hash of what was shown. Real route handlers, real unzip, a
 // sandboxed HOME / store / agents tree; only the LLM generator is stubbed.
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
+import { itUnlessRoot } from './setup/root.js'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -550,14 +551,15 @@ describe('proposed skills (D4)', async () => {
     expect(readFileSync(join(liveDir('multi'), 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi\n')
   })
 
-  it('P5c: if the install fails, the old version is put back', () => {
+  // B2-1: as root the 0555 pending dir does not stop the install, the approve succeeds and moves the dir (the early
+  // `return` used to sit before the finally, whose chmod then hit ENOENT): a counted skip as root instead.
+  itUnlessRoot('P5c: if the install fails, the old version is put back', () => {
     mkLive('restore')
     const m = propose('restore')
     const hash = q.getPending(m.id)!.hash
     chmodSync(join(PENDING, m.id), 0o555)
     try {
       const r = q.approvePending(m.id, hash)
-      if (process.getuid?.() === 0) return
       expect(r).toMatchObject({ ok: false, status: 500 })
       expect((r as any).error).toMatch(/restored/)
       expect(readFileSync(join(liveDir('restore'), 'SKILL.md'), 'utf-8')).toBe('old')
