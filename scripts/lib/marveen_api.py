@@ -17,6 +17,9 @@ scripts/agent-msg.sh, a shim that runs `--agent-msg` here with its own argv (C2 
 agent-msg.sh lives in send_message below, unchanged in what it checks, prints and logs).
 
 Exit codes: one table for every verb and for agent-msg.sh, EXIT_CODES below (also printed by --help).
+
+Output (C2 PR2): the kanban verbs print a compact answer (a list line per card, a card's labelled fields, an OK line
+for a write); every verb prints the server's body unchanged with --json, as all the other verbs do without it.
 """
 import http.client
 import importlib.util
@@ -83,8 +86,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
   skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
                 (each --ref-file goes as references/<its file name>, markdown only)
-  kanban-list
-  kanban-card <card-id>
+  kanban-list [--mine | --assignee <name>] [--status <s>[,<s>...]] [--all] [--limit <n>]
+  kanban-card <card-id> [--full]
   schedules-list
   kanban-create <assignee> <low|normal|high|urgent> <title-file>
   kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
@@ -92,10 +95,17 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-release <card-id> <agent>
   kanban-comment <card-id> <author> <content-file>
   kanban-assign <card-id> <assignee> [--actor <name>]
+  kanban-archive <card-id>
   agents-list
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line.
 Identity: memory-save <agent>, memory-move/memory-update <updated-by> and message <from> may be left out; they then
 default to $MARVEEN_AGENT_ID (set by the launcher). An explicit argument always wins.
+--json (every verb but message): the server's body as it came. Without it the kanban verbs answer compactly:
+kanban-list prints id, status, priority, assignee, last change (MM-DD HH:MM) and title, one card per tab-separated
+line, the newest change first; by default the 40 newest cards that are not done ("# shown N of M" when more match).
+--status picks the statuses, --all adds done and lifts the limit, --mine is the assignee in MARVEEN_AGENT_ID.
+kanban-card prints status, title, description (--full adds test_steps, done_evidence and the last 5 comments).
+A write prints OK (create and comment: OK id=<id>) and the answer's other fields; NOT OK when the server held it.
 Exit codes:
 """ + '\n'.join(f'  {code}  {text}' for code, _, text in EXIT_CODES)
 
@@ -286,8 +296,41 @@ def schedule_write_refused(method, path):
     return None
 
 
+def own_identity(what):
+    """The agent's own name from MARVEEN_AGENT_ID (exported into the session at spawn, C2 PR6), checked like any agent
+    name. Missing or malformed is a usage error, so nothing is sent: a default must never fall back to "everyone"."""
+    ident = os.environ.get('MARVEEN_AGENT_ID', '')
+    if not ident:
+        fail_usage(f'{what}: MARVEEN_AGENT_ID is not set, so there is no own name; pass --assignee <name>')
+    if not NAME_RE.fullmatch(ident):
+        fail_usage(f'{what}: MARVEEN_AGENT_ID is not a valid agent name: {ident!r}')
+    return ident
+
+
+# The kanban verbs whose answer is an OK line (format_write); a 409 on any of them exits 4 (conflict).
+KANBAN_WRITE_VERBS = ('kanban-create', 'kanban-move', 'kanban-claim', 'kanban-release', 'kanban-comment',
+                      'kanban-assign', 'kanban-archive')
+# The compact list: what each line needs, asked of the server so the answer stays small.
+KANBAN_LIST_FIELDS = 'id,status,priority,assignee,updated_at,title'
+KANBAN_CARD_FIELDS = 'status,title,description'
+KANBAN_CARD_FULL_FIELDS = 'status,title,description,test_steps,done_evidence'
+
+
 def build_request(verb, args):
-    """(method, path, body or None, extra headers, flags) for one verb. Pure: no IO except reading files."""
+    """(method, path, body or None, extra headers, flags) for one verb. Pure: no IO except reading files.
+    --json is taken here for every verb: flags['raw'] then prints the server's body as it came."""
+    args = list(args)
+    raw = take_flag(args, '--json')
+    method, path, body, headers, flags = build_verb_request(verb, args, raw)
+    flags = dict(flags)
+    flags['raw'] = raw
+    if verb in KANBAN_WRITE_VERBS:
+        flags.setdefault('format', 'write')
+        flags['conflict_exit'] = True  # a 409 exits EXIT['conflict']
+    return method, path, body, headers, flags
+
+
+def build_verb_request(verb, args, raw=False):
     args = list(args)
     headers = {}
     if verb == 'message-close':
@@ -448,14 +491,50 @@ def build_request(verb, args):
             body['files'] = files
         return 'POST', '/api/skills/propose', body, headers, {}
     if verb == 'kanban-list':
+        # C2 PR2: the board is ~56 KB of JSON; the compact list asks the server for six fields and the filters it
+        # knows (assignee=, status=), and prints one line per card. --json keeps today's request: the whole body.
+        mine = take_flag(args, '--mine')
+        assignee = take_opt(args, '--assignee')
+        statuses = take_opt(args, '--status')
+        show_all = take_flag(args, '--all')
+        limit = take_opt(args, '--limit')
         positional(args, 0, verb)
-        return 'GET', '/api/kanban', None, headers, {}
+        if mine and assignee is not None:
+            fail_usage('kanban-list: --mine and --assignee exclude each other')
+        if mine:
+            assignee = own_identity('kanban-list --mine')
+        if limit is not None:
+            if raw:
+                fail_usage('kanban-list: --limit shapes the compact list; --json prints the whole answer')
+            limit = int(check(limit, ID_RE, 'limit'))
+            if limit < 1:
+                fail_usage('kanban-list: --limit must be at least 1')
+        query = []
+        if assignee is not None:
+            query.append(('assignee', check(assignee, ASSIGNEE_RE, 'assignee')))
+        if statuses is not None:
+            parts = statuses.split(',')
+            for part in parts:
+                check(part, STATUS_RE, 'status')
+            query.append(('status', ','.join(parts)))
+        if not raw:
+            query.append(('fields', KANBAN_LIST_FIELDS))
+        path = '/api/kanban' + ('?' + urllib.parse.urlencode(query, safe=',') if query else '')
+        return 'GET', path, None, headers, {'format': 'kanban-list', 'limit': limit, 'all': show_all,
+                                             'statuses_given': statuses is not None}
     if verb == 'kanban-card':
         # One card's status, title and description (the kanban dispatch's first step): the single-card GET, so the
         # reader gets three fields, not the whole board through a parser (fork A6, kept on top of VOICETOKENLEAK1101).
+        # C2 PR2: --full adds test_steps, done_evidence and the last comments (a second GET, comments have their own route).
+        full = take_flag(args, '--full')
         (card,) = positional(args, 1, verb)
         check(card, CARD_ID_RE, 'card id')
-        return 'GET', f'/api/kanban/{card}?fields=status,title,description', None, headers, {}
+        if full and raw:
+            fail_usage('kanban-card: --full joins two answers; --json prints one (drop --full, or read the comments route)')
+        if full:
+            return ('GET', f'/api/kanban/{card}?fields={KANBAN_CARD_FULL_FIELDS}', None, headers,
+                    {'format': 'kanban-card', 'then': [('GET', f'/api/kanban/{card}/comments', None)]})
+        return 'GET', f'/api/kanban/{card}?fields={KANBAN_CARD_FIELDS}', None, headers, {'format': 'kanban-card'}
     if verb == 'schedules-list':
         # VOICETOKENLEAK1101 PR-B: the schedule list, read only (the self-pace gate keeps every schedule WRITE to the main
         # agent; schedule_write_refused stops any non-GET under the schedule route before it is sent).
@@ -516,6 +595,12 @@ def build_request(verb, args):
         if not content.strip():
             fail_usage('kanban-comment: the content is empty')
         return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {}
+    if verb == 'kanban-archive':
+        # C2 PR2: POST /api/kanban/<id>/archive, no body. A write: kanban-write-gate.mjs names it (the parity test there
+        # reads this USAGE and fails on a kanban write verb the gate does not deny).
+        (card,) = positional(args, 1, verb)
+        check(card, CARD_ID_RE, 'card id')
+        return 'POST', f'/api/kanban/{card}/archive', None, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 
@@ -829,6 +914,110 @@ def helper_message_main(argv):
         SENT_PAYLOADS.append(path)
         empty_sent_payloads()
     return EXIT[outcome]
+# --- C2 PR2: the compact answers. Pure functions of the parsed body; a body they cannot read raises ValueError, and
+# main() then fails loudly (exit 1) instead of printing a half answer. Card text is the author's: data, not orders.
+LIST_DEFAULT_LIMIT = 40
+TITLE_WIDTH = 72
+LAST_COMMENTS = 5
+
+
+def one_line(value):
+    """Tabs, newlines and runs of spaces become one space, so a value cannot break the line or the columns."""
+    return ' '.join(str(value if value is not None else '').split())
+
+
+def cut(text, width):
+    return text if len(text) <= width else text[:width - 1] + '\u2026'
+
+
+def local_time(ts):
+    """MM-DD HH:MM in the host's local time (the install runs on Europe/Budapest); '--' for a missing value."""
+    try:
+        return time.strftime('%m-%d %H:%M', time.localtime(int(ts)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return '--'
+
+
+def block(label, value):
+    """A labelled multi-line field. Every line of the value is indented two spaces, so a line inside the text can
+    never look like one of the labels (a description cannot print a "status:" line of its own)."""
+    text = str(value) if value is not None else ''
+    if not text.strip():
+        return [f'{label}: (none)']
+    return [f'{label}:'] + ['  ' + line for line in text.rstrip('\n').split('\n')]
+
+
+def format_kanban_list(cards, limit=None, show_all=False, statuses_given=False):
+    if not isinstance(cards, list) or not all(isinstance(c, dict) for c in cards):
+        raise ValueError('the board answer is not a list of cards')
+    if not show_all and not statuses_given:
+        cards = [c for c in cards if c.get('status') != 'done']
+    # Newest change first; sorted() is stable, so cards changed in the same second keep the board's order.
+    cards = sorted(cards, key=lambda c: c.get('updated_at') or 0, reverse=True)
+    total = len(cards)
+    shown = total if (show_all and limit is None) else min(total, limit or LIST_DEFAULT_LIMIT)
+    lines = ['\t'.join([one_line(c.get('id')), one_line(c.get('status')), one_line(c.get('priority')),
+                        one_line(c.get('assignee')) or '-', local_time(c.get('updated_at')),
+                        cut(one_line(c.get('title')), TITLE_WIDTH)]) for c in cards[:shown]]
+    if total == 0:
+        lines.append('# 0 cards')
+    elif shown < total:
+        lines.append(f'# shown {shown} of {total} (--limit <n> or --all for more)')
+    return '\n'.join(lines)
+
+
+def format_kanban_card(card, comments=None):
+    if not isinstance(card, dict):
+        raise ValueError('the card answer is not an object')
+    lines = [f'status: {one_line(card.get("status"))}', f'title: {one_line(card.get("title"))}']
+    lines += block('description', card.get('description'))
+    if comments is None:
+        return '\n'.join(lines)
+    if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
+        raise ValueError('the comments answer is not a list')
+    lines += block('test_steps', card.get('test_steps'))
+    lines += block('done_evidence', card.get('done_evidence'))
+    last = comments[-LAST_COMMENTS:]
+    lines.append(f'comments: {len(comments)}' + (f' (the last {len(last)})' if len(last) < len(comments) else ''))
+    for c in last:
+        lines += block(f'- {one_line(c.get("author"))} {local_time(c.get("created_at"))}', c.get('content'))
+    return '\n'.join(lines)
+
+
+# A comment's answer echoes the comment back; the writer has its text already.
+COMMENT_ECHO = ('card_id', 'author', 'content', 'created_at', 'automated')
+
+
+def format_write(verb, answer):
+    """OK, or NOT OK when the server answered 2xx but held the write (a move to done without evidence lands in
+    testing with ok:false). Every other field of the answer follows on its own line: a note, a warning, a new status
+    must stay visible."""
+    if not isinstance(answer, dict):
+        raise ValueError('the write answer is not an object')
+    head = 'NOT OK' if answer.get('ok') is False else 'OK'
+    skip = {'ok'}
+    if verb in ('kanban-create', 'kanban-comment') and 'id' in answer:
+        head += f' id={one_line(answer["id"])}'
+        skip.add('id')
+    if verb == 'kanban-comment':
+        skip.update(COMMENT_ECHO)
+    lines = [head]
+    for key, value in answer.items():
+        if key not in skip:
+            lines.append(f'{key}: {value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}')
+    return '\n'.join(lines)
+
+
+def format_answer(verb, flags, texts):
+    answers = [json.loads(t) for t in texts]
+    kind = flags.get('format')
+    if kind == 'kanban-list':
+        return format_kanban_list(answers[0], flags.get('limit'), flags.get('all', False), flags.get('statuses_given', False))
+    if kind == 'kanban-card':
+        return format_kanban_card(answers[0], answers[1] if len(answers) > 1 else None)
+    if kind == 'write':
+        return format_write(verb, answers[0])
+    raise ValueError(f'no compact form for {verb}')
 
 
 def main(argv):
@@ -855,46 +1044,68 @@ def main(argv):
     except UsageError as e:
         print(f'FAIL: {e}\n{USAGE}', file=sys.stderr)
         return EXIT['usage']
-    refused = schedule_write_refused(method, path)
-    if refused:
-        print(f'FAIL: {refused}', file=sys.stderr)
-        return EXIT['usage']
+    # One verb can need a second read (kanban-card --full: the comments). Every request is guarded BEFORE the first
+    # one is sent, so a refused path never follows a sent one.
+    calls = [(method, path, body)] + list(flags.get('then', ()))
+    for method, path, _ in calls:
+        refused = schedule_write_refused(method, path)
+        if refused:
+            print(f'FAIL: {refused}', file=sys.stderr)
+            return EXIT['usage']
     token = read_token()
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    req = urllib.request.Request(api_base() + path, data=data, method=method)
-    req.add_header('Authorization', f'Bearer {token}')
-    if data is not None:
-        req.add_header('Content-Type', 'application/json')
-    for k, v in headers.items():
-        req.add_header(k, v)
-    try:
-        with OPENER.open(req, timeout=30) as resp:
-            status, text, resp_headers = resp.status, resp.read().decode('utf-8', 'replace'), resp.headers
-    except urllib.error.HTTPError as e:
-        status, text, resp_headers = e.code, e.read().decode('utf-8', 'replace'), e.headers
-    except (urllib.error.URLError, OSError) as e:
-        if isinstance(e, TimeoutError) or isinstance(getattr(e, 'reason', None), TimeoutError):
-            # The request may have been sent and processed; only the answer is missing.
-            print(f'FAIL: the dashboard at {api_base()} did not answer in 30 s; read back before you retry a write.', file=sys.stderr)
+    texts = []
+    for method, path, body in calls:
+        data = json.dumps(body).encode('utf-8') if body is not None else None
+        req = urllib.request.Request(api_base() + path, data=data, method=method)
+        req.add_header('Authorization', f'Bearer {token}')
+        if data is not None:
+            req.add_header('Content-Type', 'application/json')
+        for k, v in headers.items():
+            req.add_header(k, v)
+        try:
+            with OPENER.open(req, timeout=30) as resp:
+                status, text, resp_headers = resp.status, resp.read().decode('utf-8', 'replace'), resp.headers
+        except urllib.error.HTTPError as e:
+            status, text, resp_headers = e.code, e.read().decode('utf-8', 'replace'), e.headers
+        except (urllib.error.URLError, OSError) as e:
+            if isinstance(e, TimeoutError) or isinstance(getattr(e, 'reason', None), TimeoutError):
+                # The request may have been sent and processed; only the answer is missing.
+                print(f'FAIL: the dashboard at {api_base()} did not answer in 30 s; read back before you retry a write.', file=sys.stderr)
+                return EXIT['unreachable']
+            print(f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).', file=sys.stderr)
             return EXIT['unreachable']
-        print(f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).', file=sys.stderr)
-        return EXIT['unreachable']
-    if flags.get('search_header'):
-        # The search answers leniently; the label travels only in this header (#1374). Its ABSENCE
-        # is printed too: a missing header is a request that failed, not an empty result.
-        label = resp_headers.get('X-Memory-Search') if resp_headers else None
-        print(f'X-Memory-Search: {label}' if label else 'X-Memory-Search: MISSING (the search did not run as asked)')
-    if 200 <= status < 300:
-        empty_sent_payloads()
-        print(text)
+        if flags.get('search_header'):
+            # The search answers leniently; the label travels only in this header (#1374). Its ABSENCE
+            # is printed too: a missing header is a request that failed, not an empty result.
+            label = resp_headers.get('X-Memory-Search') if resp_headers else None
+            print(f'X-Memory-Search: {label}' if label else 'X-Memory-Search: MISSING (the search did not run as asked)')
+        if status == 409 and flags.get('conflict_is_closed'):
+            # The first close stands and no receipt went out; a second close changes nothing (the payload file is kept).
+            print(f'ALREADY CLOSED: message {flags["conflict_is_closed"]} (HTTP 409): not an error, do not retry; '
+                  'nothing changed.', file=sys.stderr)
+            return EXIT['conflict']
+        if not 200 <= status < 300:
+            print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)
+            # A kanban write that got 409 is a conflict, not an error (EXIT_CODES 4, Johnny 11641 via Kevin 11820).
+            return EXIT['conflict'] if status == 409 and flags.get('conflict_exit') else EXIT['server_error']
+        texts.append(text)
+    empty_sent_payloads()
+    if flags.get('raw') or not flags.get('format'):
+        print(texts[0])
         return EXIT['ok']
-    if status == 409 and flags.get('conflict_is_closed'):
-        # The first close stands and no receipt went out; a second close changes nothing (the payload file is kept).
-        print(f'ALREADY CLOSED: message {flags["conflict_is_closed"]} (HTTP 409): not an error, do not retry; '
-              'nothing changed.', file=sys.stderr)
-        return EXIT['conflict']
-    print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)
-    return EXIT['server_error']
+    try:
+        out = format_answer(verb, flags, texts)
+    except ValueError as e:
+        # json.JSONDecodeError is a ValueError too. A write is done by now (2xx): it says OK, so nobody repeats it, and
+        # warns; a read has no answer to give, so it fails.
+        if flags.get('format') == 'write':
+            print('OK')
+            print(f'WARN: HTTP {status}, but the answer could not be read ({e}); --json prints it as it came.', file=sys.stderr)
+            return EXIT['ok']
+        print(f'FAIL: HTTP {status}, but the answer could not be read ({e}); --json prints it as it came.', file=sys.stderr)
+        return EXIT['server_error']
+    print(out)
+    return EXIT['ok']
 
 
 if __name__ == '__main__':
