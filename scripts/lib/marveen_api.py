@@ -838,14 +838,9 @@ def main(argv):
         print(f'FAIL: {refused}', file=sys.stderr)
         return EXIT['usage']
     if argv[0] == '--check-env':
-        # marveen-api.sh asks this before it hands the message verb to agent-msg.sh, which reads
-        # the same two variables.
-        return EXIT['ok']
-    if argv[0] == '--check-token':
-        # ...and this one too: the token file the way the other verbs read it (missing, unreadable
-        # or empty -> exit 2, nothing sent). agent-msg.sh alone would send an empty Bearer for an
-        # empty file (VOICETOKENLEAK1101 PR-A0).
-        read_token()
+        # The env gate alone, nothing sent: exit 0 or 2. No script calls it since PR4 moved `message` into python;
+        # the tests use it to probe the gate (marveen-api-helper.test.ts). (--check-token had no caller left and
+        # is gone, C2 PR4c.)
         return EXIT['ok']
     if argv[0] == 'message':
         return helper_message_main(argv[1:])
