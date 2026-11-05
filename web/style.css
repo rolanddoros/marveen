@@ -431,8 +431,17 @@ nav { display: flex; gap: 4px; }
   display: flex;
   flex-direction: column;
   gap: 24px;
-  align-items: center;
+  /* safe: when the tree is wider than the viewport, keep the left edge
+     reachable by scrolling instead of clipping it. */
+  align-items: safe center;
   padding: 24px 0;
+  overflow-x: auto;
+}
+/* The main agent's direct reports must stay on ONE row: when this row
+   wrapped, the wrapped reports landed under the widest subtree (e.g. under
+   a leader) and looked like that leader's reports. Scroll instead. */
+.team-roots {
+  flex-wrap: nowrap;
 }
 .team-level {
   display: flex;

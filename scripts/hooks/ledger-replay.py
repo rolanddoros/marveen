@@ -29,6 +29,7 @@ import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import ledger_redact  # noqa: E402
 
 # How many chars of transcript context to inject (~4 chars/token, so 16000 chars
 # ~= 4000 tokens). This is a CHEAP coarse pre-trim only; the authoritative guard
@@ -106,8 +107,14 @@ def _max_snippet():
 
 def _snippet(text, limit):
     """One-line, whitespace-collapsed snippet, truncated to `limit` chars with an
-    ellipsis marker so a single runaway message cannot dominate the budget."""
-    s = (text or "").strip().replace("\n", " ")
+    ellipsis marker so a single runaway message cannot dominate the budget.
+
+    Secret-redacted BEFORE truncation (LEDGERREDACT1105), defence in depth on
+    top of the write-time redaction in ledger_lib: a row written before that
+    existed, or by a writer that bypasses ledger_lib, must still never reach
+    the fresh session's context. Before truncation so a cut cannot split a
+    secret into a fragment no pattern recognises any more."""
+    s = ledger_redact.redact((text or "").strip()).replace("\n", " ")
     if limit > 0 and len(s) > limit:
         s = s[:limit].rstrip() + " [...]"
     return s

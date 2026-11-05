@@ -43,7 +43,7 @@ try:
     R = os.path.join(base, "real-install")
     L = os.path.join(base, "link-install")
     os.makedirs(os.path.join(R, "scripts", "hooks"))
-    for f in ("ledger_lib.py", "voice-reply-directive.py"):
+    for f in ("ledger_lib.py", "ledger_redact.py", "voice-reply-directive.py"):
         shutil.copy(os.path.join(HOOKS, f), os.path.join(R, "scripts", "hooks", f))
     with open(os.path.join(R, ".env"), "w") as f:
         f.write("MAIN_AGENT_ID=mainagent\n")

@@ -112,7 +112,7 @@ if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"
     case "${STORE_SKIP}" in *" ${_name} "*) continue ;; esac
-    case "${_name}" in *.log|*.out|*.pid) continue ;; esac
+    case "${_name}" in *.log|*.log.[0-9]*|*.out|*.pid) continue ;; esac
     echo "store/${_name}" >> "${REPOLIST}"
   done < <(find store -mindepth 1 -maxdepth 1)
 fi
@@ -121,7 +121,9 @@ add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
 add_if "${REPOLIST}" "${REPO_ROOT}" assets/meetings
 # Per-agent identity + channel secrets (glob; missing dir is not an error).
 if [[ -d agents ]]; then
-  find agents -type f \
+  # node_modules pruned: npm packages ship their own CLAUDE.md (expo-modules-jsi),
+  # which the stage prune below removes again -> false MISSING (2026-11-05).
+  find agents -type d -name node_modules -prune -o -type f \
     \( -name 'CLAUDE.md' -o -name 'SOUL.md' -o -name '.mcp.json' \
        -o -name 'access.json' -o -name '.env' \) \
     -print >> "${REPOLIST}"
@@ -256,6 +258,18 @@ if [[ -n "${BUNDLE}" ]]; then
   cp -p "${BUNDLE}" "${STAGE}/repo/local-commits.bundle"
   chmod 600 "${STAGE}/repo/local-commits.bundle"
 fi
+
+# Drop regenerable dependency trees from the stage. Measured 2026-11-05: the
+# gstack skill's node_modules and a sealed test copy under store/fork-audit
+# (node_modules with ~230 MB agent-SDK binaries) took the archive from
+# ~150 MB to 1.4 GB. Both reinstall with `npm ci`; no state lives in them.
+find "${STAGE}" -type d -name node_modules -prune -exec rm -rf {} + 2>/dev/null || true
+rm -rf "${STAGE}"/repo/store/fork-audit/scratch-* 2>/dev/null || true
+# Browser profiles: keep cookies/logins, drop caches and downloaded models.
+find "${STAGE}/repo/store/browser" -mindepth 2 -maxdepth 3 -type d \
+  \( -name Cache -o -name 'Code Cache' -o -name GPUCache -o -name optimization_guide_model_store \
+     -o -name component_crx_cache -o -name WasmTtsEngine -o -name 'Safe Browsing' \) \
+  -prune -exec rm -rf {} + 2>/dev/null || true
 
 # Archive only the top-level entries that exist (a group dir is absent when
 # its list was empty), so tar never errors on a missing entry and the names

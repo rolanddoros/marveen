@@ -55,6 +55,10 @@ import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
   wrapScheduledTaskByReference,
+  buildPreCheckTaskBody,
+  generateFetchNonce,
+  scheduledTaskBodyChars,
+  type ScheduledTaskBody,
 } from '../prompt-safety.js'
 import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
 import { cronMinGapMs, cronPrevOccurrence, effectiveCronTz } from './cron.js'
@@ -785,14 +789,14 @@ const DEFAULT_TASK_BLOCK_DEPS: ScheduledTaskBlockDeps = {
 //     passes isScheduledRunReference (a rejected path is logged there).
 export function buildScheduledTaskBlock(
   taskName: string,
-  taskBody: string,
+  taskBody: ScheduledTaskBody,
   host: string | null,
   nowMs: number,
   deps: ScheduledTaskBlockDeps = DEFAULT_TASK_BLOCK_DEPS,
 ): { block: string; delivery: 'inline' | 'reference' } {
   const source = `scheduled-task:${taskName}`
   const inline = { block: wrapScheduledTask(source, taskBody), delivery: 'inline' as const }
-  if (!shouldSnapshotTaskBody(taskBody.length)) return inline
+  if (!shouldSnapshotTaskBody(scheduledTaskBodyChars(taskBody))) return inline
   if (host !== null) return inline
   const skillPath = join(SCHEDULED_TASKS_DIR, taskName, 'SKILL.md')
   const snapshot = deps.writeSnapshot(taskName, taskBody, { firedAt: new Date(nowMs), skillPath })
@@ -2124,9 +2128,15 @@ async function attemptFireTask(
     const promptWithMetrics = metricsBlock
       ? `${task.prompt}\n\n${metricsBlock}`
       : task.prompt
-    const taskBody = preCheckPrefix
-      ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${promptWithMetrics}`
-      : promptWithMetrics
+    // The pre-check output is third-party-derived data (e.g. email From/Subject
+    // lines): it goes in an <untrusted> envelope with a per-fire nonce, logged
+    // here so an injected action can be traced back to this fire.
+    let taskBody: ScheduledTaskBody = promptWithMetrics
+    if (preCheckPrefix) {
+      const preCheckNonce = generateFetchNonce()
+      logger.info({ task: task.name, agent: agentName, preCheckNonce }, 'scheduled task: pre-check output wrapped as untrusted data')
+      taskBody = buildPreCheckTaskBody(task.name, preCheckPrefix, promptWithMetrics, preCheckNonce)
+    }
     // SCHEDPROMPTREF917: the size-guard measures the SKILL.md body alone
     // (task.prompt, before pre-check/metrics are spliced in) -- those two are
     // runner-generated per fire and the task author has no control over

@@ -166,7 +166,7 @@ stage = tempfile.mkdtemp(prefix="toollog-redact-")
 try:
     os.makedirs(os.path.join(stage, "scripts", "hooks"))
     os.makedirs(os.path.join(stage, "store"))
-    for f in ("tool-log-capture.py", "ledger_lib.py"):
+    for f in ("tool-log-capture.py", "ledger_lib.py", "ledger_redact.py"):
         shutil.copy(os.path.join(HOOKS, f), os.path.join(stage, "scripts", "hooks", f))
     with open(os.path.join(stage, "store", ".dashboard-token"), "w") as fh:
         fh.write("test-dashboard-token")

@@ -30,7 +30,7 @@ beforeAll(async () => {
   install = mkdtempSync(join(tmpdir(), 'drain-install-'))
   mkdirSync(join(install, 'scripts', 'hooks'), { recursive: true })
   mkdirSync(join(install, 'store'))
-  for (const f of ['inbox-drain.py', 'ledger_lib.py', 'command_prompt.py']) copyFileSync(join(HOOKS, f), join(install, 'scripts', 'hooks', f))
+  for (const f of ['inbox-drain.py', 'ledger_lib.py', 'ledger_redact.py', 'command_prompt.py']) copyFileSync(join(HOOKS, f), join(install, 'scripts', 'hooks', f))
   writeFileSync(join(install, 'store', '.dashboard-token'), 'tok\n')
 })
 afterAll(() => { server.close(); rmSync(install, { recursive: true, force: true }) })

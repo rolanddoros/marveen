@@ -382,7 +382,7 @@ export function buildWorkerPrompt(callerPrompt: string, outPath: string, donePat
  *  - 'unknown': text without any recognised marker -- also a self-heal target,
  *    because an unrecognised full-screen overlay hides the idle footer.
  */
-export type WorkerPaneClass = 'idle' | 'busy' | 'auth' | 'modal' | 'empty' | 'unknown'
+export type WorkerPaneClass = 'idle' | 'busy' | 'auth' | 'modal' | 'empty' | 'unknown' | 'parked'
 
 export function classifyWorkerPane(pane: string | null): WorkerPaneClass {
   if (pane == null || pane.trim() === '') return 'empty'
@@ -390,7 +390,13 @@ export function classifyWorkerPane(pane: string | null): WorkerPaneClass {
   if (WORKER_AUTH_FAILURE_RX.test(tail)) return 'auth'
   const st = detectPaneState(pane)
   if (st === 'busy') return 'busy'
-  if (st === 'idle' || st === 'typing') return 'idle'
+  if (st === 'idle') return 'idle'
+  // Text parked in the worker's input box is never a human draft (nobody
+  // types into the worker): it is a previous request whose Enter was
+  // swallowed. Reading it as idle left the self-heal idle while the readiness
+  // poll (which wants an EMPTY prompt) timed out -- measured 2026-10-19 23:00,
+  // a SECURITY NOTICE prompt parked in johnny-worker, owner paged.
+  if (st === 'typing') return 'parked'
   // Modal chrome: a numbered option list or a confirm footer. Matches the
   // fullscreen-upsell dialog captured live on 2026-07-08 and the Trust-folder /
   // onboarding dialog family.
@@ -400,7 +406,7 @@ export function classifyWorkerPane(pane: string | null): WorkerPaneClass {
 
 /** Pure decision: should the boot poll attempt a self-heal for this pane class? */
 export function shouldSelfHeal(cls: WorkerPaneClass): boolean {
-  return cls === 'modal' || cls === 'unknown'
+  return cls === 'modal' || cls === 'unknown' || cls === 'parked'
 }
 
 export type PollDecision = 'ready' | 'timeout' | 'dead' | 'wait'
@@ -781,6 +787,13 @@ const WORKER_STUCK_ALERT_COOLDOWN_MS = 60 * 60 * 1000
 function selfHealWorkerOnce(ctx: WorkerCtx): boolean {
   const cls = classifyWorkerPane(capturePane(ctx.session))
   if (!shouldSelfHeal(cls)) return false
+  if (cls === 'parked') {
+    // Escape does not empty a typed box, and the parked request is stale (its
+    // caller has already timed out), so a restart is the clean remedy.
+    logger.warn({ session: ctx.session }, 'agent-worker: a stale request is parked in the input box -- restarting the worker session')
+    restartWorkerSession(ctx)
+    return true
+  }
   logger.warn({ cls, session: ctx.session }, 'agent-worker: pane parked on unexpected chrome -- bounded Escape self-heal')
   for (let i = 0; i < WORKER_SELF_HEAL_MAX_ESCAPES; i++) {
     try { execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), 'Escape'], { timeout: 5000 }) } catch { break }
@@ -851,7 +864,7 @@ function alertWorkerStuck(ctx: WorkerCtx, paneTail: string): void {
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
-async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
+async function ensureWorkerReady(ctx: WorkerCtx, alertOnFail = true): Promise<boolean> {
   // Fail fast in WEB_ONLY: without this the 90s readiness poll would spin on a
   // session that the gated start never created, then alertWorkerStuck would
   // notifyChannel the LIVE channel from a staging instance.
@@ -871,8 +884,13 @@ async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
     }
     await sleepMs(2000)
   }
-  const pane = capturePane(ctx.session)
-  alertWorkerStuck(ctx, (pane ?? '').split('\n').slice(-12).join('\n'))
+  // The first attempt does not page the owner: runViaWorker restarts the
+  // worker and retries once, and that retry usually succeeds. Only a worker
+  // that is still not ready after it is worth a human's attention.
+  if (alertOnFail) {
+    const pane = capturePane(ctx.session)
+    alertWorkerStuck(ctx, (pane ?? '').split('\n').slice(-12).join('\n'))
+  }
   return false
 }
 
@@ -915,8 +933,8 @@ type AttemptResult =
   | { kind: 'auth' }
   | { kind: 'fail'; error: string }
 
-async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: number): Promise<AttemptResult> {
-  const ready = await ensureWorkerReady(ctx)
+async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: number, finalAttempt = true): Promise<AttemptResult> {
+  const ready = await ensureWorkerReady(ctx, finalAttempt)
   if (!ready) {
     // A non-ready worker can be a dead auth (the session boots, prints the
     // login/401 chrome, never reaches an idle prompt) -- distinguish it.
@@ -1001,7 +1019,7 @@ export async function runViaWorker(
   const ctx = p === 'fast' ? ctxFast : ctxSlow
   return withWorkerLockFor(ctx, async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const r = await runWorkerAttempt(ctx, message, timeoutMs)
+      const r = await runWorkerAttempt(ctx, message, timeoutMs, attempt === 1)
       if (r.kind === 'ok') return { text: r.text, error: r.error }
       if (r.kind === 'fail') {
         // A momentary not-ready is TRANSIENT, not terminal: the boot-time

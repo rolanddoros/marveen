@@ -77,6 +77,12 @@ describe('parseIntakeProbe', () => {
     expect(r.tokenOk).toBe(true)
     expect(r.pendingUpdates).toBeNull()
   })
+
+  it('reports unreachable (not token-invalid) on a Telegram 5xx', () => {
+    const r = parseIntakeProbe(502, { ok: false, error_code: 502, description: 'Bad Gateway' })
+    expect(r.reachable).toBe(false)
+    expect(r.tokenOk).toBe(true)
+  })
 })
 
 describe('decideIntakeVerdict', () => {

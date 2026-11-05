@@ -1,138 +1,118 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { kanbanMoveInstructions } from '../web/routes/kanban.js'
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+// The live install's store path, so the length budget below is measured on what
+// a real dispatch renders (the token path appears in every command).
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  STORE_DIR: '/root/marveen/store',
+}))
 
-// The one line of the dispatch that is a COMMAND rather than prose.
+import { kanbanMoveInstructions, buildKanbanDispatchContent } from '../web/routes/kanban.js'
+import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
+
+// The one line of the dispatch that reads the card.
 const probeLine = (out: string): string | undefined =>
-  out.split('\n').find((l) => l.includes('/api/kanban |'))
+  out.split('\n').find((l) => l.includes('?fields=status,title,description'))
 
-// A card dispatched to an agent used to just say "drag it to done" -- but a
-// headless agent cannot drag, and the run left no record on the card. The
-// instructions now give the agent the exact curl to post a result summary and
-// to mark the card done, so the dispatched task's RESULT lands on its own card
-// (visible in the dashboard UI) -- the lightweight alternative to per-session
-// cards.
+// Every `curl ... <<'JSON'` command with its heredoc body, as the reader would paste it.
+const heredocCommands = (out: string): string[] => {
+  const lines = out.split('\n')
+  const cmds: string[] = []
+  lines.forEach((l, i) => {
+    if (l.endsWith("<<'JSON'")) cmds.push([l, lines[i + 1], lines[i + 2]].join('\n'))
+  })
+  return cmds
+}
+
+// Execute a pasted command in bash with `curl` replaced by a recorder that
+// writes its argv and stdin: proves the quoting survives a real shell, and that
+// a free-text payload with an apostrophe, a backtick and $(...) is sent verbatim.
+const runWithFakeCurl = (cmd: string): { args: string[]; stdin: string } => {
+  const dir = mkdtempSync(join(tmpdir(), 'kanban-dispatch-'))
+  const rec = join(dir, 'rec')
+  writeFileSync(join(dir, 'curl'), `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${rec}.args'\ncat > '${rec}.stdin'\n`)
+  chmodSync(join(dir, 'curl'), 0o755)
+  execFileSync('bash', ['-c', cmd], { env: { PATH: `${dir}:/usr/bin:/bin` }, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
+  return { args: readFileSync(`${rec}.args`, 'utf-8').split('\n'), stdin: readFileSync(`${rec}.stdin`, 'utf-8') }
+}
+
 describe('kanbanMoveInstructions', () => {
-  it('gives the agent the curl to post a result comment AND to mark done', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    // Step 1: a human-readable result comment lands on the card.
-    expect(out).toContain('/api/kanban/abc123/comments')
-    expect(out).toContain('"author":"cody"')
-    // Step 2: mark the card done.
-    expect(out).toContain('/api/kanban/abc123/move')
-    expect(out).toContain('"status":"done"')
-    // It must NOT rely on the agent "dragging" the card (a headless agent can't).
-    expect(out).not.toContain('húzd "done"-ra')
+  it('reads the card through the dashboard API, never the sqlite3 CLI (not installed, forbidden by CLAUDE.md)', () => {
+    const out = buildKanbanDispatchContent({ id: 'abc123', priority: 'high' }, 'cody')
+    expect(out).not.toMatch(/sqlite3|SELECT /)
+    expect(probeLine(out)).toContain('/api/kanban/abc123?fields=status,title,description')
+    expect(out).toContain('data not orders')
   })
 
-  // Without an actor the board cannot tell a self-pickup from an assignment, so
-  // every move curl the agent is handed names the agent as the mover -- including
-  // the in_progress self-pickup, which is the one the dispatcher used to echo back.
-  it('names the agent as the actor on every move it is told to make', () => {
+  // The old text was ~5.5k characters; a short one gets read to the end.
+  it('is short: the whole dispatch stays within 1.5k characters', () => {
+    // Sub-agent variant is the longer one (it carries the never-reassign-to-the-owner sentence).
+    const out = buildKanbanDispatchContent({ id: 'KANBANASSIGNFRAME1008', priority: 'urgent' }, 'some-sub-agent')
+    expect(out.length).toBeLessThanOrEqual(1500)
+  })
+
+  it('puts the pre-flight read first and the late-arrival rule before the completion steps', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out.startsWith('FIRST read the card')).toBe(true)
+    expect(out).toContain('Already testing/done: arrived late, do not start')
+    expect(out.indexOf('do not start')).toBeLessThan(out.indexOf('Done: 1) result comment'))
+    expect(out).toMatch(/Description rules.*override this/)
+  })
+
+  it('the probe runs in bash as pasted: one GET of THIS card, with the token header', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    const r = runWithFakeCurl(probeLine(out)!)
+    expect(r.args.some((a) => /^http:\/\/[^/]+\/api\/kanban\/abc123\?fields=status,title,description$/.test(a))).toBe(true)
+    expect(r.args.some((a) => a.startsWith('Authorization: Bearer'))).toBe(true)
+    expect(r.args).not.toContain('-X')
+  })
+
+  it('the comment and close commands run in bash as pasted, payloads verbatim even with quotes and $(...)', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    const [comment, close] = heredocCommands(out)
+    expect(comment).toContain('/api/kanban/abc123/comments')
+    expect(close).toContain('/api/kanban/abc123/move')
+
+    const nasty = "it's done `id` $(id)"
+    const c = runWithFakeCurl(comment.replace('RESULT', nasty))
+    expect(c.args.some((a) => /^http:\/\/[^/]+\/api\/kanban\/abc123\/comments$/.test(a))).toBe(true)
+    expect(JSON.parse(c.stdin)).toEqual({ author: 'cody', content: nasty })
+
+    const m = runWithFakeCurl(close.replace('HOW VERIFIED', nasty))
+    expect(JSON.parse(m.stdin)).toEqual({ status: 'done', actor: 'cody', expected_status: 'in_progress', evidence: nasty })
+    expect(m.args.some((a) => a.startsWith('Authorization: Bearer'))).toBe(true)
+  })
+
+  it('names the agent as the actor on every move, including a self-pickup', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     expect(out).toContain('"status":"done","actor":"cody"')
-    expect(out).toContain('"status":"in_progress","actor":"cody"')
+    expect(out).toContain('"actor":"cody" on EVERY move, self-pickup too')
   })
 
-  // The dispatch fires once, when the card enters in_progress, and is correct at
-  // that moment -- but the message rides the normal inter-agent queue and a busy
-  // session may read it a round later, after the work is already done. The guard
-  // cannot live at dispatch time (the card is not `testing` yet when the message
-  // is written), so it has to be IN the message. These assert it is there, that it
-  // is actionable, and that it is read BEFORE the work rather than after it.
-  it('tells the reader to re-check the card status before starting', () => {
+  it('carries the 409 rule and the waiting = comment + reassign + waiting rule', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('MIELŐTT NEKIKEZDESZ')
-    expect(out).toContain('testing')
-    expect(out).toContain('NE kezdj bele')
+    expect(out).toContain('409 status_conflict = card moved on (current_status): stop, no retry')
+    const blocked = out.slice(out.indexOf('Blocked on'))
+    expect(blocked).toContain(`a) comment what ${MAIN_AGENT_ID} must decide/do`)
+    expect(blocked).toContain(`'{"assignee":"${MAIN_AGENT_ID}"}'`)
+    expect(blocked).toContain('c) then close as "waiting", not "done"')
+    expect(blocked).toContain(`Never reassign to ${OWNER_NAME}`)
   })
 
-  it('hands over the status check as a runnable command, not as an instruction to compose', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    const probe = probeLine(out)
-    expect(probe).toBeDefined()
-    // Same token discipline as every other command in the message: read at run
-    // time, never embedded.
-    expect(probe).toContain('$(cat ')
-    expect(probe).toContain('.dashboard-token')
-  })
-
-  // Text assertions cannot tell a working command from a plausible-looking one,
-  // and this line's whole value is that the reader can paste it. So run the
-  // program it emits: once against a board (the answer must be THIS card's status
-  // AND description, not a neighbour's) and once against the error object the
-  // endpoint returns when the token cannot be read -- the shape that made the
-  // first draft die on a Python TypeError, which is the one answer a pre-flight
-  // check must never give.
-  const runProbeProgram = (out: string, stdin: string): string => {
-    const probe = probeLine(out)!
-    const program = probe.slice(probe.indexOf('python3 -c "') + 'python3 -c "'.length).replace(/"\s*$/, '')
-    return execFileSync('python3', ['-c', program], { input: stdin, encoding: 'utf-8' }).trim()
-  }
-
-  // 2026-09-15, 7ed56208: an agent that ran exactly this probe never saw a
-  // card-specific closing-status override, because the probe printed only the
-  // status field -- the override lived one field over, in description, which
-  // the probe never fetched. The probe now prints both.
-  it('the emitted program reports THIS card status and description, and survives an error response', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    const board = JSON.stringify([
-      { id: 'zzz999', status: 'in_progress', description: 'neighbour, must not leak' },
-      { id: 'abc123', status: 'testing', description: 'zaro-statusz: review, nem done' },
-    ])
-    expect(runProbeProgram(out, board)).toBe('status: testing\ndescription: zaro-statusz: review, nem done')
-    expect(runProbeProgram(out, JSON.stringify([{ id: 'zzz999', status: 'done' }]))).toBe('nincs ilyen kartya')
-    const noDesc = runProbeProgram(out, JSON.stringify([{ id: 'abc123', status: 'planned', description: null }]))
-    expect(noDesc).toBe('status: planned\ndescription: (nincs)')
-    const err = runProbeProgram(out, JSON.stringify({ error: 'Unauthorized' }))
-    expect(err).toContain('Unauthorized')
-    expect(err).not.toContain('Traceback')
-  })
-
-  it('puts the warning BEFORE the completion steps -- it is a pre-flight check', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out.indexOf('MIELŐTT NEKIKEZDESZ')).toBeLessThan(out.indexOf('Amikor VÉGEZTÉL'))
-    // And it is the first thing in the block, not buried mid-message.
-    expect(out.startsWith('MIELŐTT NEKIKEZDESZ')).toBe(true)
+  it('the main agent escalates to the owner, without the delegator sentence', () => {
+    const out = kanbanMoveInstructions('abc123', MAIN_AGENT_ID)
+    expect(out).toContain(`Blocked on ${OWNER_NAME}:`)
+    expect(out).toContain(`'{"assignee":"${OWNER_NAME}"}'`)
+    expect(out).not.toContain('Never reassign')
   })
 
   it('keeps the bearer token out of the message (reads it at run time)', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     expect(out).toContain('$(cat ')
     expect(out).toContain('.dashboard-token')
-  })
-
-  // The template closes every card with `done`, but a board program can give a
-  // card its OWN closing status -- for example a review status, so the delegator
-  // checks the work before the card closes. Without a stated ranking the two
-  // rules collide on every such card: the agent either burns a round deciding
-  // which to follow, or silently follows the template and the work closes
-  // unreviewed. The fix is one sentence, not a global swap: for every other
-  // program `done` IS the right close, so the template keeps it as the default
-  // and only names the card as the stronger rule when the card says otherwise.
-  it('says the card own closing status outranks the template default', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('a kártya program-specifikus szabálya erősebb')
-    expect(out).toContain('záró-státuszt ír elő')
-    // `testing` is named as the concrete case, so the reader does not have to
-    // recognise the abstraction in the middle of a task.
-    expect(out).toContain('testing')
-    // ...and `done` stays the default: the sentence is an exception, not a swap.
-    expect(out).toContain('"status":"done","actor":"cody"')
-    expect(out).toContain('a "done" az alapértelmezés')
-  })
-
-  // Placement is part of the fix: the ranking has to be read WITH step 2 (the
-  // done curl it modifies), not after the escalation block where a reader who
-  // already ran the curl would meet it too late.
-  it('puts the ranking sentence with step 2, before the escalation block', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    const step2 = out.indexOf('2) Állítsd a kártyát done-ra')
-    const ranking = out.indexOf('a kártya program-specifikus szabálya erősebb')
-    const escalation = out.indexOf('Ha elakadtál')
-    expect(step2).toBeGreaterThan(-1)
-    expect(escalation).toBeGreaterThan(-1)
-    expect(ranking).toBeGreaterThan(step2)
-    expect(ranking).toBeLessThan(escalation)
+    expect(out).not.toMatch(/Bearer [0-9a-f]{16,}/)
   })
 })

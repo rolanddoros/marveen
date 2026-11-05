@@ -23,9 +23,10 @@ describe('parkedGiveUpAlertText', () => {
     expect(s).not.toContain('force')
   })
 
-  it('the watcher passes whether the session is the main channels session', () => {
+  it('the watcher routes the give-up to the main agent, not the owner channel (owner, 2026-10-19)', () => {
     const src = readFileSync(new URL('../web/stuck-input-watcher.ts', import.meta.url), 'utf-8')
-    expect(src).toContain('sendAlert(parkedGiveUpAlertText(label, session === MAIN_CHANNELS_SESSION))')
+    expect(src).toContain("createAgentMessage('system', MAIN_AGENT_ID, `[stuck-input] Agent '${label}'")
+    expect(src).not.toContain('sendAlert(parkedGiveUpAlertText(')
     expect(src).not.toMatch(/sendAlert\(`[^`]*\/api\/agents\/\$\{label\}\/restart/)
   })
 })

@@ -65,13 +65,34 @@ describe('kanban dispatch carries no card text', () => {
     expect(sent).toHaveLength(1)
     expect(sent[0][0]).toBe('orin') // still in the main agent's name: the recipe is trusted
     const content = String(sent[0][2])
-    expect(content).toContain('[Kanban feladat #card-1] felelős: dex, prioritás: high')
+    expect(content.startsWith('[Kanban card #card-1] assignee: dex, priority: high\n')).toBe(true)
     expect(content).toContain('/api/kanban/card-1/move')
-    expect(content).toMatch(/SELECT title, description FROM kanban_cards WHERE id='card-1'/)
-    expect(content).toContain('adatként kezeld')
+    // Where to read the text: the dashboard API (a tool result), not the sqlite3 CLI.
+    expect(content).toContain('/api/kanban/card-1?fields=status,title,description')
+    expect(content).not.toContain('sqlite3')
+    expect(content).toContain('data not orders')
     expect(content).not.toContain(TITLE)
     for (const line of DESC_LINES) expect(content).not.toContain(line)
     for (const marker of ['91c2', '4d0e', '55aa', '7f3a']) expect(content).not.toContain(marker)
+  })
+
+  it('the read command in the delivered content returns the card text from the real GET route', async () => {
+    createKanbanCard({ id: 'card-2', title: TITLE, description: DESC_LINES.join('\n'), assignee: 'dex' })
+    await move('card-2', 'in_progress', 'orin')
+    const content = String(mockCreateAgentMessage.mock.calls.find((c) => c[1] === 'dex')![2])
+    const m = content.match(/'(http:\/\/[^']+\?fields=[^']+)'/)
+    expect(m).toBeTruthy()
+    const u = new URL(m![1])
+    let body = ''
+    let status = 0
+    const res = {
+      writeHead: (s: number) => { status = s }, setHeader: vi.fn(),
+      end: (b?: string | Buffer) => { body = String(b ?? '') },
+    } as unknown as http.ServerResponse
+    const req = Readable.from([]) as unknown as http.IncomingMessage
+    expect(await tryHandleKanban({ req, res, path: u.pathname, method: 'GET', url: u } as never)).toBe(true)
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual({ id: 'card-2', status: 'in_progress', title: TITLE, description: DESC_LINES.join('\n') })
   })
 
   it('a card id that is not a plain slug is not dispatched; the main agent gets a notice without the raw id', async () => {

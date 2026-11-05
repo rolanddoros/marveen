@@ -18,7 +18,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { join, isAbsolute, relative, resolve, sep } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
-import { scrubSecurityTags } from '../prompt-safety.js'
+import { scrubScheduledTaskBody, type ScheduledTaskBody } from '../prompt-safety.js'
 
 export const SCHEDULED_RUNS_DIR = join(STORE_DIR, 'scheduled-runs')
 
@@ -117,7 +117,7 @@ const SNAPSHOT_WRITE_MAX_ATTEMPTS = 5
 // back to the inline path, never to drop the task (test 11).
 export function writeScheduledRunSnapshot(
   taskName: string,
-  body: string,
+  body: ScheduledTaskBody,
   opts: { firedAt?: Date; skillPath?: string; dir?: string } = {},
 ): ScheduledRunSnapshot | null {
   const dir = opts.dir ?? SCHEDULED_RUNS_DIR
@@ -129,7 +129,7 @@ export function writeScheduledRunSnapshot(
     return null
   }
   const skillSource = opts.skillPath ? readSkillSourceInfo(opts.skillPath) : null
-  const scrubbedBody = scrubSecurityTags(body)
+  const scrubbedBody = scrubScheduledTaskBody(body)
   const content = buildSnapshotHeader(taskName, firedAt, skillSource) + scrubbedBody
   const sha256 = createHash('sha256').update(scrubbedBody).digest('hex')
 

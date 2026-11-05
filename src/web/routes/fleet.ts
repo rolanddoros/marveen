@@ -3,11 +3,21 @@ import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path !== '/api/fleet/export' && path !== '/api/fleet/import') return false
+
+  // Export can carry vault data and import rewrites every agent: both are the owner's, never the
+  // shared token every agent holds (fork audit 2026-11-05, server-api-data #1). Same predicate as
+  // issuing credentials (mayIssueCredentials, #2163).
+  if (!mayIssueCredentials(ctx.auth, req)) {
+    logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Fleet transfer refused: no owner session')
+    json(res, OWNER_SESSION_REQUIRED, 403)
+    return true
+  }
 
   // H1: vault password via header, not query string (avoids access-log / proxy-log / browser-history leakage)
   const vaultPassword = req.headers['x-vault-password'] as string | undefined

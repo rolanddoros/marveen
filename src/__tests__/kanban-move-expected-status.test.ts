@@ -166,9 +166,10 @@ describe('moveKanbanCard expectedStatus (db layer)', () => {
 describe('dispatch recipe sends expected_status on the close', () => {
   const donePayload = (): Record<string, unknown> => {
     const out = kanbanMoveInstructions('t-1', 'dex')
-    const line = out.split('\n').find((l) => l.includes(`-d '{"status":"done"`))
+    // The heredoc body line of the close command, exactly as the reader pastes it.
+    const line = out.split('\n').find((l) => l.startsWith('{"status":"done"'))
     expect(line).toBeDefined()
-    return JSON.parse(line!.slice(line!.indexOf("'") + 1, line!.lastIndexOf("'"))) as Record<string, unknown>
+    return JSON.parse(line!) as Record<string, unknown>
   }
 
   it('a late close does not move a card that has moved on (409, unchanged)', async () => {
@@ -194,8 +195,9 @@ describe('dispatch recipe sends expected_status on the close', () => {
 
   it('tells the reader what a 409 means and to guard the waiting move too', () => {
     const out = kanbanMoveInstructions('t-1', 'dex')
-    expect(out).toContain('HTTP 409')
-    expect(out).toContain('status_conflict')
-    expect(out).toMatch(/waiting.*"expected_status":"in_progress"/)
+    expect(out).toContain('409 status_conflict = card moved on (current_status): stop, no retry')
+    // The waiting move is the same guarded close call, with "waiting" in place of "done".
+    expect(out).toContain('then close as "waiting", not "done"')
+    expect(out).toContain('"expected_status":"in_progress"')
   })
 })

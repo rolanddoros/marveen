@@ -194,6 +194,58 @@ KBD_PATCH = {"name": "kbd", "marker": KBD_MARKER, "anchors": KBD_ANCHORS, "mode"
              "apply": lambda text: apply_kbd(text),  # defined below
              "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"}
 
+
+# Group chats with requireMention (2026-10-23, Roland TG 1635): a photo or file
+# sent WITHOUT a caption, with the mention in a separate text message before or
+# after it, was dropped at the gate and never reached the agent (Anita's photos
+# to Lilla). Now such media from a sender the group allows is held for 5 minutes:
+# a mention from the same sender in the same chat delivers it, and media arriving
+# within 5 minutes after a mention goes straight through. Nothing else changes:
+# unknown senders and unconfigured groups are still dropped.
+HELD_MARKER = "// MARVEEN-PATCH(heldmedia1023): caption-less group media follows a nearby mention"
+HELD_HELPERS_ANCHOR = ("handleInbound definition", re.compile(r"^()async function handleInbound\(\n", re.MULTILINE))
+HELD_HELPERS = """HELD_MARKER_LINE
+const HELD_TTL_MS = 5 * 60 * 1000
+const HELD_FORCE = new WeakSet<Context>()
+const heldMedia = new Map<string, { ctx: Context; text: string; dl?: () => Promise<string | undefined>; att?: AttachmentMeta; at: number }[]>()
+const lastMention = new Map<string, number>()
+function heldKey(ctx: Context): string { return `${ctx.chat?.id}:${ctx.from?.id}` }
+function heldEligible(ctx: Context): boolean {
+  const t = ctx.chat?.type
+  if ((t !== 'group' && t !== 'supergroup') || !ctx.from) return false
+  const access = loadAccess()
+  if (access.dmPolicy === 'disabled') return false
+  const policy = access.groups[String(ctx.chat!.id)]
+  if (!policy) return false
+  const allow = policy.allowFrom ?? []
+  return allow.length === 0 || allow.includes(String(ctx.from.id))
+}
+async function holdMedia(ctx: Context, text: string, dl?: () => Promise<string | undefined>, att?: AttachmentMeta): Promise<void> {
+  if ((!dl && !att) || !heldEligible(ctx)) return
+  const key = heldKey(ctx), now = Date.now()
+  if (now - (lastMention.get(key) ?? 0) < HELD_TTL_MS) { HELD_FORCE.add(ctx); await handleInbound(ctx, text, dl, att); return }
+  const list = (heldMedia.get(key) ?? []).filter(h => now - h.at < HELD_TTL_MS)
+  list.push({ ctx, text, dl, att, at: now })
+  heldMedia.set(key, list.slice(-10))
+}
+async function flushHeld(ctx: Context): Promise<void> {
+  if (!heldEligible(ctx)) return
+  const key = heldKey(ctx), now = Date.now()
+  lastMention.set(key, now)
+  const list = (heldMedia.get(key) ?? []).filter(h => now - h.at < HELD_TTL_MS)
+  heldMedia.delete(key)
+  for (const h of list) { HELD_FORCE.add(h.ctx); await handleInbound(h.ctx, h.text, h.dl, h.att) }
+}
+
+""".replace("HELD_MARKER_LINE", HELD_MARKER).replace("{", "{{").replace("}", "}}")
+HELD_GATE_ANCHOR = ("gate drop line", re.compile(r"^( *)const result = gate\(ctx\)\n\n *if \(result\.action === 'drop'\) return\n", re.MULTILINE))
+HELD_GATE = (
+    "{indent}const forced = HELD_FORCE.has(ctx) " + HELD_MARKER + "\n"
+    "{indent}const result: GateResult = forced ? {{ action: 'deliver', access: loadAccess() }} : gate(ctx)\n\n"
+    "{indent}if (result.action === 'drop') {{ await holdMedia(ctx, text, downloadImage, attachment); return }}\n"
+    "{indent}if (result.action === 'deliver' && !forced) await flushHeld(ctx)\n"
+)
+
 # Independent patches: each has its own marker and is all-or-nothing on its
 # own, so a plugin update that moves one anchor does not undo the other.
 PATCHES = [
@@ -208,6 +260,9 @@ PATCHES = [
     # an anchor may carry its own mode and insert (name, regex, mode, insert): the kbd lines differ.
     # "apply" replaces apply_patch for a patch that must also rebuild an older version of itself.
     KBD_PATCH,
+    {"name": "held", "marker": HELD_MARKER, "mode": "insert-after",
+     "anchors": [(*HELD_HELPERS_ANCHOR, "insert-before", HELD_HELPERS), (*HELD_GATE_ANCHOR, "replace", HELD_GATE)],
+     "fallback": "a caption-less photo or file in a mention-only group is dropped again"},
 ]
 
 # Topics (TELEGRAM_TOPICS_ENABLED, default off). A private chat with topic mode
@@ -290,6 +345,8 @@ def apply_patch(text, patch):
             out = out[:m.start()] + f"{indent}{patch['marker']} ({name} removed)\n" + out[m.end():]
         elif mode == "insert-before":
             out = out[:m.start()] + insert.format(indent=indent) + out[m.start():]
+        elif mode == "replace":
+            out = out[:m.start()] + insert.format(indent=indent) + out[m.end():]
         else:
             out = out[:m.end()] + insert.format(indent=indent) + out[m.end():]
     return out, "patched"

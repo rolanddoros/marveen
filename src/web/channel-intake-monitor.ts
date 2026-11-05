@@ -104,10 +104,12 @@ const TOKEN_REJECTED_STATUSES = new Set([401, 404])
  *
  * `status === 0` is the caller's marker for "the HTTP call never completed",
  * which must NOT be read as a bad token: our own network being down would
- * otherwise page the owner about every agent at once.
+ * otherwise page the owner about every agent at once. A 5xx is the same case
+ * on Telegram's side (a "Bad Gateway" paged the owner on 2026-10-26 as a
+ * refused token): the server failed, it did not judge the token.
  */
 export function parseIntakeProbe(status: number, body: unknown): IntakeProbe {
-  if (status === 0) {
+  if (status === 0 || status >= 500) {
     return { reachable: false, tokenOk: true, pendingUpdates: null, webhookUrl: null, lastErrorMessage: null }
   }
   const parsed = (body ?? {}) as TelegramWebhookInfoBody

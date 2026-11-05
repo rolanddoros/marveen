@@ -202,7 +202,7 @@ describe('skill directory operations run one at a time', () => {
     process.env.PROBE_SKILL = 's5'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    const imp = call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', {})
+    const imp = call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', {}, SESSION) // owner-only since the 2026-11-05 audit fix
     const [e, i] = await Promise.all([exp, imp])
     expect(e.status).toBe(200)
     expect(i.status).toBe(200)
@@ -216,7 +216,7 @@ describe('skill directory operations run one at a time', () => {
     H.fleetExportSawZipEnd = undefined
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    const fx = call(tryHandleFleet, 'GET', '/api/fleet/export')
+    const fx = call(tryHandleFleet, 'GET', '/api/fleet/export', undefined, SESSION) // owner-only since the 2026-11-05 audit fix
     const [e, f] = await Promise.all([exp, fx])
     expect(e.status).toBe(200)
     expect(f.status).toBe(200)

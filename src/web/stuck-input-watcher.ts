@@ -4,7 +4,8 @@ import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
+import { recoverStuckInputForSession } from './channel-monitor.js'
+import { createAgentMessage } from '../db.js'
 import {
   stuckInputSignature,
   parkedPasteSignature,
@@ -267,7 +268,11 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       })) {
         alertedSpells.add(session)
         logger.warn({ label, session, paneState }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts at a non-busy pane, alerting for manual restart')
-        sendAlert(parkedGiveUpAlertText(label, session === MAIN_CHANNELS_SESSION))
+        // Routed to the main agent, not the owner's channel: the owner asked
+        // (2026-10-19) to have these fixed without being told. The main agent
+        // can read the pane and press Enter or restart; the owner cannot do
+        // anything the main agent could not.
+        createAgentMessage('system', MAIN_AGENT_ID, `[stuck-input] Agent '${label}' (tmux ${session}) still has parked input after the auto-recovery (Enter + clear/re-inject) at a non-busy pane. Check the pane: if the parked text is ours, press Enter; if the session is wedged, restart it (POST /api/agents/${label}/restart). Do not forward this to the owner unless it cannot be fixed.`)
       } else if (paneState === 'busy' && prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts) {
         // Once per spell, at the crossing tick: say WHY no alert went out, so
         // a real wedge investigation finds the suppression instead of a hole.

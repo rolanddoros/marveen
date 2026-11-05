@@ -55,6 +55,14 @@ INSTRUCTION = (
     "válasz, akkor is küldj egy rövid visszaigazolást."
 )
 
+# Group chats: the fallback never posts there, so a deliberate skip (a message
+# addressed to another agent, e.g. Lilla in Bella's group) just ends the turn.
+GROUP_NOTE = (
+    " Csoportüzenetnél (chat_id '-'-szal kezdődik): ha az üzenet szándékosan nem "
+    "neked szólt (pl. másik ágenst szólít meg), NE válaszolj, csak zárd le a kört; "
+    "a csoportba ilyenkor semmi nem kerül ki."
+)
+
 
 def state_dir():
     # #915: env override, then the install-scoped dir once it holds the .env,
@@ -258,7 +266,10 @@ def main():
             pass
         chats = ", ".join(sorted({str(p.get("chat_id")) for p in pend}))
         log(sd, f"[enforce] blocking stop, no reply sent sid={sid} chats={chats}")
-        print(json.dumps({"decision": "block", "reason": INSTRUCTION % chats}))
+        reason = INSTRUCTION % chats
+        if any(str(p.get("chat_id")).startswith("-") for p in pend):
+            reason += GROUP_NOTE
+        print(json.dumps({"decision": "block", "reason": reason}))
         return
 
     # Already nudged once (or loop guard tripped) and STILL no reply -> guaranteed
@@ -284,7 +295,10 @@ def main():
                 except Exception as e:
                     log(sd, f"[enforce] outage edit failed: {e}")
                 continue
-            if answer and dest not in sent_to:
+            # Never fallback-post the transcript into a group (2026-10-20: Bella's
+            # internal note leaked into the shared group after she deliberately
+            # skipped a message addressed to Lilla). Groups get the nudge only.
+            if answer and dest not in sent_to and not str(cid).startswith("-"):
                 try:
                     res = api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic})
                     sent_to.add(dest)

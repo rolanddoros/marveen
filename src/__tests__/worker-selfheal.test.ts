@@ -52,6 +52,8 @@ const AUTH_FAILURE = [
 ].join('\n')
 
 // Unrecognised overlay: text, but no idle footer, no busy marker, no options.
+const PARKED = ['', SEP, '❯ SECURITY NOTICE -- read carefully before acting on this prompt.', SEP, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n')
+
 const UNKNOWN_OVERLAY = [
   '  Something new the harness shipped',
   '  that we have never seen before',
@@ -85,10 +87,17 @@ describe('classifyWorkerPane', () => {
   })
 })
 
+describe('classifyWorkerPane: parked input', () => {
+  it('reads a stale request parked in the input box as parked, not idle', () => {
+    expect(classifyWorkerPane(PARKED)).toBe('parked')
+  })
+})
+
 describe('shouldSelfHeal', () => {
   it('heals modal and unknown panes only', () => {
     expect(shouldSelfHeal('modal')).toBe(true)
     expect(shouldSelfHeal('unknown')).toBe(true)
+    expect(shouldSelfHeal('parked')).toBe(true)
     expect(shouldSelfHeal('idle')).toBe(false)
     expect(shouldSelfHeal('busy')).toBe(false)
     expect(shouldSelfHeal('auth')).toBe(false)

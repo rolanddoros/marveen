@@ -14,7 +14,11 @@ chat. Pure stdlib (sqlite3) -- no node startup, no jq.
 import os
 import sqlite3
 import calendar
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_redact  # noqa: E402
 
 # Canonical schema. MUST stay identical to the db.ts initDatabase() migration
 # (asserted by a contract test). Created defensively so a hook that runs before
@@ -293,7 +297,12 @@ def log_inbound(agent_id, chat_id, message_id, text, ts,
 
     source: the channel envelope's source attribute ("plugin:<provider>:<server>"),
     or None when the caller does not know it. Used to name the RIGHT reply tool
-    in the reply guard's directive (PROVIDERVAK908)."""
+    in the reply guard's directive (PROVIDERVAK908).
+
+    text is secret-redacted before it is stored (LEDGERREDACT1105): the
+    ledger is replayed into every fresh session, so a password or token the
+    owner sent must never be persisted here."""
+    text = ledger_redact.redact(text)
     con = connect()
     try:
         con.execute(
@@ -320,7 +329,12 @@ def log_outbound(agent_id, chat_id, text, message_id=None):
     Note: INSERT OR IGNORE silently swallows ALL constraint violations, not
     only UNIQUE conflicts. This is intentional: a duplicate outbound row is
     harmless, and we never want the ledger write to raise an exception.
+
+    text is secret-redacted before it is stored (LEDGERREDACT1105): a reply
+    carrying a VNC password or a token used to be replayed into every fresh
+    session.
     """
+    text = ledger_redact.redact(text)
     con = connect()
     try:
         now = int(time.time())

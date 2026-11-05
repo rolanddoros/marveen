@@ -36,7 +36,7 @@ beforeAll(async () => {
   const hooksDir = join(tmpRoot, 'scripts', 'hooks')
   mkdirSync(hooksDir, { recursive: true })
   mkdirSync(join(tmpRoot, 'store'), { recursive: true })
-  for (const f of ['tool-log-capture.py', 'ledger_lib.py']) {
+  for (const f of ['tool-log-capture.py', 'ledger_lib.py', 'ledger_redact.py']) {
     copyFileSync(join(ROOT, 'scripts', 'hooks', f), join(hooksDir, f))
   }
   hookCopy = join(hooksDir, 'tool-log-capture.py')
