@@ -19,6 +19,7 @@ agent-msg.sh lives in send_message below, unchanged in what it checks, prints an
 Exit codes: one table for every verb and for agent-msg.sh, EXIT_CODES below (also printed by --help).
 """
 import http.client
+import importlib.util
 import json
 import math
 import os
@@ -117,57 +118,48 @@ def fail_usage(msg):
     raise UsageError(msg)
 
 
-LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
-TOKEN_FILE_NAME = '.dashboard-token'
+ENV_GATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env_gate.py')
+
+
+_ENV_GATE = None
+
+
+def load_env_gate():
+    """scripts/lib/env_gate.py, by its exact path next to this file (C2 PR4c): the one copy of the token env gate.
+    Loaded once per process."""
+    global _ENV_GATE
+    if _ENV_GATE is None:
+        spec = importlib.util.spec_from_file_location('marveen_env_gate', ENV_GATE_PATH)
+        if spec is None or spec.loader is None:
+            raise ImportError(ENV_GATE_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ENV_GATE = mod
+    return _ENV_GATE
 
 
 def env_file_values(*keys):
     """The install's own .env values for these keys (an agent's environment cannot change them)."""
-    out = {}
-    try:
-        with open(os.path.join(BASE, '.env'), encoding='utf-8') as f:
-            for line in f:
-                k, sep, v = line.partition('=')
-                if sep and k.strip() in keys and k.strip() not in out:
-                    out[k.strip()] = v.strip().strip('"\'')
-    except OSError:
-        pass
-    return out
+    return load_env_gate().env_file_values(BASE, *keys)
 
 
 def check_env():
     """Refuses an environment that would send the token elsewhere; None when it is fine.
 
-    The token goes to MARVEEN_API_BASE and comes from MARVEEN_TOKEN_FILE, and both are plain
-    environment. A base is accepted only on loopback, or when it is exactly this install's own
-    AGENT_API_ORIGIN or DASHBOARD_PUBLIC_URL from its .env (a remote agent's route). The token file
-    must be a .dashboard-token, so the helper cannot send another file's first line as a header."""
-    base = os.environ.get('MARVEEN_API_BASE')
-    if base:
-        b = base.strip().rstrip('/')
-        u = urllib.parse.urlsplit(b)
-        on_loopback = u.scheme in ('http', 'https') and u.hostname in LOOPBACK_HOSTS
-        configured = {v.rstrip('/') for v in env_file_values('AGENT_API_ORIGIN', 'DASHBOARD_PUBLIC_URL').values() if v}
-        if not on_loopback and b not in configured:
-            return (f'MARVEEN_API_BASE={b} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
-                    'DASHBOARD_PUBLIC_URL (.env); nothing was sent.')
-        # VOICETOKENLEAK1101 PR-B (Dani 65495): an ORIGIN only. A base carrying a path, a query or a fragment
-        # (http://127.0.0.1:3420/api/schedules?x=) would turn every verb's own path into a query or a fragment, so the
-        # request would go to that path instead: the schedule-write guard and the agent's own scope would look at the
-        # wrong path.
-        if u.path not in ('', '/') or u.query or u.fragment or '?' in b or '#' in b or not u.netloc:
-            return (f'MARVEEN_API_BASE={b} must be an origin only (scheme://host[:port]), with no path, query or '
-                    'fragment; nothing was sent.')
-    token_file = os.environ.get('MARVEEN_TOKEN_FILE')
-    if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
-        return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
-    return None
+    The rules live in scripts/lib/env_gate.py (shared with jegyzetek.py, marveen-commands.py and the pre-push review
+    gate). BASE, the install root, comes from this file's location, never from the environment. If the gate cannot
+    be loaded, nothing is sent (fail closed)."""
+    try:
+        gate = load_env_gate()
+    except (OSError, ImportError, SyntaxError) as e:
+        return f'the env gate {ENV_GATE_PATH} cannot be loaded ({e.__class__.__name__}); nothing was sent.'
+    return gate.check_env(BASE)
 
 
 def api_base():
     base = os.environ.get('MARVEEN_API_BASE')
     if base:
-        return base.strip().rstrip('/')
+        return load_env_gate().normalise_base(base)  # the same reading the gate checked
     port = os.environ.get('MARVEEN_WEB_PORT') or os.environ.get('WEB_PORT') or env_file_values('WEB_PORT').get('WEB_PORT')
     return f'http://localhost:{port or 3420}'
 
@@ -726,10 +718,8 @@ def send_message(sender, to, text, priority, token):
 
 
 def message_api_base():
-    # agent-msg.sh's own reading: MARVEEN_API_BASE as given minus one trailing '/', else the port chain.
-    base = os.environ.get('MARVEEN_API_BASE')
-    if base:
-        return base[:-1] if base.endswith('/') else base
+    # The gate's own reading (env_gate.normalise_base, Ron PR4b point 7), else the port chain. agent-msg.sh used to
+    # drop only one trailing '/' and keep surrounding spaces, so a base the gate accepted could fail on the wire.
     return api_base()
 
 
@@ -853,14 +843,9 @@ def main(argv):
         print(f'FAIL: {refused}', file=sys.stderr)
         return EXIT['usage']
     if argv[0] == '--check-env':
-        # marveen-api.sh asks this before it hands the message verb to agent-msg.sh, which reads
-        # the same two variables.
-        return EXIT['ok']
-    if argv[0] == '--check-token':
-        # ...and this one too: the token file the way the other verbs read it (missing, unreadable
-        # or empty -> exit 2, nothing sent). agent-msg.sh alone would send an empty Bearer for an
-        # empty file (VOICETOKENLEAK1101 PR-A0).
-        read_token()
+        # The env gate alone, nothing sent: exit 0 or 2. No script calls it since PR4 moved `message` into python;
+        # the tests use it to probe the gate (marveen-api-helper.test.ts). (--check-token had no caller left and
+        # is gone, C2 PR4c.)
         return EXIT['ok']
     if argv[0] == 'message':
         return helper_message_main(argv[1:])

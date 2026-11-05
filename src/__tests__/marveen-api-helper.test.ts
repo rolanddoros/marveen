@@ -332,7 +332,7 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     const root = mkdtempSync(join(tmpdir(), 'marveen-api-fallback-'))
     mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
     mkdirSync(join(root, 'store'), { recursive: true })
-    for (const f of ['marveen-api.sh', 'agent-msg.sh', join('lib', 'marveen_api.py')]) {
+    for (const f of ['marveen-api.sh', 'agent-msg.sh', join('lib', 'marveen_api.py'), join('lib', 'env_gate.py')]) {
       copyFileSync(join(REPO, 'scripts', f), join(root, 'scripts', f))
     }
     const SHARED = 'shared-token-SHOULD-NOT-SEND'
@@ -435,6 +435,8 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     const root = mkdtempSync(join(tmpdir(), 'marveen-api-root-'))
     mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
     copyFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), join(root, 'scripts', 'lib', 'marveen_api.py'))
+    // C2 PR4c: the gate itself lives in env_gate.py next to the helper (without it the helper refuses everything)
+    copyFileSync(join(REPO, 'scripts', 'lib', 'env_gate.py'), join(root, 'scripts', 'lib', 'env_gate.py'))
     writeFileSync(join(root, '.env'), 'WEB_PORT=3420\nAGENT_API_ORIGIN="https://dash.example.com/"\nDASHBOARD_PUBLIC_URL=https://public.example.com\n')
     const check = (base: string) => new Promise<number>((resolve) => {
       execFile('python3', ['-I', join(root, 'scripts', 'lib', 'marveen_api.py'), '--check-env'],

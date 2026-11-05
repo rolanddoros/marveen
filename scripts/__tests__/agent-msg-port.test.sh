@@ -27,7 +27,7 @@ INST="$SANDBOX/install"; BIN="$SANDBOX/bin"
 mkdir -p "$INST/scripts/lib" "$INST/store" "$BIN"
 cp "$ROOT/scripts/agent-msg.sh" "$ROOT/scripts/agent-msg-get.sh" "$INST/scripts/"
 # C2 PR4: agent-msg.sh is a shim over the python helper; it sends with urllib, not curl.
-cp "$ROOT/scripts/lib/marveen_api.py" "$INST/scripts/lib/"
+cp "$ROOT/scripts/lib/marveen_api.py" "$ROOT/scripts/lib/env_gate.py" "$INST/scripts/lib/"
 printf 'test-token\n' > "$INST/store/.dashboard-token"
 
 # curl stub (agent-msg-get.sh still uses curl): logs every argument that looks like a URL, answers 200 with an id.

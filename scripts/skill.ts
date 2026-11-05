@@ -43,7 +43,11 @@ import {
  * helyeken szetszorva: egy sajat peldanyt futtato telepitesnek at kell tudni
  * allitani, es a teszteknek is.
  */
-const ALAP_API = process.env.MARVEEN_API_BASE || 'https://fpxycpxdxgifimbmwgzj.supabase.co'
+// C2 PR4c (Johnny 11720): SAJAT valtozo. A MARVEEN_API_BASE a dashboard-API cime, oda megy a dashboard-token,
+// es a token env-kapuja (scripts/lib/env_gate.py) csak loopbackot vagy az .env originjet enged. Kozos nev mellett
+// aki a skill-registryt atallitja, ugyanazzal a dashboard-tokent is a registry fele iranyitana. Regi nevre nincs
+// visszaeses: a 2026-11-05-i meres szerint senki nem allitja a MARVEEN_API_BASE-t.
+const ALAP_API = process.env.SKILL_REGISTRY_BASE || 'https://fpxycpxdxgifimbmwgzj.supabase.co'
 
 function fail(uzenet: string): never {
   console.error(`hiba: ${uzenet}`)

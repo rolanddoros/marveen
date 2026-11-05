@@ -63,6 +63,7 @@ Exception TYPE only.
 """
 import sys
 import os
+import importlib.util
 import re
 import json
 import select
@@ -84,6 +85,10 @@ REPO_ROOT = os.environ.get("MARVEEN_INSTALL_DIR") or os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 USAGE_SCRIPT = os.path.join(REPO_ROOT, "scripts", "usage-collect.py")
+# The token env gate's root (C2 PR4c, Kevin 11741): from this file's location ONLY. MARVEEN_INSTALL_DIR may move
+# REPO_ROOT (the store and the token, for tests), but it must not choose the .env that decides which origins are
+# allowed: a gate must not ask the environment whether to trust the environment.
+GATE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 TELEGRAM_MAX_TEXT = 4096
 SEND_ATTEMPTS = 3
@@ -187,7 +192,41 @@ def web_port():
 
 
 def api_base():
-    return os.environ.get("MARVEEN_API_BASE") or f"http://127.0.0.1:{web_port()}"
+    base = os.environ.get("MARVEEN_API_BASE")
+    if base:
+        return env_gate().normalise_base(base)  # the reading the gate checked (env_gate_check runs first)
+    return f"http://127.0.0.1:{web_port()}"
+
+
+class EnvGateRefused(Exception):
+    """The env gate's refusal. Its text is the gate's own line (the offending MARVEEN_* value, never a token or a
+    request URL), so unlike other exceptions it may be shown in a log line or a reply."""
+
+
+ENV_GATE_PATH = os.path.join(GATE_ROOT, "scripts", "lib", "env_gate.py")
+_ENV_GATE = []
+
+
+def env_gate():
+    """scripts/lib/env_gate.py, loaded once by its exact path under GATE_ROOT. Raises when it cannot be loaded."""
+    if not _ENV_GATE:
+        spec = importlib.util.spec_from_file_location("marveen_env_gate", ENV_GATE_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ENV_GATE.append(mod)
+    return _ENV_GATE[0]
+
+
+def env_gate_check():
+    """Raises EnvGateRefused(<refusal>) unless the shared env gate accepts MARVEEN_API_BASE / MARVEEN_TOKEN_FILE.
+    Called before every read of the dashboard token; a gate that cannot be loaded refuses too (fail closed)."""
+    try:
+        mod = env_gate()
+    except (OSError, ImportError, SyntaxError, AttributeError) as e:
+        raise EnvGateRefused(f"the env gate {ENV_GATE_PATH} cannot be loaded ({e.__class__.__name__}); nothing was sent.")
+    refused = mod.check_env(GATE_ROOT)
+    if refused:
+        raise EnvGateRefused(refused)
 
 
 def tg(tok, method, payload):
@@ -274,6 +313,10 @@ def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, t
     runs a WRITE only when the Telegram plugin itself recorded that message
     (src/web/write-evidence.ts), so an HTTP caller holding the dashboard
     token cannot run one by leaving the identity fields out (#1530 review)."""
+    try:
+        env_gate_check()
+    except EnvGateRefused as e:
+        return None, f"env-kapu: {e}"
     try:
         with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
             dtok = f.read().strip()
@@ -629,6 +672,7 @@ def command_names():
     """The registry's command names from the dashboard menu, the builtin set
     when the dashboard is down (custom commands then missing -- stated)."""
     try:
+        env_gate_check()  # a refusal raises here: the builtin set below, the menu is not asked
         with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
             dtok = f.read().strip()
         req = urllib.request.Request(api_base() + "/api/commands/menu",
@@ -682,6 +726,7 @@ def run_stop():
     except Exception:
         sys.exit(0)
     try:
+        env_gate_check()  # a refusal raises here and is logged below, nothing is sent
         with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
             dtok = f.read().strip()
         req = urllib.request.Request(
@@ -690,7 +735,7 @@ def run_stop():
         )
         urllib.request.urlopen(req, timeout=5).read()
     except Exception as e:
-        log(state_dir(), f"turn-ended notify failed: {type(e).__name__}")
+        log(state_dir(), f"turn-ended notify failed: {type(e).__name__}" + (f": {e}" if isinstance(e, EnvGateRefused) else ""))
     sys.exit(0)
 
 

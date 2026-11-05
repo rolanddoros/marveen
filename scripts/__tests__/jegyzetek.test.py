@@ -37,6 +37,7 @@ for name in ("jegyzetek.py", "agent-msg.sh"):
     shutil.copy(os.path.join(ROOT, "scripts", name), os.path.join(SANDBOX, "scripts", name))
 # C2 PR4: agent-msg.sh is a shim over the python helper, which logs to <its install>/store too.
 shutil.copy(os.path.join(ROOT, "scripts", "lib", "marveen_api.py"), os.path.join(SANDBOX, "scripts", "lib", "marveen_api.py"))
+shutil.copy(os.path.join(ROOT, "scripts", "lib", "env_gate.py"), os.path.join(SANDBOX, "scripts", "lib", "env_gate.py"))
 SCRIPT = os.path.join(SANDBOX, "scripts", "jegyzetek.py")
 REAL_FAIL_LOG = os.path.join(ROOT, "store", "agent-msg-failures.log")
 SANDBOX_FAIL_LOG = os.path.join(SANDBOX, "store", "agent-msg-failures.log")
@@ -144,7 +145,8 @@ check("uj posts a lower-cased assignee and the named author",
 r, _ = cli("lista", env_extra={"MARVEEN_API_BASE": "http://127.0.0.1:9"})
 check("unreachable dashboard: one FAIL line, exit 1, no traceback",
       r.returncode == 1 and "not reachable" in r.stderr and "Traceback" not in r.stderr, r.stderr)
-r, _ = cli("lista", env_extra={"MARVEEN_TOKEN_FILE": os.path.join(TMP, "missing")})
+# a MISSING token file with the right name (C2 PR4c: any other name is refused earlier, by the env gate)
+r, _ = cli("lista", env_extra={"MARVEEN_TOKEN_FILE": os.path.join(TMP, "missing", ".dashboard-token")})
 check("missing token file: one FAIL line, exit 1, no traceback",
       r.returncode == 1 and "dashboard token" in r.stderr and "Traceback" not in r.stderr, r.stderr)
 

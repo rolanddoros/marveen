@@ -30,9 +30,12 @@ skipped. Exit 1 if any message could not be sent.
 
 Environment: MARVEEN_API_BASE, else the port chain of scripts/agent-msg.sh
 (MARVEEN_WEB_PORT, WEB_PORT, WEB_PORT in .env, 3420); MARVEEN_TOKEN_FILE (default
-store/.dashboard-token); MAIN_AGENT_ID (else .env, else marveen).
+store/.dashboard-token); MAIN_AGENT_ID (else .env, else marveen). Both MARVEEN_* values pass the shared env gate
+(scripts/lib/env_gate.py) before the token is read: loopback or the install's .env origin only, a .dashboard-token
+file only; otherwise one FAIL line, exit 1, nothing sent.
 """
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -70,7 +73,7 @@ def read_env_keys(keys):
 def api_base():
     base = os.environ.get("MARVEEN_API_BASE")
     if base:
-        return base.rstrip("/")
+        return env_gate().normalise_base(base)  # the reading the gate checked (api() runs the gate first)
     port = (os.environ.get("MARVEEN_WEB_PORT") or os.environ.get("WEB_PORT")
             or read_env_keys(("WEB_PORT",)).get("WEB_PORT") or "3420")
     return "http://localhost:%s" % port
@@ -90,7 +93,34 @@ def token():
         raise CliError("cannot read the dashboard token (%s): %s" % (path, e.strerror))
 
 
+ENV_GATE_PATH = os.path.join(ROOT, "scripts", "lib", "env_gate.py")
+_ENV_GATE = []
+
+
+def env_gate():
+    """The shared token env gate (scripts/lib/env_gate.py, C2 PR4c), loaded once by its exact path from ROOT, which
+    comes from this file's location, never from the environment. Raises when it cannot be loaded."""
+    if not _ENV_GATE:
+        spec = importlib.util.spec_from_file_location("marveen_env_gate", ENV_GATE_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ENV_GATE.append(mod)
+    return _ENV_GATE[0]
+
+
+def env_gate_refusal():
+    """None when the environment may be used; otherwise why not. Not loadable: refuse (fail closed)."""
+    try:
+        gate = env_gate()
+    except (OSError, ImportError, SyntaxError, AttributeError) as e:
+        return "the env gate %s cannot be loaded (%s); nothing was sent." % (ENV_GATE_PATH, e.__class__.__name__)
+    return gate.check_env(ROOT)
+
+
 def api(method, path, payload=None):
+    refused = env_gate_refusal()  # before the token is read
+    if refused:
+        raise CliError(refused)
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(api_base() + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + token())

@@ -80,6 +80,7 @@ The rest (same names as scripts/agent-msg.sh):
   MARVEEN_WEB_PORT    dashboard port (then WEB_PORT in the env, then in <install>/.env, then 3420)
   MARVEEN_TOKEN_FILE  bearer token file (default <install>/store/.dashboard-token)
 """
+import importlib.util
 import json
 import os
 import re
@@ -106,6 +107,22 @@ MIN_REASON = 8
 INSTALL = Path(os.environ.get("REVIEW_GATE_INSTALL_ROOT") or Path(__file__).resolve().parents[3])
 STORE = INSTALL / "store"
 SKIPLOG = STORE / "push-review-gate-skips.log"
+
+# The token env gate (scripts/lib/env_gate.py, C2 PR4c), located from THIS file only, never from the environment
+# (Kevin 11741/11751: a gate must not ask the environment whether to trust the environment; REVIEW_GATE_INSTALL_ROOT
+# moves STORE for tests, not this). Two layouts:
+#   installed  <common .git>/hooks/pre-push.d/30-review-gate: the installer copies the module next to this copy, to
+#              <common .git>/hooks/marveen-lib/env_gate.py (644, outside pre-push.d, whose dispatcher runs every
+#              executable entry), so the hook never depends on what the live tree holds; the allowed .env is the
+#              install's, parents[3]/.env. Every worktree shares this one copy (git uses the common hooks dir).
+#   source     <root>/scripts/git-hooks/pre-push-review-gate.py: scripts/lib/env_gate.py and <root>/.env.
+_HERE = Path(__file__).resolve()
+if _HERE.parent.name == "pre-push.d":
+    GATE_MODULE = _HERE.parents[1] / "marveen-lib" / "env_gate.py"
+    GATE_ROOT = _HERE.parents[3]
+else:
+    GATE_MODULE = _HERE.parents[1] / "lib" / "env_gate.py"
+    GATE_ROOT = _HERE.parents[2]
 
 
 def agent_session():
@@ -152,14 +169,41 @@ def cfg(name):
 def api_base():
     base = os.environ.get("MARVEEN_API_BASE")
     if base:
-        return base.rstrip("/")
+        return env_gate().normalise_base(base)  # the reading the gate checked (green_hashes runs the gate first)
     port = os.environ.get("MARVEEN_WEB_PORT") or cfg("WEB_PORT")
     return "http://localhost:%s" % (port or "3420")
+
+
+_ENV_GATE = []
+
+
+def env_gate():
+    """The pinned env gate module, loaded once by its exact path (GATE_MODULE). Raises when it cannot be loaded."""
+    if not _ENV_GATE:
+        spec = importlib.util.spec_from_file_location("marveen_env_gate", str(GATE_MODULE))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _ENV_GATE.append(mod)
+    return _ENV_GATE[0]
+
+
+def env_gate_refusal():
+    """None when MARVEEN_API_BASE / MARVEEN_TOKEN_FILE pass the shared env gate; otherwise why not. Loaded lazily,
+    only on the token path, so a disabled gate (no reviewer) never depends on the module. Missing: refused."""
+    try:
+        mod = env_gate()
+    except (OSError, ImportError, SyntaxError, AttributeError) as e:
+        return ("the env gate %s cannot be loaded (%s); reinstall the hook: bash scripts/install-review-gate-hook.sh"
+                % (GATE_MODULE, type(e).__name__))
+    return mod.check_env(str(GATE_ROOT))
 
 
 def green_hashes(reviewer, word):
     """Every hash the reviewer has greened, newest first. Raises on anything that is not a clean answer."""
     trace_re = re.compile(r"^[ \t]*%s[ \t]+([0-9a-fA-F]{8,40})[ \t]*$" % re.escape(word), re.MULTILINE)
+    refused = env_gate_refusal()  # before the token is read; the caller refuses the push
+    if refused:
+        raise RuntimeError(refused)
     token_file = Path(os.environ.get("MARVEEN_TOKEN_FILE") or STORE / ".dashboard-token")
     token = token_file.read_text().strip()
     if not token:
