@@ -8,66 +8,11 @@
 #
 # Usage: bash scripts/marveen-api.sh <verb> [args]   (bash scripts/marveen-api.sh --help lists them)
 #   message [<from>] <to> <content-file> [--priority high|normal]   (<from> defaults to $MARVEEN_AGENT_ID)
-#     runs the existing scripts/agent-msg.sh (its checks, retries and failure log), the text from
-#     the file on its stdin.
-#   every other verb: scripts/lib/marveen_api.py.
-# Env: the same as agent-msg.sh -- MARVEEN_API_BASE, MARVEEN_WEB_PORT, WEB_PORT, MARVEEN_TOKEN_FILE.
+#   every verb, message included, is scripts/lib/marveen_api.py (C2 PR4: the message verb's send, which
+#   agent-msg.sh used to do, is there too, with the same checks, retries and failure log).
+# Env: MARVEEN_API_BASE, MARVEEN_WEB_PORT, WEB_PORT, MARVEEN_TOKEN_FILE, MARVEEN_AGENT_ID.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-if [ "${1:-}" = "message" ]; then
-  shift
-  # agent-msg.sh reads MARVEEN_API_BASE and MARVEEN_TOKEN_FILE too: the same guard first.
-  python3 "$DIR/lib/marveen_api.py" --check-env || exit 2
-  # The token file it will read: missing, unreadable or empty stops here, never an empty Bearer.
-  python3 "$DIR/lib/marveen_api.py" --check-token || exit 2
-  PRIORITY=()
-  ARGS=()
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --priority) [ "$#" -ge 2 ] || { echo "FAIL: --priority needs a value" >&2; exit 2; }; PRIORITY=(--priority "$2"); shift 2 ;;
-      --priority=*) PRIORITY=(--priority "${1#--priority=}"); shift ;;
-      --*) echo "FAIL: message: unknown option $1" >&2; exit 2 ;;
-      *) ARGS+=("$1"); shift ;;
-    esac
-  done
-  # C2 PR6: <from> left out -> the launcher-exported MARVEEN_AGENT_ID (attribution only, not a security boundary);
-  # an explicit <from> always wins, and without the variable the count check below fails as before.
-  if [ "${#ARGS[@]}" -eq 2 ] && [ -n "${MARVEEN_AGENT_ID:-}" ]; then
-    if ! [[ "$MARVEEN_AGENT_ID" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
-      echo "FAIL: message: \$MARVEEN_AGENT_ID='$MARVEEN_AGENT_ID' is not a valid agent name; pass <from> explicitly" >&2
-      exit 2
-    fi
-    ARGS=("$MARVEEN_AGENT_ID" "${ARGS[@]}")
-  fi
-  if [ "${#ARGS[@]}" -ne 3 ]; then
-    echo "FAIL: usage: bash scripts/marveen-api.sh message <from> <to> <content-file> [--priority high|normal]" >&2
-    exit 2
-  fi
-  FROM="${ARGS[0]}"; TO="${ARGS[1]}"; FILE="${ARGS[2]}"
-  if [ "$FILE" = "-" ]; then
-    exec bash "$DIR/agent-msg.sh" ${PRIORITY[@]+"${PRIORITY[@]}"} "$FROM" "$TO" -
-  fi
-  [ -r "$FILE" ] || { echo "FAIL: cannot read $FILE; nothing was sent." >&2; exit 2; }
-  # A recipe payload file (api-<kind>.txt, one fixed name per kind) is emptied after a successful send and an empty one
-  # stops here, so an old text is never sent twice (VOICETOKENLEAK1101 PR-A1, Dani 65157/1); the same rule as the
-  # python verbs (marveen_api.py read_text).
-  case "$(basename "$FILE")" in
-    api-*.txt)
-      if ! grep -q '[^[:space:]]' "$FILE"; then
-        echo "FAIL: $FILE is empty: a recipe payload file is emptied after each send, write the new text first; nothing was sent." >&2
-        exit 2
-      fi
-      rc=0
-      bash "$DIR/agent-msg.sh" ${PRIORITY[@]+"${PRIORITY[@]}"} "$FROM" "$TO" - < "$FILE" || rc=$?
-      if [ "$rc" -eq 0 ]; then
-        : > "$FILE" || echo "WARN: sent, but could not empty $FILE; empty it before the next use." >&2
-      fi
-      exit "$rc"
-      ;;
-  esac
-  exec bash "$DIR/agent-msg.sh" ${PRIORITY[@]+"${PRIORITY[@]}"} "$FROM" "$TO" - < "$FILE"
-fi
 
 exec python3 "$DIR/lib/marveen_api.py" "$@"
