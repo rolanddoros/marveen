@@ -273,8 +273,9 @@ def main():
 
         # --- one exit-code table ----------------------------------------------------------------------------------
         codes = [c for c, _, _ in mod.EXIT_CODES]
-        check('EXIT_CODES is 0..6, each code once, and EXIT is built from it',
-              codes == list(range(7)) and sorted(mod.EXIT.values()) == codes, mod.EXIT_CODES)
+        # 0..6, then 8 (approval-wait, C2 PR5); 7 stays free for Stuart's PR2 (Johnny 11800)
+        check('EXIT_CODES is 0..6 and 8, each code once, 7 free, and EXIT is built from it',
+              codes == [0, 1, 2, 3, 4, 5, 6, 8] and sorted(mod.EXIT.values()) == codes, mod.EXIT_CODES)
         rc, out, err = helper(['--help'])
         check('--help prints every code of the table', rc == 0 and all(
             ('  %d  %s' % (c, text)) in out for c, _, text in mod.EXIT_CODES), out[-600:])
