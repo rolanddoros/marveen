@@ -10,7 +10,8 @@
 //
 // LIMITS (Kevin 11980), each one pinned in dist-no-tests.test.ts:
 //   - The path comes from this script's own location (<root>/scripts/..),
-//     never from env or cwd.
+//     never from env or cwd. Node resolves the main script's real path, so a
+//     symlinked scripts/ cleans the ORIGINAL checkout's dist/__tests__.
 //   - Only exactly <root>/dist/__tests__, and only when dist and
 //     dist/__tests__ are both REAL directories (lstat, no symlink follow):
 //     a symlinked dist or dist/__tests__ is left alone, with one line on stderr.

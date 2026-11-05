@@ -60,8 +60,8 @@ function staleTests(dir: string): void {
   writeFileSync(join(dir, 'setup', 'root.js'), 'stale\n')
 }
 
-function clean(root: string, cwd = root, env: NodeJS.ProcessEnv = {}): { status: number | null; stderr: string } {
-  const r = spawnSync(process.execPath, [join(root, 'scripts', 'clean-dist-tests.cjs')], { cwd, env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' })
+function clean(root: string, cwd = root, env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = []): { status: number | null; stderr: string } {
+  const r = spawnSync(process.execPath, [...nodeArgs, join(root, 'scripts', 'clean-dist-tests.cjs')], { cwd, env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' })
   return { status: r.status, stderr: r.stderr }
 }
 
@@ -114,6 +114,24 @@ describe('scripts/clean-dist-tests.cjs: a stale dist/__tests__ goes, nothing els
     expect(r.status).toBe(0)
     expect(existsSync(join(root, 'dist', '__tests__'))).toBe(false)
     expect(readdirSync(join(decoy, 'dist', '__tests__')).sort()).toEqual(['a.test.js', 'setup'])
+  })
+
+  it('a failing removal never fails the build: exit 0, the reason on stderr, the rest of dist intact (Ron 12038)', () => {
+    // update.sh runs `retry 2 3 npm run build`: a throw here would fail the live
+    // update. Root ignores permissions, so the failure is forced, not provoked:
+    // a preload replaces fs.rmSync with one that throws EACCES before the
+    // script destructures it.
+    const root = makeRoot()
+    withBuiltDist(root)
+    staleTests(join(root, 'dist', '__tests__'))
+    const preload = join(root, 'rm-throws.cjs')
+    writeFileSync(preload, "const fs = require('node:fs')\nfs.rmSync = () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) }\n")
+    const r = clean(root, root, {}, ['--require', preload])
+    expect(r.status).toBe(0)
+    expect(r.stderr).toMatch(/^clean-dist-tests: not removed \(EACCES\): .*dist\/__tests__\n$/)
+    expect(readdirSync(join(root, 'dist')).sort()).toEqual(['.built-commit', '__tests__', 'index.js', 'web'])
+    expect(readdirSync(join(root, 'dist', '__tests__')).sort()).toEqual(['a.test.js', 'setup'])
+    expect(readFileSync(join(root, 'dist', 'web', 'x.js'), 'utf8')).toBe('app\n')
   })
 
   it('no dist, or no dist/__tests__, or a plain file there: exit 0, nothing created or removed', () => {
