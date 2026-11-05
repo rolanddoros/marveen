@@ -23,7 +23,8 @@ scripts/hooks/marveen-commands.py, scripts/git-hooks/pre-push-review-gate.py.
 telegram_api_base() is the same gate for the Telegram BOT token (C2 PR4d): its users are the five python senders
 that read TELEGRAM_API_BASE (scripts/hooks/marveen-commands.py, telegram_fallback_send.py, telegram_progress.py,
 telegram_progress_clear.py, telegram_progress_watchdog.py). The bash path (scripts/lib/send-telegram.sh) runs the
-same rule through the command line entry at the end of this file (`--telegram-base`, C2 PR4e).
+same rule through the command line entry at the end of this file (`--telegram-base`, C2 PR4e); scripts/uptime-monitor.py
+calls telegram_api_base() itself before it opens the token file, then sends through send-telegram.sh.
 """
 import os
 import sys

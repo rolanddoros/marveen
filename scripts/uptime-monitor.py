@@ -93,7 +93,10 @@ TimeoutStartSec, start OnFailure.
 ENVIRONMENT (the test is hermetic with these): UPTIME_CONFIG, UPTIME_STATE, UPTIME_LOG, UPTIME_SENDER ("telegram" |
 "file:<path>" | "fail"), UPTIME_TIMEOUT (finite, positive; part of the I4 computation), UPTIME_MAX_BYTES; for the
 channel: TELEGRAM_ENV and MARVEEN_ALERT_CHAT_ID (explicit overrides, see CHANNEL), and TELEGRAM_API_BASE (the
-send-telegram.sh test seam: a local Bot API stub).
+send-telegram.sh test seam: a local Bot API stub). TELEGRAM_API_BASE passes the shared bot-token env gate
+(scripts/lib/env_gate.py telegram_api_base(), loaded by its exact path from this file's location, C2 PR4e) BEFORE the
+token file is opened: anything but https://api.telegram.org or loopback, or a gate that cannot be loaded, means the token
+is not read, nothing is sent, and the preflight names it (exit 4, T23, T23b); send-telegram.sh applies the same gate.
 """
 import importlib.util
 import json
@@ -138,6 +141,8 @@ _MAIN_TG_DIR = (owner_chat._state_dir(INSTALL_ENV, "telegram") if owner_chat
 TELEGRAM_ENV = os.environ.get("TELEGRAM_ENV") or os.path.join(_MAIN_TG_DIR, ".env")
 # sender_check._copy_check(text) runs the outgoing-copy-gate audit and raises Refused
 SENDER_CHECK = os.path.join(ROOT, "scripts", "hooks", "sender_check.py")
+# The bot-token env gate (C2 PR4e): by its exact path from THIS file's location, never through sys.path.
+ENV_GATE_PATH = os.path.join(ROOT, "scripts", "lib", "env_gate.py")
 UA = "Mozilla/5.0 (marveen-uptime-monitor)"
 # upper bound of an answer's transferred and decompressed size (well above a typical page); the test lowers it with
 # UPTIME_MAX_BYTES
@@ -469,6 +474,19 @@ def resolve_chat():
     return (chat, None) if chat else ("", reason or "no owner chat")
 
 
+def telegram_base_refusal():
+    """None when TELEGRAM_API_BASE may receive the bot token, else the reason. Called BEFORE bot_token(): a refused
+    base means the token file is not even opened. A gate that cannot be loaded is a refusal (fail closed)."""
+    try:
+        spec = importlib.util.spec_from_file_location("marveen_env_gate", ENV_GATE_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _base, refused = mod.telegram_api_base()
+    except Exception as e:  # noqa: BLE001
+        return "the env gate %s cannot be loaded (%s); nothing was sent." % (ENV_GATE_PATH, type(e).__name__)
+    return refused
+
+
 def bot_token():
     try:
         for line in open(TELEGRAM_ENV, encoding="utf-8"):
@@ -480,6 +498,10 @@ def bot_token():
 
 
 def telegram_send(text):
+    refused = telegram_base_refusal()
+    if refused:
+        print("not sending: %s" % refused, file=sys.stderr)
+        return False
     token, (chat, chat_reason) = bot_token(), resolve_chat()
     if not token or not chat:
         print("not sending: missing%s%s" % (" TELEGRAM_BOT_TOKEN" if not token else "",
@@ -553,8 +575,12 @@ def preflight_error():
         return None   # test senders
     if SENDER != "telegram":
         return "unknown UPTIME_SENDER: %r" % SENDER   # a mistyped value must not give a silent green
+    refused = telegram_base_refusal()
     chat, chat_reason = resolve_chat()
-    missing = [n for n, v in (("TELEGRAM_BOT_TOKEN (%s)" % TELEGRAM_ENV, bot_token()),
+    # a refused TELEGRAM_API_BASE: the token file is not opened, the refusal is named instead (C2 PR4e)
+    token_check = (("TELEGRAM_API_BASE (%s)" % refused, False) if refused
+                   else ("TELEGRAM_BOT_TOKEN (%s)" % TELEGRAM_ENV, bot_token()))
+    missing = [n for n, v in (token_check,
                               ("chat_id (%s)" % chat_reason, chat),
                               ("send-telegram.sh", os.path.isfile(SEND_HELPER))) if not v]
     return ", ".join(missing) or None
