@@ -2,7 +2,7 @@
 // settings to ctx.hooks (src/web/claude-md/hooks-from-settings.ts). A false
 // "true" drops a security rule's prose, so most cases here are negative.
 import { describe, it, expect } from 'vitest'
-import { commandRunsScript, hooksFromSettings, matcherCoversBash } from '../web/claude-md/hooks-from-settings.js'
+import { commandRunsScript, hooksFromSettings, matcherCoversBash, resolveHookScriptPath, scriptPathsRun, type ScriptFileCheck } from '../web/claude-md/hooks-from-settings.js'
 
 // The three command shapes the fleet writes today.
 const templateCmd = (s: string) => `bash -c '[ -f /srv/fleet/scripts/hooks/${s} ] && exec python3 /srv/fleet/scripts/hooks/${s}; exit 0'`
@@ -23,25 +23,29 @@ const wiredAll = {
     PreToolUse: [entry(templateCmd(SHELL), 'Bash'), entry(nodeGateCmd(CHILD), 'Bash')],
   },
 }
+// The 7a cases are about the command text: every named file counts as present here. The J4 file
+// check has its own describe block at the end.
+const ANY: ScriptFileCheck = { projectDir: '/srv/fleet', usable: () => true }
+const hfs = (layers: readonly unknown[], check: ScriptFileCheck = ANY) => hooksFromSettings(layers, check)
 const ALL_TRUE = { directiveVerify: true, childClaudeGuard: true, shellRescan: true }
 const ALL_FALSE = { directiveVerify: false, childClaudeGuard: false, shellRescan: false }
 
 describe('positive: wired as a command under the right event', () => {
   it('all three hooks, in the shapes the scaffold and the main settings write', () => {
-    expect(hooksFromSettings([wiredAll])).toEqual(ALL_TRUE)
+    expect(hfs([wiredAll])).toEqual(ALL_TRUE)
   })
 
   it('each hook alone', () => {
-    expect(hooksFromSettings([{ hooks: { PreToolUse: [entry(templateCmd(SHELL), 'Bash')] } }]))
+    expect(hfs([{ hooks: { PreToolUse: [entry(templateCmd(SHELL), 'Bash')] } }]))
       .toEqual({ ...ALL_FALSE, shellRescan: true })
-    expect(hooksFromSettings([{ hooks: { PreToolUse: [entry(nodeGateCmd(CHILD), 'Bash')] } }]))
+    expect(hfs([{ hooks: { PreToolUse: [entry(nodeGateCmd(CHILD), 'Bash')] } }]))
       .toEqual({ ...ALL_FALSE, childClaudeGuard: true })
-    expect(hooksFromSettings([{ hooks: { UserPromptSubmit: [entry(templateCmd(DIRECTIVE))] } }]))
+    expect(hfs([{ hooks: { UserPromptSubmit: [entry(templateCmd(DIRECTIVE))] } }]))
       .toEqual({ ...ALL_FALSE, directiveVerify: true })
   })
 
   it('wired in a later layer counts', () => {
-    expect(hooksFromSettings([{}, { hooks: { PreToolUse: [entry(projectDirCmd(SHELL), 'Bash')] } }]).shellRescan).toBe(true)
+    expect(hfs([{}, { hooks: { PreToolUse: [entry(projectDirCmd(SHELL), 'Bash')] } }]).shellRescan).toBe(true)
   })
 
   it('a quoted project dir before the path ("$CLAUDE_PROJECT_DIR"/scripts/hooks/...)', () => {
@@ -81,26 +85,26 @@ describe('matcher must cover Bash (PreToolUse guards)', () => {
   })
 
   it('a guard under a matcher that misses Bash is not wired', () => {
-    expect(hooksFromSettings([{ hooks: { PreToolUse: [entry(templateCmd(SHELL), 'Write')] } }]).shellRescan).toBe(false)
-    expect(hooksFromSettings([{ hooks: { PreToolUse: [entry(nodeGateCmd(CHILD), '.*')] } }]).childClaudeGuard).toBe(false)
+    expect(hfs([{ hooks: { PreToolUse: [entry(templateCmd(SHELL), 'Write')] } }]).shellRescan).toBe(false)
+    expect(hfs([{ hooks: { PreToolUse: [entry(nodeGateCmd(CHILD), '.*')] } }]).childClaudeGuard).toBe(false)
   })
 })
 
 describe('negative: wrong event', () => {
   it('a guard under PostToolUse, UserPromptSubmit or Stop is false', () => {
     for (const ev of ['PostToolUse', 'UserPromptSubmit', 'Stop', 'PreToolUseX', 'pretooluse']) {
-      expect(hooksFromSettings([{ hooks: { [ev]: [entry(templateCmd(SHELL), 'Bash'), entry(nodeGateCmd(CHILD), 'Bash')] } }]), ev)
+      expect(hfs([{ hooks: { [ev]: [entry(templateCmd(SHELL), 'Bash'), entry(nodeGateCmd(CHILD), 'Bash')] } }]), ev)
         .toEqual(ALL_FALSE)
     }
   })
 
   it('directiveVerify under PreToolUse (even with a Bash matcher) is false', () => {
-    expect(hooksFromSettings([{ hooks: { PreToolUse: [entry(templateCmd(DIRECTIVE), 'Bash')] } }]).directiveVerify).toBe(false)
+    expect(hfs([{ hooks: { PreToolUse: [entry(templateCmd(DIRECTIVE), 'Bash')] } }]).directiveVerify).toBe(false)
   })
 })
 
 describe('negative: the script name outside a command that runs it', () => {
-  const ptu = (e: unknown) => hooksFromSettings([{ hooks: { PreToolUse: [e] } }]).shellRescan
+  const ptu = (e: unknown) => hfs([{ hooks: { PreToolUse: [e] } }]).shellRescan
 
   it('a non-command hook type (prompt, agent) mentioning the script', () => {
     expect(ptu(entry(templateCmd(SHELL), 'Bash', 'prompt'))).toBe(false)
@@ -182,15 +186,15 @@ describe('negative: the script name outside a command that runs it', () => {
 
 describe('negative: disabled, empty or malformed blocks', () => {
   it('disableAllHooks in the same or in another layer turns everything off', () => {
-    expect(hooksFromSettings([{ ...wiredAll, disableAllHooks: true }])).toEqual(ALL_FALSE)
-    expect(hooksFromSettings([wiredAll, { disableAllHooks: true }])).toEqual(ALL_FALSE)
+    expect(hfs([{ ...wiredAll, disableAllHooks: true }])).toEqual(ALL_FALSE)
+    expect(hfs([wiredAll, { disableAllHooks: true }])).toEqual(ALL_FALSE)
   })
 
   it('disableAllHooks with a non-boolean value fails closed; an explicit false keeps hooks on', () => {
     for (const v of ['true', 1, 'yes', null, {}]) {
-      expect(hooksFromSettings([{ ...wiredAll, disableAllHooks: v }]), JSON.stringify(v)).toEqual(ALL_FALSE)
+      expect(hfs([{ ...wiredAll, disableAllHooks: v }]), JSON.stringify(v)).toEqual(ALL_FALSE)
     }
-    expect(hooksFromSettings([{ ...wiredAll, disableAllHooks: false }])).toEqual(ALL_TRUE)
+    expect(hfs([{ ...wiredAll, disableAllHooks: false }])).toEqual(ALL_TRUE)
   })
 
   it('empty and malformed hook blocks', () => {
@@ -208,17 +212,96 @@ describe('negative: disabled, empty or malformed blocks', () => {
       { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: {} }] } },
       { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [null, templateCmd(SHELL)] }] } },
     ]) {
-      expect(hooksFromSettings([layer]), JSON.stringify(layer)).toEqual(ALL_FALSE)
+      expect(hfs([layer]), JSON.stringify(layer)).toEqual(ALL_FALSE)
     }
   })
 
   it('no layers at all', () => {
-    expect(hooksFromSettings([])).toEqual(ALL_FALSE)
+    expect(hfs([])).toEqual(ALL_FALSE)
   })
 
   it('an unreadable layer (not a plain object) turns everything off, even next to a wired one', () => {
     for (const bad of [null, undefined, 'settings', 42, [wiredAll]]) {
-      expect(hooksFromSettings([wiredAll, bad]), String(bad)).toEqual(ALL_FALSE)
+      expect(hfs([wiredAll, bad]), String(bad)).toEqual(ALL_FALSE)
     }
+  })
+})
+
+describe('Ron 12738: a separator, keyword or -c inside an argument is not a command (closed in C1 PR 10a)', () => {
+  it('the four measured residual forms read false now', () => {
+    for (const c of [
+      `echo "a; python3 /x/scripts/hooks/${SHELL}"`,
+      `echo do python3 /x/scripts/hooks/${SHELL}`,
+      `echo -c 'python3 /x/scripts/hooks/${SHELL}'`,
+      `echo "a | python3 /x/scripts/hooks/${SHELL}"`,
+      `echo 'a && python3 /x/scripts/hooks/${SHELL}'`,
+      `echo bash -c 'python3 /x/scripts/hooks/${SHELL}'`,
+      `printf '%s\n' "then python3 /x/scripts/hooks/${SHELL}"`,
+    ]) {
+      expect(commandRunsScript(c, SHELL), c).toBe(false)
+      expect(hfs([{ hooks: { PreToolUse: [entry(c, 'Bash')] } }]).shellRescan, c).toBe(false)
+    }
+  })
+
+  it('the forms the fleet writes still read true: the template body, the node gate, the project-dir form', () => {
+    expect(scriptPathsRun(templateCmd(SHELL), SHELL)).toEqual([`/srv/fleet/scripts/hooks/${SHELL}`])
+    expect(scriptPathsRun(nodeGateCmd(CHILD), CHILD)).toEqual([`"/srv/fleet/scripts/hooks/${CHILD}"`, `"/srv/fleet/scripts/hooks/${CHILD}"`])
+    expect(scriptPathsRun(projectDirCmd(DIRECTIVE), DIRECTIVE)).toEqual([`"$CLAUDE_PROJECT_DIR/scripts/hooks/${DIRECTIVE}"`])
+    // a -c body in double quotes, with an escaped quote inside, and a combined -lc flag
+    expect(commandRunsScript(`sh -c "x=\\"1\\"; python3 /x/scripts/hooks/${SHELL}"`, SHELL)).toBe(true)
+    expect(commandRunsScript(`bash -lc 'python3 /x/scripts/hooks/${SHELL}'`, SHELL)).toBe(true)
+    // a quoted single word stays a word: the "#" is not a comment and the python3 after ; runs
+    expect(commandRunsScript(`echo "#"; python3 /x/scripts/hooks/${SHELL}`, SHELL)).toBe(true)
+    // then/do behind a separator still count
+    expect(commandRunsScript(`for i in 1; do python3 /x/scripts/hooks/${SHELL}; done`, SHELL)).toBe(true)
+  })
+
+  it('a -c body nested too deep is not followed (bounded recursion, fail-closed)', () => {
+    let c = `python3 /x/scripts/hooks/${SHELL}`
+    for (let i = 0; i < 6; i++) c = `bash -c ${JSON.stringify(c)}`
+    expect(commandRunsScript(c, SHELL)).toBe(false)
+  })
+})
+
+describe('J4 (Ron 7a): wired means the named script is an existing, readable regular file', () => {
+  const present = new Set([`/srv/fleet/scripts/hooks/${SHELL}`, `/srv/fleet/scripts/hooks/${CHILD}`, `/srv/agent/scripts/hooks/${DIRECTIVE}`])
+  const check: ScriptFileCheck = { projectDir: '/srv/agent', usable: (p) => present.has(p) }
+  const seen: string[] = []
+  const spy: ScriptFileCheck = { projectDir: '/srv/agent', usable: (p) => { seen.push(p); return present.has(p) } }
+
+  it('the template form with a missing script (it would exit 0 silently) is NOT wired; with the file it is', () => {
+    const missing: ScriptFileCheck = { projectDir: '/srv/agent', usable: () => false }
+    expect(hfs([wiredAll], missing)).toEqual(ALL_FALSE)
+    expect(hfs([{ hooks: { PreToolUse: [entry(templateCmd(SHELL), 'Bash')] } }], check).shellRescan).toBe(true)
+  })
+
+  it('$CLAUDE_PROJECT_DIR resolves to the agent project dir, and the check sees the absolute path', () => {
+    seen.length = 0
+    expect(hfs([{ hooks: { UserPromptSubmit: [entry(projectDirCmd(DIRECTIVE))] } }], spy).directiveVerify).toBe(true)
+    expect(seen).toEqual([`/srv/agent/scripts/hooks/${DIRECTIVE}`])
+    expect(resolveHookScriptPath('"${CLAUDE_PROJECT_DIR}"/scripts/hooks/x.py', '/srv/agent')).toBe('/srv/agent/scripts/hooks/x.py')
+  })
+
+  it('a path that cannot be resolved without a shell is not wired, and the check is never asked', () => {
+    for (const raw of ['$HOME/scripts/hooks/x.py', '"$ROOT"/scripts/hooks/x.py', '$CLAUDE_PROJECT_DIRX/scripts/hooks/x.py']) {
+      expect(resolveHookScriptPath(raw, '/srv/agent'), raw).toBeNull()
+    }
+    expect(resolveHookScriptPath('$CLAUDE_PROJECT_DIR/scripts/hooks/x.py', 'relative/dir')).toBeNull()
+    seen.length = 0
+    expect(hfs([{ hooks: { PreToolUse: [entry(`python3 "$HOME/scripts/hooks/${SHELL}"`, 'Bash')] } }], spy).shellRescan).toBe(false)
+    expect(seen).toEqual([])
+  })
+
+  it('the check sees the normalised path: a ".." traversal is checked where it really points', () => {
+    const c = `python3 /srv/fleet/scripts/hooks/../../evil/scripts/hooks/${SHELL}`
+    seen.length = 0
+    expect(hfs([{ hooks: { PreToolUse: [entry(c, 'Bash')] } }], spy).shellRescan).toBe(false)
+    expect(seen).toEqual([`/srv/fleet/evil/scripts/hooks/${SHELL}`])
+  })
+
+  it('one usable match among several is enough; none usable is not wired', () => {
+    expect(hfs([{ hooks: { PreToolUse: [entry(nodeGateCmd(CHILD), 'Bash')] } }], check).childClaudeGuard).toBe(true)
+    const other: ScriptFileCheck = { projectDir: '/srv/agent', usable: (p) => p.startsWith('/elsewhere/') }
+    expect(hfs([{ hooks: { PreToolUse: [entry(nodeGateCmd(CHILD), 'Bash')] } }], other).childClaudeGuard).toBe(false)
   })
 })
