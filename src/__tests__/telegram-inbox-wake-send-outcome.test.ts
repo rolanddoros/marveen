@@ -25,7 +25,8 @@ vi.mock('../config.js', async (importOriginal) => ({
   SUBAGENT_TELEGRAM_WAKE_ENABLED: true,
 }))
 vi.mock('../web/voice-directive.js', () => ({ resolveAgentChannelStateDir: () => STATE_DIR }))
-vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => ['sub1'], readAgentRemoteHost: () => null }))
+let agentNames = ['sub1']
+vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => agentNames, readAgentRemoteHost: () => null }))
 vi.mock('../web/agent-process.js', () => ({
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: (...args: unknown[]) => ready(...args),
@@ -41,6 +42,7 @@ const NOW = 1_800_000_000_000
 const INBOX = join(STATE_DIR, 'inbox-pending.jsonl')
 
 beforeEach(() => {
+  agentNames = ['sub1']
   _resetSubWakeStateForTest()
   send.mockReset()
   ready.mockReset()
@@ -129,5 +131,89 @@ describe('maybeWakeSubAgentsForTelegram: the send outcome decides the state and 
     expect(send).not.toHaveBeenCalled()
     expect(l.warn()).toEqual(['telegram-inbox-wake: wake check failed'])
     expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: 0, attempts: 0 })
+  })
+})
+
+// The wake nudge is optional (it only triggers the drain hook), so it sends like the main
+// inbox-nudge watcher: 'abort' after a 2 s idle wait, never a best-effort send into a busy
+// pane (Kevin 12230, plan 12229).
+describe('maybeWakeSubAgentsForTelegram: the send policy', () => {
+  it("sends with { onBusyTimeout: 'abort', idleTimeoutMs: 2_000 }", async () => {
+    send.mockResolvedValue('sent')
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]).toHaveLength(4)
+    expect(send.mock.calls[0][3]).toEqual({ onBusyTimeout: 'abort', idleTimeoutMs: 2_000 })
+  })
+
+  it("'aborted-busy' only debounces: +30 s does not send, +61 s does, and no attempt is spent", async () => {
+    send.mockResolvedValue('aborted-busy')
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    await maybeWakeSubAgentsForTelegram(NOW + 30_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 0 })
+    await maybeWakeSubAgentsForTelegram(NOW + 61_000)
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 61_000, attempts: 0 })
+  })
+})
+
+// The router starts the wake with `void` on every tick, outside its own re-entrancy guard,
+// and the call awaits the send. A send that outlasts the 60 s debounce (idle wait + lane
+// wait) let the next tick nudge the same agent again (Ron 12216, probe 2: 2 sends). One
+// in-flight wake per agent, cleared in finally; another agent is not held up (Kevin 12230).
+describe('maybeWakeSubAgentsForTelegram: one wake in flight per agent', () => {
+  function deferred() {
+    let resolve!: (v: string) => void
+    const promise = new Promise<string>((r) => { resolve = r })
+    return { promise, resolve }
+  }
+
+  it('a send that takes > 60 s: later ticks do not send while it runs; after it ends the agent is woken again', async () => {
+    const slow = deferred()
+    send.mockReturnValueOnce(slow.promise).mockResolvedValue('sent')
+    logs()
+    const first = maybeWakeSubAgentsForTelegram(NOW)
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    // past the 60 s debounce, twice: the second tick checks that a skipping call does not
+    // clear the flag the first call holds
+    await maybeWakeSubAgentsForTelegram(NOW + 61_000)
+    await maybeWakeSubAgentsForTelegram(NOW + 122_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    slow.resolve('sent')
+    await first
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 1 })
+    // the flag is gone: past the 120 s backoff of attempt 1, the next tick sends
+    await maybeWakeSubAgentsForTelegram(NOW + 183_000)
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  it('the flag is cleared when the send rejects, too', async () => {
+    const slow = deferred()
+    send.mockReturnValueOnce(slow.promise.then(() => { throw new Error('tmux gone') })).mockResolvedValue('sent')
+    logs()
+    const first = maybeWakeSubAgentsForTelegram(NOW)
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    slow.resolve('x')
+    await first
+    await maybeWakeSubAgentsForTelegram(NOW + 121_000)
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  it("one agent's wake in flight does not block another agent's wake", async () => {
+    agentNames = ['sub1', 'sub2']
+    const slow = deferred()
+    send.mockImplementation((session: string) => (session === 'agent-sub1' ? slow.promise : Promise.resolve('sent')))
+    logs()
+    const first = maybeWakeSubAgentsForTelegram(NOW)
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    expect(send.mock.calls[0][0]).toBe('agent-sub1')
+    // the first call is stuck on sub1 and has not reached sub2; the next tick skips sub1 and wakes sub2
+    await maybeWakeSubAgentsForTelegram(NOW + 5_000)
+    expect(send.mock.calls.map((c) => c[0])).toEqual(['agent-sub1', 'agent-sub2'])
+    slow.resolve('sent')
+    await first
   })
 })

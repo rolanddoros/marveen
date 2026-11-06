@@ -77,6 +77,13 @@ interface SubWakeState {
   inboxMtimeMs: number
 }
 const _subWakeState = new Map<string, SubWakeState>()
+// Agents with a wake still running (session checks + send). The router starts
+// maybeWakeSubAgentsForTelegram with `void` on every tick, outside its own
+// re-entrancy guard, and the call awaits the send, so two calls can overlap: a
+// send that outlasts the debounce (idle wait + lane wait) would otherwise let
+// the next tick nudge the same agent again (Ron 12216, probe 2). PER AGENT, not
+// one flag: an agent whose wake is in flight must not hold up another agent's.
+const _subWakeInFlight = new Set<string>()
 
 /**
  * Compute the effective backoff gap for the Nth wake attempt: base * 2^attempts,
@@ -157,6 +164,11 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
     // The main agent runs with --channels and receives notifications natively;
     // it has no local derived inbox to drain.
     if (name === MAIN_AGENT_ID) continue
+    // A wake for this agent is still running in an earlier call: leave the agent
+    // (and its state) alone this tick. Otherwise claim it; the finally below clears
+    // it, so only the call that claimed the agent ever releases it.
+    if (_subWakeInFlight.has(name)) continue
+    _subWakeInFlight.add(name)
     try {
       const stateDir = resolveAgentChannelStateDir(name, 'telegram')
       const inboxPath = join(stateDir, 'inbox-pending.jsonl')
@@ -230,7 +242,12 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
       state.lastWakeAt = now
       let outcome: Awaited<ReturnType<typeof sendPromptToSession>>
       try {
-        outcome = await sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+        // 'abort', like the main inbox-nudge watcher: the nudge is optional (it only
+        // triggers the drain hook), so a pane still busy after 2 s gets no keystroke
+        // ('aborted-busy': debounce only, no attempt spent, see below) instead of the
+        // default 12 s wait and a best-effort send that parks in the input box. 2 s is
+        // enough because the checks above have just read the pane as idle.
+        outcome = await sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host, { onBusyTimeout: 'abort', idleTimeoutMs: 2_000 })
       } catch (err) {
         state.attempts += 1
         throw err
@@ -243,6 +260,8 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
       logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')
     } catch (err) {
       logger.warn({ err, agent: name }, 'telegram-inbox-wake: wake check failed')
+    } finally {
+      _subWakeInFlight.delete(name)
     }
   }
 }
@@ -250,6 +269,7 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
 // Test-only: reset the per-agent wake state between unit tests.
 export function _resetSubWakeStateForTest(): void {
   _subWakeState.clear()
+  _subWakeInFlight.clear()
 }
 
 // Test-only: a copy of one agent's wake state (undefined when it has none).
