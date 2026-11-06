@@ -56,6 +56,8 @@ interface Entry {
   mode: string;
   /** Blob sha. Empty for a gitlink, which has no blob in this repository. */
   sha: string;
+  /** Why git could not resolve a path the diff listed (set by reconcile only). */
+  missing?: string;
 }
 
 function git(args: string[]): string {
@@ -145,10 +147,14 @@ function entriesFor(mode: string, range?: string): Entry[] {
   throw new Error(`unknown mode: ${mode}`);
 }
 
-/** Keep the diff's file set exactly, marking anything git could not resolve. */
+/**
+ * Keep the diff's file set exactly, marking anything git could not resolve.
+ * The caller's reason travels with the entry, so the NOT SCANNED line says which
+ * lookup missed it (the head tree of the range, or the index).
+ */
 function reconcile(paths: string[], found: Entry[], missingReason: string): Entry[] {
   const byPath = new Map(found.map((e) => [e.path, e]));
-  return paths.map((p) => byPath.get(p) ?? { path: p, mode: '', sha: '' });
+  return paths.map((p) => byPath.get(p) ?? { path: p, mode: '', sha: '', missing: missingReason });
 }
 
 /**
@@ -208,7 +214,10 @@ function readAll(entries: Entry[]): ScanInput[] {
       return { path: e.path, unreadable: { reason: 'gitlink (submodule): this repository holds no content for it, so it cannot be cleared here' } };
     }
     if (!e.sha) {
-      return { path: e.path, unreadable: { reason: 'git could not resolve this path to a blob' } };
+      // The decision is the same with or without a reason: no blob, not cleared.
+      // Only the message names the lookup that missed it.
+      const why = e.missing ? ` (${e.missing})` : '';
+      return { path: e.path, unreadable: { reason: `git could not resolve this path to a blob${why}` } };
     }
     const b = blobs.get(e.sha);
     if (!b || b.error) return { path: e.path, unreadable: { reason: b?.error ?? 'no object content returned' } };
