@@ -15,7 +15,7 @@ import { renderRegion } from '../web/claude-md/registry.js'
 import { RULES, ruleLine } from '../web/claude-md/sections.js'
 import { composeClaudeMd } from '../web/claude-md/compose.js'
 import { TEMPLATES_DIR, templateKeys } from '../web/claude-md/render.js'
-import { HOOK_IDS, type AgentDocContext, type AutonomyLevel } from '../web/claude-md/context.js'
+import { HOOK_IDS, type AgentDocContext, type AutonomyLevel, type HookId } from '../web/claude-md/context.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const GOLDEN = join(HERE, 'fixtures', 'claude-md', 'golden')
@@ -369,19 +369,25 @@ describe('federation safety sentences (Ron 7b J1, Kevin 12888)', () => {
   })
 })
 
-describe('budget, live-shaped worst case (Ron 12886: about 5047 before the last delta)', () => {
-  // The seed autonomy config (14 categories today, all levels one digit) and a 12-member fleet of long synthetic
-  // names, every capability and relation on, over every role x strict x helper x hooks combination.
+describe('budget, live-shaped worst case (Ron 12886, 12953)', () => {
+  // The seed autonomy config (14 categories today, all levels one digit) and the live fleet size (13: main + 12
+  // subs, Ron 12953) of long synthetic names, every capability and relation on, over every role x strict x helper
+  // x hook combination: all 8 of the three hooks, not only all-off / all-on.
   const seed = JSON.parse(readFileSync(join(REPO, 'seed-config', 'autonomy-config.json'), 'utf-8')) as
     { categories: { key: string }[] }
   const autonomy: Record<string, AutonomyLevel> = Object.fromEntries(seed.categories.map((c) => [c.key, 2 as AutonomyLevel]))
-  const fleet = Array.from({ length: 12 }, (_, i) => `agent-${String(i + 1).padStart(2, '0')}`)
+  const FLEET_SIZE = 13
+  const fleet = Array.from({ length: FLEET_SIZE }, (_, i) => `agent-${String(i + 1).padStart(2, '0')}`)
+  const HOOK_COMBOS: Record<HookId, boolean>[] = Array.from({ length: 8 }, (_, i) =>
+    ({ directiveVerify: (i & 1) !== 0, childClaudeGuard: (i & 2) !== 0, shellRescan: (i & 4) !== 0 }))
+  let visited = 0
   function worst(): { len: number; label: string } {
     let best = { len: 0, label: '' }
     for (const role of ['main', 'sub', 'heartbeat'] as const) {
       for (const strict of [true, false]) {
         for (const helperAllowed of [true, false]) {
-          for (const hooks of [ALL_OFF, ALL_ON]) {
+          for (const hooks of HOOK_COMBOS) {
+            visited++
             const name = fleet[0]
             const ctx: AgentDocContext = {
               ...FIXTURES.main,
@@ -396,7 +402,7 @@ describe('budget, live-shaped worst case (Ron 12886: about 5047 before the last 
               hooks,
             }
             const len = renderRegion(ctx).length
-            if (len > best.len) best = { len, label: `${role} strict=${strict} helper=${helperAllowed} hooks=${hooks.shellRescan}` }
+            if (len > best.len) best = { len, label: `${role} strict=${strict} helper=${helperAllowed} hooks=${JSON.stringify(hooks)}` }
           }
         }
       }
@@ -408,8 +414,15 @@ describe('budget, live-shaped worst case (Ron 12886: about 5047 before the last 
     expect(seed.categories.length).toBe(14)
   })
 
+  it('the walk covers 8 distinct hook combinations and a 13-member fleet (12 others in the roster)', () => {
+    expect(new Set(HOOK_COMBOS.map((h) => JSON.stringify(h))).size).toBe(8)
+    expect(fleet.filter((n) => n !== fleet[0]).length).toBe(12)
+  })
+
   it('the largest live-shaped region stays within the 5.5k budget', () => {
+    visited = 0
     const w = worst()
+    expect(visited).toBe(3 * 2 * 2 * 8)
     if (process.env.CLAUDE_MD_BUDGET_REPORT === '1') process.stdout.write(`WORST ${w.len} ${w.label}\n`)
     expect(w.len, w.label).toBeLessThanOrEqual(BUDGET)
   })
