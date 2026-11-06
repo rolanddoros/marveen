@@ -24,7 +24,23 @@ describe('the build config leaves the tests out of dist (B2-2b)', () => {
     expect(base.include).toEqual(['src/**/*'])
     expect(base.exclude).not.toContain('src/__tests__')
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
-    expect(pkg.scripts.typecheck).toBe('tsc --noEmit')
+    // its first step is still the bare tsconfig.json run; the second one is the scripts config below
+    expect(pkg.scripts.typecheck.split(' && ')).toEqual(['tsc --noEmit', 'tsc -p tsconfig.scripts.json'])
+  })
+
+  it('STATIC: scripts/*.ts are type-checked by their own config, which never emits and is not part of the build', () => {
+    // scripts/*.ts run through tsx and sit outside tsconfig.json's rootDir (src); putting them
+    // in the main include would move the build output (dist/src/index.js), so they get a
+    // no-emit config of their own that inherits every compiler flag from tsconfig.json.
+    const scripts = JSON.parse(readFileSync(join(ROOT, 'tsconfig.scripts.json'), 'utf8')) as {
+      extends: string; include: string[]; compilerOptions: { noEmit?: boolean; rootDir?: string }
+    }
+    expect(scripts.extends).toBe('./tsconfig.json')
+    expect(scripts.compilerOptions.noEmit).toBe(true)
+    expect(scripts.compilerOptions.rootDir).toBe('.')
+    expect(scripts.include).toEqual(['scripts/*.ts'])
+    const build = JSON.parse(readFileSync(join(ROOT, 'tsconfig.build.json'), 'utf8')) as { extends: string }
+    expect(build.extends).toBe('./tsconfig.json')
   })
 
   it('the build program holds no test file, and still holds the app entry point', () => {

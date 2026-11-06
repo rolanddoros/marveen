@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
@@ -156,7 +156,11 @@ async function main() {
     // Mentsuk a vault-ba (titkositott tarolas), nem a sima .env-be:
     // a kulcs igy a dashboard felulet rotacios kontrollja ala kerul es
     // nem jelenik meg a .env fajl tartalmaban hat hosszan.
-    const { setSecret } = await import('../dist/web/vault.js')
+    // The BUILT module, as before: setup ran `npm run build` above. The specifier
+    // sits in a variable so the typecheck (which runs before any build, in CI too)
+    // does not try to resolve dist/; the type comes from the source it is built from.
+    const VAULT_DIST = '../dist/web/vault.js'
+    const { setSecret } = (await import(VAULT_DIST)) as typeof import('../src/web/vault.js')
     setSecret('DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY', dsKey)
     ok('DeepSeek API kulcs mentve a vault-ba (DEEPSEEK_API_KEY)')
     ok('A deepseek-v4-pro modell most mar elerheto agensekhez')
