@@ -15,10 +15,10 @@ const { ROOT, HOME } = vi.hoisted(() => {
   const fs = require('node:fs') as typeof import('node:fs')
   const os = require('node:os') as typeof import('node:os')
   const path = require('node:path') as typeof import('node:path')
-  return {
-    ROOT: fs.mkdtempSync(path.join(os.tmpdir(), 'lctx-parity-root-')),
-    HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'lctx-parity-home-')),
-  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lctx-parity-root-'))
+  // env.ts (currentOwnerName's .env reader) takes its root from here, read at import.
+  process.env.CLAUDECLAW_ENV_DIR = root
+  return { ROOT: root, HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'lctx-parity-home-')) }
 })
 
 vi.mock('../config.js', async (importOriginal) => ({
@@ -26,13 +26,16 @@ vi.mock('../config.js', async (importOriginal) => ({
   PROJECT_ROOT: ROOT,
   STORE_DIR: `${ROOT}/store`,
   MAIN_AGENT_ID: 'boss',
+  // config.ts's boot-time value when .env had no OWNER_NAME: currentOwnerName's fallback.
+  OWNER_NAME: 'Owner',
 }))
 
 import { buildLiveContext } from '../web/claude-md/live-context.js'
 import { listAgentNames } from '../web/agent-config.js'
 import { readAgentTeam } from '../web/agent-team.js'
 import { readAutonomyLevel } from '../web/autonomy-level.js'
-import { agentRunsStrict, enforceStrictPermissionMode, ensureFleetRosterSection } from '../web/agent-scaffold.js'
+import { agentGetsKanbanWriteGate, agentRunsStrict, enforceStrictPermissionMode, ensureFleetRosterSection } from '../web/agent-scaffold.js'
+import { currentOwnerName } from '../config.js'
 import { validateFederationConfig } from '../web/federation/config.js'
 import type { ProfileTemplate } from '../web/profiles.js'
 
@@ -80,6 +83,7 @@ afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true })
   rmSync(HOME, { recursive: true, force: true })
   rmSync(OUTSIDE, { recursive: true, force: true })
+  delete process.env.CLAUDECLAW_ENV_DIR
 })
 
 // The legacy fleet-roster block of one sub, parsed: the roster names in order,
@@ -202,5 +206,23 @@ describe('profile.strict parity with agentRunsStrict, for every shipped profile'
     const m = /existing\.permissions = \{([\s\S]*?)\n  \}\n  enforceStrictPermissionMode\(existing, profile\.permissionMode\)/.exec(src)
     expect(m, 'the permissions rebuild + pin shape moved').not.toBeNull()
     expect(m![1]).not.toMatch(/defaultMode/)
+  })
+})
+
+describe('kanbanWrite parity with agentGetsKanbanWriteGate (Ron S5)', () => {
+  it('every sub, the hidden heartbeat and the main agent: kanbanWrite is exactly "no kanban-write gate"', () => {
+    for (const name of ['boss', 'heartbeat', ...listAgentNames()]) {
+      expect(live(name).ctx.capabilities.kanbanWrite, name).toBe(!agentGetsKanbanWriteGate(name))
+    }
+    expect(live('heartbeat').ctx.capabilities.kanbanWrite).toBe(false)
+  })
+})
+
+describe('owner name parity with currentOwnerName (Ron S5)', () => {
+  it('set, quoted, padded and absent OWNER_NAME read the same', () => {
+    for (const line of ['OWNER_NAME=Roland', 'OWNER_NAME="Roland D"', "OWNER_NAME='  Roland  '", 'OWNER_NAME=   Judit   ', '']) {
+      put('.env', `MAIN_AGENT_ID=boss\n${line}\n`)
+      expect(live('boss').ctx.owner.name, line).toBe(currentOwnerName())
+    }
   })
 })
