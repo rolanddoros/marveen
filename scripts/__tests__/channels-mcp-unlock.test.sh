@@ -131,8 +131,13 @@ PANE_STATE_JS="${CHANNELS_PANE_STATE_JS:-$INSTALL_DIR/dist/pane-state.js}"
 # Without dist/pane-state.js the probe cases below used to SKIP and the suite still exited 0, so whether they ran
 # depended on another suite having built dist/ first. Build it on demand; a failed build is a FAIL, never a skip.
 # The SKIP below is left for one case only: no node on this host (then no build can run either).
-if [ -z "${CHANNELS_PANE_STATE_JS:-}" ] && [ ! -f "$PANE_STATE_JS" ] && command -v node >/dev/null 2>&1; then
-  echo "dist/pane-state.js not built -- building now (npm run build)..." >&2
+# Trusted only next to the test setup's stamp (C2 B2-5b, Ron 12358): a FAILED build emits this file anyway (tsc), so
+# after another suite's failed fallback build the file alone would let this suite go green on code that does not
+# compile. The stamp is written only by src/__tests__/setup/build-dist-once.ts after a build that succeeded; without it
+# this suite builds, and a failed build is its FAIL. (Run alone, outside vitest, it therefore always builds.)
+if [ -z "${CHANNELS_PANE_STATE_JS:-}" ] && { [ ! -f "$INSTALL_DIR/dist/.test-build-ok" ] || [ ! -f "$PANE_STATE_JS" ]; } \
+    && command -v node >/dev/null 2>&1; then
+  echo "dist/pane-state.js not built by the test setup -- building now (npm run build)..." >&2
   if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then
     echo "FAIL: npm run build failed" >&2
     exit 1

@@ -12,15 +12,21 @@
 // TRUST: a marker file alone proves nothing (Stuart 12092 via Kevin 12095). tsc emits even when it reports a type
 // error, so a FAILED build leaves the markers behind, and a "build only when missing" rule would then skip the build
 // and let the dist suites go green on code that does not compile. So the markers count only next to this setup's own
-// stamp, dist/.test-build-ok, which holds the fingerprint of the source tree and is written only after a build that
-// exited 0 with every marker present. The stamp is removed before every build; a stamp that is missing, or that names
-// another source tree, means a rebuild.
+// stamp, dist/.test-build-ok, which holds the fingerprint of the source tree and the content hash of every marker, and
+// is written only after a build that exited 0 with every marker present. The stamp is removed before every build; a
+// stamp that is missing, names another source tree, or names other marker contents (a suite edits a marker and a
+// killed run leaves it edited: channels-custom-provider's stale-dist case) means a rebuild.
+//
+// The four dist suites trust dist/ by the SAME stamp, not by their marker (Ron 12358): a failed build emits the
+// markers anyway, so after one suite's failed fallback build the next suite would find its marker and go green on code
+// that does not compile, and in a sharded run the outcome would depend on the order. With the stamp as the gate a
+// suite builds whenever the stamp is missing, and a failed build is its own FAIL, whatever ran before it.
 //
 // A FAILED build does not stop the run (Kevin 12097, the narrower option): reviewers and targeted runs mutate src all
 // the time, and a work-in-progress type error must not turn every unrelated file red. Instead the setup deletes the
-// stamp AND the markers, so nothing from the failed build is trusted: the dist suites then try their own fallback
-// build, fail on the same type error and go RED (never a silent skip), and the next run builds again. It warns loudly,
-// with the tail of the compiler output. The type error is also caught by `npm run typecheck` (CI test.yml).
+// stamp AND the markers, so nothing from the failed build is trusted: with no stamp, each dist suite runs its own
+// fallback build, fails on the same type error and goes RED (never a silent skip), and the next run builds again. It
+// warns loudly, with the tail of the compiler output. The type error is also caught by `npm run typecheck` (CI).
 
 // FIRST the live-install gate, by importing it (its checks run at import and throw): a globalSetup runs BEFORE the
 // workers' setupFiles, so without this a run inside a live install would rebuild the dist/ the running fleet uses
@@ -56,7 +62,8 @@ export function missingDistMarkers(root: string = ROOT): string[] {
 // (tsconfig.build.json, B2-2b): tests and mutants are edited all the time, and they cost no build.
 export const FINGERPRINT_SKIP = join('src', '__tests__')
 // Every tsconfig the build script names (`tsc -p <file>`) must be here; script-tests-runner.test.ts checks that.
-export const FINGERPRINT_FILES = ['tsconfig.json', 'tsconfig.build.json', 'package.json']
+// package-lock.json: a compiler upgrade changes the output without touching src (Ron 12358).
+export const FINGERPRINT_FILES = ['tsconfig.json', 'tsconfig.build.json', 'package.json', 'package-lock.json']
 
 export function sourceFingerprint(root: string): string {
   const h = createHash('sha256')
@@ -75,9 +82,16 @@ export function sourceFingerprint(root: string): string {
   return h.digest('hex')
 }
 
+// The stamp's text: the source fingerprint, then one line per marker with its content hash. Read only when every
+// marker exists.
+function stampText(root: string, fingerprint: string): string {
+  const markers = DIST_MARKERS.map((m) => `${createHash('sha256').update(readFileSync(join(root, m))).digest('hex')}  ${m}`)
+  return `${fingerprint}\n${markers.join('\n')}\n`
+}
+
 function stampMatches(root: string, fingerprint: string): boolean {
   try {
-    return readFileSync(join(root, STAMP), 'utf-8').trim() === fingerprint
+    return readFileSync(join(root, STAMP), 'utf-8') === stampText(root, fingerprint)
   } catch {
     return false
   }
@@ -118,7 +132,7 @@ export function ensureDist(
     )
     return 'failed'
   }
-  writeFileSync(join(root, STAMP), `${fingerprint}\n`)
+  writeFileSync(join(root, STAMP), stampText(root, fingerprint))
   return 'built'
 }
 

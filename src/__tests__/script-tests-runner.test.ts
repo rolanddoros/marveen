@@ -43,6 +43,8 @@ import { spawnSync } from 'node:child_process'
 const SUITES = discoverScriptSuites()
 const SRC_TESTS = join(ROOT, 'src', '__tests__')
 const SHARD_FILE = /^script-tests-runner\.shard-(\d+)\.test\.ts$/
+// The setup's stamp file name, assembled so that this file is not one of its readers in the stamp pin below.
+const STAMP_NAME = ['.test', 'build-ok'].join('-')
 
 // The one shape of a shard file. A change to the shard files is a change here first.
 const shardSource = (k: number): string => `// Shard ${k} of the scripts/__tests__ suites (C2 B2-5). The discovery, the shard rule and the run body
@@ -204,6 +206,16 @@ describe('the one dist/ build before the suites', () => {
       expect(ensureDist(root, build, warn)).toBe('present')
       expect(build).toHaveBeenCalledTimes(1)
       expect(warn).not.toHaveBeenCalled()
+      // a marker edited after the build (channels-custom-provider's stale-dist case, killed before its restore): the
+      // stamp holds every marker's content hash, so the edited dist is not trusted (Ron 12358)
+      writeFileSync(join(root, DIST_MARKERS[0]), 'export {} // edited')
+      expect(ensureDist(root, build, warn)).toBe('built')
+      expect(build).toHaveBeenCalledTimes(2)
+      // a compiler upgrade changes the output without touching src: package-lock.json is in the fingerprint
+      writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}\n')
+      expect(ensureDist(root, build, warn)).toBe('built')
+      expect(ensureDist(root, build, warn)).toBe('present')
+      expect(build).toHaveBeenCalledTimes(3)
       rmSync(join(root, DIST_MARKERS[2]))
       expect(ensureDist(root, () => ({ status: 0 }), warn)).toBe('failed')   // exit 0, but a marker still missing
       expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('still missing: dist/pane-state.js'))
@@ -221,29 +233,33 @@ describe('the one dist/ build before the suites', () => {
 
   // Stuart 12092 via Kevin 12095/12097, with the REAL compiler: tsc emits even when it reports a type error. After a
   // failed build the dist suite must be RED (its fallback build fails on the same error), never green, never a silent
-  // skip; an unrelated test is not touched (ensureDist does not throw).
-  it('a failed build (type error, markers emitted anyway): the dist suite is red in this run and the next, a source change rebuilds', () => {
+  // skip; an unrelated test is not touched (ensureDist does not throw). CROSS-suite (Ron 12358): the first dist
+  // suite's failed fallback build emits the markers AGAIN, so a second dist suite that trusted its marker would go
+  // green on the same broken source; gated on the setup's stamp, it builds, fails and is red too, in any order.
+  it('a failed build (type error, markers emitted anyway): every dist suite is red in this run and the next, a source change rebuilds', () => {
     const root = mkdtempSync(join(tmpdir(), 'distonce-tsc-'))
     const tsc = join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc')
     const build = (r: string) => spawnSync(process.execPath, [tsc, '-p', join(r, 'tsconfig.json')], { encoding: 'utf-8' })
     const put = (rel: string, text: string) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), text) }
-    // a stand-in for the dist suites, in the shape of their fallback (channels-auth-probe.test.sh): build when the
-    // marker is missing, FAIL when that build fails, then use the build
+    // two stand-ins for the dist suites, in the shape of their fallback (channels-auth-probe.test.sh): build unless the
+    // setup's stamp AND the marker are there, FAIL when that build fails, then use the build
     const suiteDir = join(root, 'suites')
-    put('suites/dist.test.sh', [
-      `cd '${root}' || exit 1`,
-      'if [ ! -f dist/pane-state.js ]; then',
-      `  "${process.execPath}" '${tsc}' -p tsconfig.json >&2 || { echo "FAIL: build failed" >&2; exit 1; }`,
-      'fi',
-      `"${process.execPath}" -e 'process.exit(require("./dist/pane-state.js").n === 3 ? 0 : 1)'`,
-      '',
-    ].join('\n'))
+    for (const name of ['dist.test.sh', 'dist2.test.sh']) {
+      put(`suites/${name}`, [
+        `cd '${root}' || exit 1`,
+        `if [ ! -f dist/${STAMP_NAME} ] || [ ! -f dist/pane-state.js ]; then`,
+        `  "${process.execPath}" '${tsc}' -p tsconfig.json >&2 || { echo "FAIL: build failed" >&2; exit 1; }`,
+        'fi',
+        `"${process.execPath}" -e 'process.exit(require("./dist/pane-state.js").n === 3 ? 0 : 1)'`,
+        '',
+      ].join('\n'))
+    }
     put('suites/unrelated.test.sh', 'exit 0\n')
     const unrelatedGreen = () => { runScriptSuite('unrelated.test.sh', { skip: vi.fn() }, suiteDir); return true }
-    const distSuiteRed = () => {
+    const distSuiteRed = (name = 'dist.test.sh') => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        return (() => { try { runScriptSuite('dist.test.sh', { skip: vi.fn() }, suiteDir); return false } catch { return true } })()
+        return (() => { try { runScriptSuite(name, { skip: vi.fn() }, suiteDir); return false } catch { return true } })()
       } finally {
         vi.restoreAllMocks()
       }
@@ -263,15 +279,21 @@ describe('the one dist/ build before the suites', () => {
       expect(ensureDist(root, build, warn)).toBe('failed')
       expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('TS2322'))
       expect(distSuiteRed()).toBe(true)
+      // its failed fallback build put every marker back (the hazard is real) ...
+      expect(missingDistMarkers(root)).toEqual([])
+      // ... and the next dist suite, on the same broken source, is red as well, not green on those markers
+      expect(distSuiteRed('dist2.test.sh')).toBe(true)
       expect(unrelatedGreen()).toBe(true)
       // run 2: still red, never 'present'
       expect(ensureDist(root, build, warn)).toBe('failed')
+      expect(distSuiteRed('dist2.test.sh')).toBe(true)
       expect(distSuiteRed()).toBe(true)
       // fixed: built, the dist suite is green; then present; a source change builds again
       put('src/pane-state.ts', 'export const n: number = 3\n')
       expect(ensureDist(root, build, warn)).toBe('built')
       expect(warn).toHaveBeenCalledTimes(2)
       expect(distSuiteRed()).toBe(false)
+      expect(distSuiteRed('dist2.test.sh')).toBe(false)
       expect(ensureDist(root, build, warn)).toBe('present')
       put('src/web/agent-process.ts', 'export const a = 2\n')   // a source change elsewhere
       expect(ensureDist(root, build, warn)).toBe('built')
@@ -286,17 +308,17 @@ describe('the one dist/ build before the suites', () => {
     }
   })
 
-  // Kevin 12101: all four dist suites have the same fallback (missing marker -> npm run build -> non-zero = FAIL), and
-  // the markers are exactly their four files, so after a failed build (markers deleted) all four are red.
+  // Kevin 12101, Ron 12358: all four dist suites have the same fallback (no setup stamp or no marker -> npm run build ->
+  // non-zero = FAIL), and the markers are exactly their four files, so after a failed build all four are red.
   const DIST_SUITES: Array<{ suite: string; marker: string; checks: string[] }> = [
     { suite: 'channels-custom-provider.test.sh', marker: 'dist/web/agent-process.js',
-      checks: ['if [ ! -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then', 'if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then', 'echo "FAIL: npm run build failed" >&2\n    exit 1'] },
+      checks: [`if [ ! -f "$INSTALL_DIR/dist/${STAMP_NAME}" ] || [ ! -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then`, 'if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then', 'echo "FAIL: npm run build failed" >&2\n    exit 1'] },
     { suite: 'channels-auth-probe.test.sh', marker: 'dist/web/reauth-detect.js',
-      checks: ['if [ ! -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then', 'if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then', 'echo "FAIL: npm run build failed" >&2\n    exit 1'] },
+      checks: [`if [ ! -f "$INSTALL_DIR/dist/${STAMP_NAME}" ] || [ ! -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then`, 'if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then', 'echo "FAIL: npm run build failed" >&2\n    exit 1'] },
     { suite: 'channels-mcp-unlock.test.sh', marker: 'dist/pane-state.js',
-      checks: ['PANE_STATE_JS="${CHANNELS_PANE_STATE_JS:-$INSTALL_DIR/dist/pane-state.js}"', '[ ! -f "$PANE_STATE_JS" ]', 'if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then', 'echo "FAIL: npm run build failed" >&2\n    exit 1'] },
+      checks: ['PANE_STATE_JS="${CHANNELS_PANE_STATE_JS:-$INSTALL_DIR/dist/pane-state.js}"', `{ [ ! -f "$INSTALL_DIR/dist/${STAMP_NAME}" ] || [ ! -f "$PANE_STATE_JS" ]; }`, 'if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then', 'echo "FAIL: npm run build failed" >&2\n    exit 1'] },
     { suite: 'yt-ingest.test.py', marker: 'dist/prompt-safety.js',
-      checks: ["os.path.join(ROOT, 'dist', 'prompt-safety.js')", "if subprocess.run(['npm', 'run', 'build'], cwd=ROOT, stdout=sys.stderr).returncode != 0:", "print('FAIL: npm run build failed', file=sys.stderr)\n        sys.exit(1)"] },
+      checks: ["os.path.join(ROOT, 'dist', 'prompt-safety.js')", `SETUP_STAMP = os.path.join(ROOT, 'dist', '${STAMP_NAME}')`, '(not os.path.isfile(SETUP_STAMP) or not os.path.isfile(SAFETY))', "if subprocess.run(['npm', 'run', 'build'], cwd=ROOT, stdout=sys.stderr).returncode != 0:", "print('FAIL: npm run build failed', file=sys.stderr)\n        sys.exit(1)"] },
   ]
 
   it('the four dist suites build on demand and FAIL on a failed build, and the markers are exactly their files', () => {
@@ -320,10 +342,20 @@ describe('the one dist/ build before the suites', () => {
   })
 
   // The fallback builds may run in parallel on the failure branch (Kevin 12101): harmless only because none of them can
-  // make a dist/ trusted. The stamp is written in ONE place, ensureDist, after the failure branch has returned.
-  it('only the setup writes the stamp, and only after a successful build', () => {
-    const hits = spawnSync('git', ['grep', '--untracked', '-l', '-F', ['.test', 'build-ok'].join('-')], { cwd: ROOT, encoding: 'utf-8' })
-    expect(hits.stdout.trim().split('\n').sort()).toEqual(['src/__tests__/setup/build-dist-once.ts'])
+  // make a dist/ trusted. The stamp is written in ONE place, ensureDist, after the failure branch has returned; the
+  // four dist suites only test that it exists (Ron 12358).
+  it('only the setup writes the stamp, and only after a successful build; the dist suites only read it', () => {
+    const hits = spawnSync('git', ['grep', '--untracked', '-l', '-F', STAMP_NAME], { cwd: ROOT, encoding: 'utf-8' })
+    expect(hits.stdout.trim().split('\n').sort())
+      .toEqual(['src/__tests__/setup/build-dist-once.ts', ...DIST_SUITES.map((d) => `scripts/__tests__/${d.suite}`)].sort())
+    const readOnly = (l: string) => l.trim().startsWith('#') || l.includes(`[ ! -f "$INSTALL_DIR/dist/${STAMP_NAME}" ]`)
+      || l === `SETUP_STAMP = os.path.join(ROOT, 'dist', '${STAMP_NAME}')`
+    for (const { suite } of DIST_SUITES) {
+      const lines = readFileSync(join(SCRIPT_TESTS_DIR, suite), 'utf-8').split('\n')
+      expect(lines.filter((l) => l.includes(STAMP_NAME) && !readOnly(l)), suite).toEqual([])
+      expect(lines.filter((l) => l.includes('SETUP_STAMP') && !l.startsWith('SETUP_STAMP = ')
+        && !l.includes('os.path.isfile(SETUP_STAMP)')), suite).toEqual([])
+    }
     const src = readFileSync(join(__dirname, 'setup', 'build-dist-once.ts'), 'utf-8')
     const writes = [...src.matchAll(/writeFileSync\(join\(root, STAMP\)/g)].map((m) => m.index!)
     expect(writes.length).toBe(1)

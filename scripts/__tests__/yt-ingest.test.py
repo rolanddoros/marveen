@@ -50,8 +50,13 @@ SAFETY = os.environ.get('YT_INGEST_PROMPT_SAFETY') or os.path.join(ROOT, 'dist',
 # Without dist/prompt-safety.js the wrap-and-scrub cases were skipped (skipUnless) and the suite exited 0, so
 # whether they ran depended on another suite having built dist/ first. Build it on demand; a failed build is a
 # FAIL (exit 1 before any case runs), never a skip.
-if not os.environ.get('YT_INGEST_PROMPT_SAFETY') and not os.path.isfile(SAFETY):
-    print('dist/prompt-safety.js not built -- building now (npm run build)...', file=sys.stderr)
+# Trusted only next to the test setup's stamp (C2 B2-5b, Ron 12358): a FAILED build emits this file anyway (tsc), so
+# after another suite's failed fallback build the file alone would let this suite go green on code that does not
+# compile. The stamp is written only by src/__tests__/setup/build-dist-once.ts after a build that succeeded; without it
+# this suite builds, and a failed build is its FAIL. (Run alone, outside vitest, it therefore always builds.)
+SETUP_STAMP = os.path.join(ROOT, 'dist', '.test-build-ok')
+if not os.environ.get('YT_INGEST_PROMPT_SAFETY') and (not os.path.isfile(SETUP_STAMP) or not os.path.isfile(SAFETY)):
+    print('dist/prompt-safety.js not built by the test setup -- building now (npm run build)...', file=sys.stderr)
     if subprocess.run(['npm', 'run', 'build'], cwd=ROOT, stdout=sys.stderr).returncode != 0:
         print('FAIL: npm run build failed', file=sys.stderr)
         sys.exit(1)
