@@ -370,7 +370,10 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
     await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('timeout'), { timeout: 10_000 })
     expect(db.getBackgroundTask(id)!.output).toBe('half done')
-    await vi.waitFor(() => expect(sessions()).not.toContain(`bg-${id}`), { timeout: 10_000 })
+    // The fake rewrites its session list before its last log line: wait for that line, or the
+    // kill-session child can still be writing into the dir when afterEach removes it.
+    await vi.waitFor(() => expect(calls()).toContain('end kill-session'), { timeout: 10_000 })
+    expect(sessions()).not.toContain(`bg-${id}`)
   })
 
   it('startup sweep is awaitable, fails dead tasks as orphaned, keeps live ones, without stalling', async () => {
@@ -420,6 +423,9 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS)
     await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('done'), { timeout: 10_000 })
     expect(db.getBackgroundTask(id)!.output).toBe('slow answer')
+    // The tick marks the task done BEFORE it awaits kill-session: wait for the kill to end.
+    await vi.waitFor(() => expect(calls()).toContain('end kill-session'), { timeout: 10_000 })
+    expect(sessions()).not.toContain(`bg-${id}`)
   }, 30_000)
 
   it('startup sweep: a list-sessions that does not answer in time keeps the task running and polls it', async () => {
@@ -432,6 +438,9 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS)
     await vi.waitFor(() => expect(db.getBackgroundTask('AA000009')!.status).toBe('done'), { timeout: 10_000 })
     expect(db.getBackgroundTask('AA000009')!.output).toBe('swept answer')
+    // The tick marks the task done BEFORE it awaits kill-session: wait for the kill to end.
+    await vi.waitFor(() => expect(calls()).toContain('end kill-session'), { timeout: 10_000 })
+    expect(sessions()).not.toContain('bg-AA000009')
   }, 30_000)
 
   it('no tmux server (list-sessions exits 1) still reads as a dead session, in the poll and in the sweep', async () => {
