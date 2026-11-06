@@ -9,6 +9,7 @@ import {
   templateKeys, wrapRegion,
 } from '../web/claude-md/render.js'
 import { renderRegion, renderSections, type Section } from '../web/claude-md/registry.js'
+import { FIXTURES } from './fixtures/claude-md/contexts.js'
 import type { AgentDocContext } from '../web/claude-md/context.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -195,6 +196,20 @@ describe('module source hygiene', () => {
       const text = readFileSync(join(MODULE_DIR, f), 'utf-8')
       // eslint-disable-next-line no-control-regex
       expect([...text].filter((c) => c.codePointAt(0)! > 0x7e || (c.codePointAt(0)! < 0x20 && c !== '\n')), f).toEqual([])
+    }
+  })
+})
+
+describe('the autonomy rule points at the file, never a snapshot (Ron S3, C1 PR 10b)', () => {
+  it('every role, with and without categories: the file path and the level-1 default, no "Levels now" / "none set"', () => {
+    for (const role of ['main', 'sub', 'heartbeat'] as const) {
+      for (const autonomy of [{}, { kanban_archive_done: 1, memory_maintenance: 3 }] as Record<string, 1 | 2 | 3>[]) {
+        const region = renderRegion({ ...FIXTURES.main, role, name: role === 'main' ? FIXTURES.main.mainAgentId : 'kevin', autonomy })
+        const line = region.split('\n').find((l) => l.startsWith('- Autonomous action:'))!
+        expect(line, role).toContain(`${FIXTURES.main.projectRoot}/store/autonomy-config.json`)
+        expect(line, role).toContain('a category not listed there, or no file, is level 1')
+        expect(line, role).not.toMatch(/Levels now|none set|kanban_archive_done/)
+      }
     }
   })
 })

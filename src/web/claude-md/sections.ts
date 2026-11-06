@@ -41,13 +41,14 @@ export interface Rule {
   strictFallback?: string
 }
 
-// {{escalateTo}}, {{mainAgentId}} and {{levels}} are the only keys a rule may use.
+// {{escalateTo}}, {{mainAgentId}} and {{autonomyFile}} are the only keys a rule may use.
 export const RULES: readonly Rule[] = [
   {
     id: 'approvals',
     roles: ['main', 'sub', 'heartbeat'],
     text: 'Autonomous action: check its level first (1 notify only, 2 approval before acting, 3 act, then report). '
-      + 'Levels now: {{levels}}. Procedure: skill marveen-approvals.',
+      + 'Read the levels in {{autonomyFile}} each time (they change); a category not listed there, or no file, is level 1. '
+      + 'Procedure: skill marveen-approvals.',
   },
   {
     id: 'directive-auth',
@@ -145,11 +146,14 @@ export const RULES: readonly Rule[] = [
   },
 ]
 
-const RULE_KEYS = ['escalateTo', 'mainAgentId', 'levels'] as const
+const RULE_KEYS = ['escalateTo', 'mainAgentId', 'autonomyFile'] as const
 
-function autonomyLevels(ctx: AgentDocContext): string {
-  const keys = Object.keys(ctx.autonomy).sort()
-  return keys.length > 0 ? keys.map((k) => `${k} ${ctx.autonomy[k]}`).join(', ') : 'none set'
+// Ron S3 (Kevin 13036): no snapshot of the levels. A CLAUDE.md loads when the session starts, so a snapshot goes
+// stale the moment the owner changes a level, and a re-render on change cannot reach a running session either.
+// The rule points at the file instead and states the runtime gate's default (autonomy-level.ts: a missing file or
+// key is level 1), so an empty list can never read as unlimited.
+function autonomyFile(ctx: AgentDocContext): string {
+  return `${ctx.projectRoot}/store/autonomy-config.json`
 }
 
 // The one line a rule renders for this agent (the hook coupling applied).
@@ -165,7 +169,7 @@ export function ruleLine(rule: Rule, ctx: AgentDocContext): string {
   const all: Record<(typeof RULE_KEYS)[number], string> = {
     escalateTo: ctx.role === 'main' ? 'the owner' : ctx.mainAgentId,
     mainAgentId: ctx.mainAgentId,
-    levels: autonomyLevels(ctx),
+    autonomyFile: autonomyFile(ctx),
   }
   const used = RULE_KEYS.filter((k) => tpl.includes(`{{${k}}}`))
   return `- ${renderTemplate(tpl, Object.fromEntries(used.map((k) => [k, all[k]])), `rule ${rule.id}`)}`

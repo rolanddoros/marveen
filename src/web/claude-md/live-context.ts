@@ -108,7 +108,7 @@ export interface LiveContext {
 // test reads them out of the source). A rendered field must never be an
 // assumption on a real write.
 export const RENDERED_FIELDS = [
-  'autonomy', 'capabilities.federation', 'capabilities.kanbanWrite', 'hooks', 'mainAgentId', 'name',
+  'capabilities.federation', 'capabilities.kanbanWrite', 'hooks', 'mainAgentId', 'name',
   'owner.chatId', 'owner.name', 'profile.helperAllowed', 'profile.strict', 'projectRoot', 'role', 'roster', 'team',
 ] as const
 
