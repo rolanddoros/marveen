@@ -3,7 +3,7 @@
 // (CLAUDECLAW_ENV_DIR) point at it.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { createHash } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -23,7 +23,10 @@ vi.mock('../config.js', async (importOriginal) => ({
   MAIN_AGENT_ID: 'boss',
 }))
 
-import { applyMainClaudeMdV2, applySubClaudeMdV2, mainFlagOn, subFlagOn } from '../web/claude-md/wire.js'
+import { applyMainClaudeMdV2, applySubClaudeMdV2, defaultWireDeps, mainFlagOn, regionSkillRefs, subFlagOn, type WireDeps } from '../web/claude-md/wire.js'
+import { defaultSkillInstallPaths } from '../web/claude-md/skill-install.js'
+import { PRODUCT_SKILLS } from '../web/claude-md/skills.js'
+import { REGION_BEGIN, REGION_END } from '../web/claude-md/render.js'
 import type { ProfileTemplate } from '../web/profiles.js'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -57,7 +60,7 @@ function fixture(): void {
   mkdirSync(ROOT, { recursive: true })
   put('CLAUDE.md', '# Boss\n\nOwner text with $& and $1, ékezet.\n')
   put('.env', 'MAIN_AGENT_ID=boss\n')
-  put('agents/kevin/CLAUDE.md', '# Kevin\n\n<!-- BEGIN GENERATED: autonomy -->\nold\n<!-- END GENERATED: autonomy -->\n')
+  put('agents/kevin/CLAUDE.md', '# Kevin\n\n<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->\nold\n<!-- END GENERATED: autonomy-wiring -->\n')
   put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' } }))
 }
 
@@ -174,5 +177,162 @@ describe('source parity: the guarded legacy sequences equal the base', () => {
     }
     walk(SRC)
     expect(callers.sort()).toEqual(['web.ts', 'web/agent-process.ts'])
+  })
+})
+
+// ---- flag on: the v2 write ----
+
+const NOW = new Date('2026-11-06T22:43:00Z')
+const KEVIN = join(ROOT, 'agents', 'kevin', 'CLAUDE.md')
+const deps = (over: Partial<WireDeps> = {}): WireDeps => ({
+  ...defaultWireDeps(),
+  skillPaths: defaultSkillInstallPaths(ROOT, join(ROOT, 'store'), join(ROOT, 'home')),
+  federationEnabled: () => false,
+  helperAllowed: () => true,
+  strict: () => false,
+  now: () => NOW,
+  ...over,
+})
+const flagKevin = () => put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' }, claudeMdBuilder: 'v2' }))
+const read = (p: string) => readFileSync(p, 'utf-8')
+const count = (text: string, line: string) => text.split('\n').filter((l) => l === line).length
+const backups = () => (existsSync(join(ROOT, 'store', 'claude-md-backup'))
+  ? readdirSync(join(ROOT, 'store', 'claude-md-backup')).filter((n) => n !== 'product-skills').sort() : [])
+
+describe('regionSkillRefs', () => {
+  it('the marveen-* skill names, lower-cased and unique; a file name such as marveen-api.sh is not one', () => {
+    expect(regionSkillRefs('skill marveen-messaging and Skill MARVEEN-Approvals; bash /x/scripts/marveen-api.sh; marveen-messaging'))
+      .toEqual(['marveen-approvals', 'marveen-messaging'])
+  })
+})
+
+describe('flag on, a sub: the v2 region replaces the legacy blocks', () => {
+  it('first run: one region, the legacy block gone, the owner zone kept, a backup of the old bytes, the skills installed', () => {
+    put('agents/kevin/CLAUDE.md', '# Kevin\n\nOwner $& and $1 stay, ékezet.\n\n<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->\nold\n<!-- END GENERATED: autonomy-wiring -->\n')
+    flagKevin()
+    const before = read(KEVIN)
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    const after = read(KEVIN)
+    expect(count(after, REGION_BEGIN)).toBe(1)
+    expect(count(after, REGION_END)).toBe(1)
+    expect(after).not.toContain('BEGIN GENERATED: autonomy-wiring')
+    expect(after).not.toContain('\nold\n')
+    expect(after).toContain('Owner $& and $1 stay, ékezet.')
+    expect(backups()).toEqual(['20261106-234300'])
+    const bdir = join(ROOT, 'store', 'claude-md-backup', '20261106-234300', 'kevin')
+    expect(read(join(bdir, 'CLAUDE.md'))).toBe(before)
+    for (const n of PRODUCT_SKILLS) expect(existsSync(join(ROOT, '.claude', 'skills', n, 'SKILL.md')), n).toBe(true)
+    for (const r of regionSkillRefs(after)) expect(PRODUCT_SKILLS as readonly string[]).toContain(r)
+  })
+
+  it('second run: true, and nothing anywhere changes (no write, no new backup)', () => {
+    flagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    const snap = snapshot()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date('2026-11-07T10:00:00Z') }))).toBe(true)
+    expect(snapshot()).toEqual(snap)
+  })
+
+  it('an update inside v2 (another owner name) rewrites the region without a new backup', () => {
+    flagKevin()
+    applySubClaudeMdV2('kevin', PROFILE, deps())
+    put('.env', 'MAIN_AGENT_ID=boss\nOWNER_NAME=Roland\n')
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date('2026-11-07T10:00:00Z') }))).toBe(true)
+    expect(read(KEVIN)).toContain('Roland')
+    expect(backups()).toEqual(['20261106-234300'])
+  })
+})
+
+describe('flag on, refused: the legacy sequence runs, nothing is written', () => {
+  const refused = (d: WireDeps, name = 'kevin', profile = PROFILE) => {
+    const before = snapshot()
+    expect(applySubClaudeMdV2(name, profile, d)).toBe(false)
+    expect(snapshot()).toEqual(before)
+  }
+  it('federation enabled', () => { flagKevin(); refused(deps({ federationEnabled: () => true })) })
+  it('a helper-denied agent', () => { flagKevin(); refused(deps({ helperAllowed: () => false })) })
+  it('a thin-chief profile', () => { flagKevin(); refused(deps(), 'kevin', { permissionMode: 'permissive', thinChiefHandoff: true } as unknown as ProfileTemplate) })
+  it('the heartbeat worker', () => {
+    put('agents/heartbeat/CLAUDE.md', '# hb\n')
+    put('agents/heartbeat/agent-config.json', JSON.stringify({ claudeMdBuilder: 'v2' }))
+    refused(deps(), 'heartbeat')
+  })
+})
+
+describe('flag on, a failure: nothing written; legacy runs only while the file has no region', () => {
+  const failsLegacy = (d: WireDeps = deps()) => {
+    const before = read(KEVIN)
+    expect(applySubClaudeMdV2('kevin', PROFILE, d)).toBe(false)
+    expect(read(KEVIN)).toBe(before)
+    expect(backups()).toEqual([])
+  }
+  it('a ComposeError (an unclosed legacy block)', () => {
+    put('agents/kevin/CLAUDE.md', '# Kevin\n<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->\nnever closed\n')
+    flagKevin()
+    failsLegacy()
+  })
+  it('a TemplateError (an emoji sequence in OWNER_NAME)', () => {
+    put('.env', 'MAIN_AGENT_ID=boss\nOWNER_NAME=Ro\u200dland\n')
+    flagKevin()
+    failsLegacy()
+  })
+  it('the backup fails: no CLAUDE.md write', () => {
+    flagKevin()
+    failsLegacy(deps({ now: () => new Date(Number.NaN) }))
+  })
+  it('a foreign skill on one of the six names: no install, no write', () => {
+    flagKevin()
+    mkdirSync(join(ROOT, '.claude', 'skills', 'marveen-messaging'), { recursive: true })
+    writeFileSync(join(ROOT, '.claude', 'skills', 'marveen-messaging', 'SKILL.md'), 'foreign\n')
+    failsLegacy()
+    expect(read(join(ROOT, '.claude', 'skills', 'marveen-messaging', 'SKILL.md'))).toBe('foreign\n')
+    expect(existsSync(join(ROOT, '.claude', 'skills', 'marveen-approvals'))).toBe(false)
+  })
+  it('the .env main id is not the running one', () => {
+    put('.env', 'MAIN_AGENT_ID=other\n')
+    flagKevin()
+    failsLegacy()
+  })
+  it('a file that already has its region: true (no legacy blocks appended to a v2 file), the file unchanged', () => {
+    flagKevin()
+    applySubClaudeMdV2('kevin', PROFILE, deps())
+    const v2 = read(KEVIN)
+    put('.env', 'MAIN_AGENT_ID=boss\nOWNER_NAME=Ro\u200dland\n')
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    expect(read(KEVIN)).toBe(v2)
+  })
+})
+
+describe('flag on, the main agent', () => {
+  it('CLAUDE_MD_BUILDER_MAIN=v2: the region in <root>/CLAUDE.md, a backup under the main id', () => {
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
+    expect(applyMainClaudeMdV2(deps())).toBe(true)
+    expect(count(read(join(ROOT, 'CLAUDE.md')), REGION_BEGIN)).toBe(1)
+    expect(read(join(ROOT, 'CLAUDE.md'))).toContain('Owner text with $& and $1, ékezet.')
+    expect(existsSync(join(ROOT, 'store', 'claude-md-backup', '20261106-234300', 'boss', 'CLAUDE.md'))).toBe(true)
+  })
+  it('refused with federation enabled', () => {
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
+    const before = snapshot()
+    expect(applyMainClaudeMdV2(deps({ federationEnabled: () => true }))).toBe(false)
+    expect(snapshot()).toEqual(before)
+  })
+})
+
+describe('the last flag off removes the rendered product skills', () => {
+  it('kevin off, main still on: kept; main off too: the manifest files and the manifest go, foreign skills stay', () => {
+    flagKevin()
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
+    mkdirSync(join(ROOT, '.claude', 'skills', 'marveen-frissites'), { recursive: true })
+    writeFileSync(join(ROOT, '.claude', 'skills', 'marveen-frissites', 'SKILL.md'), 'foreign\n')
+    applySubClaudeMdV2('kevin', PROFILE, deps())
+    put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' } }))
+    applySubClaudeMdV2('kevin', PROFILE, deps())
+    expect(existsSync(join(ROOT, '.claude', 'skills', 'marveen-messaging', 'SKILL.md'))).toBe(true)
+    put('.env', 'MAIN_AGENT_ID=boss\n')
+    applyMainClaudeMdV2(deps())
+    for (const n of PRODUCT_SKILLS) expect(existsSync(join(ROOT, '.claude', 'skills', n)), n).toBe(false)
+    expect(existsSync(join(ROOT, 'store', 'claude-md-backup', 'product-skills', 'MANIFEST.json'))).toBe(false)
+    expect(read(join(ROOT, '.claude', 'skills', 'marveen-frissites', 'SKILL.md'))).toBe('foreign\n')
   })
 })
