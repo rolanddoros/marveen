@@ -24,6 +24,15 @@ const text = (f: string) => readFileSync(join(WF_DIR, f), 'utf-8')
 const usesLines = (f: string) =>
   text(f).split('\n').map((line, i) => ({ line, n: i + 1 })).filter(({ line }) => /^\s*(-\s+)?['"]?uses['"]?\s*:/.test(line))
 
+// The release each pinned SHA was read from (C2 B2-5b, Ron 11985): GitHub API git/ref/tags/<version>, object type
+// commit, read by the reviewer on 2026-11-05. Without it the '# vX.Y.Z' comment was checked for its FORM only: a
+// comment changed to another release stayed green, and at the next bump the comment could lie about the SHA. A bump
+// updates this table from the same API read, in the same commit as the workflow line; the test needs no network.
+const RELEASES: Record<string, { sha: string; version: string }> = {
+  'actions/checkout': { sha: '11d5960a326750d5838078e36cf38b85af677262', version: 'v4.4.0' },
+  'actions/setup-node': { sha: '49933ea5288caeca8642d1e84afbd3f7d6820020', version: 'v4.4.0' },
+}
+
 const PINNED = /^\s*(-\s+)?uses:\s+[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$/
 
 describe('CI workflows: pinned actions, one Node version source (C2 B2-5)', () => {
@@ -35,6 +44,23 @@ describe('CI workflows: pinned actions, one Node version source (C2 B2-5)', () =
   it('every action is pinned to a full commit SHA with its release as a comment', () => {
     const loose = WORKFLOWS.flatMap((f) => usesLines(f).filter(({ line }) => !PINNED.test(line)).map(({ line, n }) => `${f}:${n}: ${line.trim()}`))
     expect(loose).toEqual([])
+  })
+
+  it('every pinned SHA and its release comment are the recorded pair, and every recorded pair is in use', () => {
+    const used = new Set<string>()
+    const wrong: string[] = []
+    for (const f of WORKFLOWS) {
+      for (const { line, n } of usesLines(f)) {
+        const m = line.match(/uses:\s+([^@\s]+)@([0-9a-f]{40})\s+#\s+(v\d+\.\d+\.\d+)\s*$/)
+        if (!m) continue   // the form is the previous case's job
+        const [, action, sha, version] = m
+        used.add(action)
+        const rec = RELEASES[action]
+        if (!rec || rec.sha !== sha || rec.version !== version) wrong.push(`${f}:${n}: ${action}@${sha} # ${version}`)
+      }
+    }
+    expect(wrong).toEqual([])
+    expect([...used].sort()).toEqual(Object.keys(RELEASES).sort())
   })
 
   it('one action is pinned to one SHA everywhere (no two releases of the same action side by side)', () => {
