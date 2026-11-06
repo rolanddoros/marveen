@@ -257,6 +257,12 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
         continue
       }
       state.attempts += 1
+      // A delivered nudge restarts the backoff from the END of the run, not from the tick
+      // that started it: a send that took longer than the backoff (idle wait + lane wait)
+      // would otherwise let the first tick after it nudge a pane that just got one (Ron
+      // 12296, Kevin 12380). max(): the tick's own clock is the floor; a short send only
+      // shifts the window by its own few seconds.
+      state.lastWakeAt = Math.max(now, Date.now())
       logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')
     } catch (err) {
       logger.warn({ err, agent: name }, 'telegram-inbox-wake: wake check failed')
