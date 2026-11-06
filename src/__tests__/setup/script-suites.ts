@@ -13,7 +13,8 @@
 // A suite's shard is a hash of its NAME, not its position in the sorted list: adding or removing a
 // file then moves no other suite to another shard, so a shard's timing stays comparable between runs.
 import { spawnSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect } from 'vitest'
 import { SKIP_REASON, hasSkipReason, suiteOutcome } from './suite-outcome.js'
@@ -63,10 +64,13 @@ const TSC_ERROR = /error TS\d+:/
 const FAIL_LINE = /^\s*FAIL\b/
 
 // timeoutMs: the budget the suite actually ran with (runScriptSuite passes its own; the shards run with 300 s).
+// keptTmp: the suite's own TMPDIR, kept as evidence of a red run; named right after the head line, so the 3 KB cut
+// never drops it.
 export function failureDigest(
   name: string,
   res: { status: number | null; signal?: NodeJS.Signals | null; error?: Error; stdout?: string | null; stderr?: string | null },
   timeoutMs: number = SUITE_TIMEOUT_MS,
+  keptTmp?: string,
 ): string {
   const out = (res.stdout ?? '').split('\n')
   const err = (res.stderr ?? '').split('\n')
@@ -79,6 +83,7 @@ export function failureDigest(
     : res.error ? `${name} did not complete: ${res.error.message}${res.signal ? ` (${res.signal})` : ''}`
     : `${name} was killed by ${res.signal ?? 'an unknown signal'}`
   const parts = [head]
+  if (keptTmp !== undefined) parts.push(keptTmpLine(keptTmp))
   const section = (title: string, re: RegExp) => {
     const hits = all.filter((l) => re.test(l))
     if (hits.length === 0) return
@@ -99,22 +104,51 @@ export function failureDigest(
   return text
 }
 
+export const keptTmpLine = (dir: string) => `TMPDIR kept as evidence: ${dir}`
+
 // Runs one suite. The case function gets the test context: ctx.skip() makes the outcome a SKIPPED test
 // that the reporter counts and shows. An early `return` from an `it` is counted as a pass, which is the
 // silent skip this branch exists to prevent (pinned by script-tests-runner-skip.test.ts).
 // `dir` and `timeoutMs` are for the runner's own tests only (C2 B2-5b): a throwaway suite, a short timeout, to
 // prove that a failing or a hanging suite turns its case red. The shards pass neither (SCRIPT_TESTS_DIR, 300 s).
+//
+// Every suite runs with its OWN TMPDIR (C2, Kevin 12537/12538): a fresh mkdtemp under tmpBase, handed to the suite as
+// TMPDIR, TMP and TEMP. Measured before this (2026-11-06, every suite run alone with a fresh TMPDIR): 32 of the suites left 1171 entries in the
+// TMPDIR they were given, a shared /tmp collected them all. Bash mktemp and Python tempfile follow TMPDIR; a suite that
+// writes to a fixed /tmp path (seeme-send, disk-space-guard, on purpose) is not redirected by this.
+// Green or a counted skip: that directory, and ONLY that exact path, is removed. Red, timed out or never spawned: it is
+// KEPT as evidence, and the failure message names it. Nothing else under tmpBase is ever touched.
+// `tmpBase` is for the runner's own tests only, so that their red fixtures keep their evidence inside the fixture.
 export function runScriptSuite(
   name: string,
   ctx: { skip: (note?: string) => void },
   dir: string = SCRIPT_TESTS_DIR,
   timeoutMs: number = SUITE_TIMEOUT_MS,
+  tmpBase: string = tmpdir(),
 ): void {
   const runner = name.endsWith('.py') ? 'python3' : 'bash'
+  const tmp = mkdtempSync(join(tmpBase, `script-suite-${name}-`))
+  const outcome = { clean: false }
+  try {
+    runIn(name, ctx, dir, timeoutMs, runner, tmp, outcome)
+  } finally {
+    // maxRetries: a straggler child of the suite can still be writing for a moment; a removal that still fails
+    // throws, so a suite that leaves a live writer behind is red, not silently half-cleaned.
+    if (outcome.clean) rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  }
+}
+
+// outcome.clean is set only for green or a counted skip; a red outcome throws from expect first, so tmp stays.
+// It is set BEFORE ctx.skip(): a real test context's skip() throws to end the case.
+function runIn(
+  name: string, ctx: { skip: (note?: string) => void }, dir: string, timeoutMs: number, runner: string, tmp: string,
+  outcome: { clean: boolean },
+): void {
   const res = spawnSync(runner, [join(dir, name)], {
     encoding: 'utf-8',
     timeout: timeoutMs,
     cwd: ROOT,
+    env: { ...process.env, TMPDIR: tmp, TMP: tmp, TEMP: tmp },
   })
   if (suiteOutcome(res.status) === 'skip') {
     // A suite whose positive control cannot be met on this platform has
@@ -125,8 +159,10 @@ export function runScriptSuite(
     // failure. The streams are joined with a newline so that the marker on
     // stderr starts a line even when stdout did not end with one.
     const why = `${res.stdout ?? ''}\n${res.stderr ?? ''}`
-    expect(hasSkipReason(why), `${name} exited 77 without a "SKIP (control unmet)" line:\n${why}`).toBe(true)
+    expect(hasSkipReason(why), `${name} exited 77 without a "SKIP (control unmet)" line\n${keptTmpLine(tmp)}\n${why}`)
+      .toBe(true)
     const line = why.split('\n').find((l) => SKIP_REASON.test(l)) ?? 'control unmet'
+    outcome.clean = true
     ctx.skip(`${name}: ${line}`)
     return
   }
@@ -134,5 +170,6 @@ export function runScriptSuite(
     console.error(`--- ${name} stdout ---\n${res.stdout ?? ''}`)
     console.error(`--- ${name} stderr ---\n${res.stderr ?? ''}`)
   }
-  expect(res.status, failureDigest(name, res, timeoutMs)).toBe(0)
+  expect(res.status, failureDigest(name, res, timeoutMs, tmp)).toBe(0)
+  outcome.clean = true
 }

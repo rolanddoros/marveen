@@ -5,7 +5,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DIGEST_MAX_BYTES, failureDigest, runScriptSuite } from './setup/script-suites.js'
+import { DIGEST_MAX_BYTES, SUITE_TIMEOUT_MS, failureDigest, runScriptSuite } from './setup/script-suites.js'
 
 const ts = (i: number) => `src/web/f${i}.ts(${i},1): error TS2322: Type 'string' is not assignable to type 'number'.`
 const noise = (n: number) => Array.from({ length: n }, (_, i) => `noise ${i + 1}`)
@@ -83,7 +83,7 @@ describe('runScriptSuite: the digest reaches the failure message (end to end)', 
       ].join('\n') + '\n')
       const dump = vi.spyOn(console, 'error').mockImplementation(() => {})
       let message = ''
-      try { runScriptSuite('fake-build.test.sh', { skip: () => {} }, dir) } catch (e) { message = (e as Error).message }
+      try { runScriptSuite('fake-build.test.sh', { skip: () => {} }, dir, SUITE_TIMEOUT_MS, dir) } catch (e) { message = (e as Error).message }
       expect(message).toContain('fake-build.test.sh exited 1')
       expect(message).toContain(ts(1))
       expect(message).toContain(ts(5))
@@ -104,7 +104,7 @@ describe('runScriptSuite: the digest reaches the failure message (end to end)', 
       writeFileSync(join(dir, 'killed.test.sh'), 'echo "  PASS: before the kill"\nkill -9 $$\necho "not reached"\n')
       vi.spyOn(console, 'error').mockImplementation(() => {})
       let message = ''
-      try { runScriptSuite('killed.test.sh', { skip: () => {} }, dir) } catch (e) { message = (e as Error).message }
+      try { runScriptSuite('killed.test.sh', { skip: () => {} }, dir, SUITE_TIMEOUT_MS, dir) } catch (e) { message = (e as Error).message }
       expect(message).toContain('killed.test.sh was killed by SIGKILL')
       expect(message).toContain('expected null to be +0')
     } finally {
@@ -119,7 +119,7 @@ describe('runScriptSuite: the digest reaches the failure message (end to end)', 
       vi.stubEnv('PATH', join(dir, 'no-such-bin'))
       vi.spyOn(console, 'error').mockImplementation(() => {})
       let message = ''
-      try { runScriptSuite('unspawnable.test.sh', { skip: () => {} }, dir) } catch (e) { message = (e as Error).message }
+      try { runScriptSuite('unspawnable.test.sh', { skip: () => {} }, dir, SUITE_TIMEOUT_MS, dir) } catch (e) { message = (e as Error).message }
       expect(message).toContain('unspawnable.test.sh did not complete: spawnSync bash ENOENT')
       expect(message).not.toContain('unknown signal')
     } finally {
