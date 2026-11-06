@@ -86,6 +86,11 @@ Cases:
       goes to that DM entry; T22c access.json holds two DM entries: no chat (exit 4, nothing reaches the stub, the
       preflight log line carries the resolver's "refusing to guess" reason); T22d access.json holds only a group id: the
       same, with the "no DM entry" reason; T22e MARVEEN_ALERT_CHAT_ID is an explicit override over the .env id
+  T23 the bot-token env gate (C2 PR4e): TELEGRAM_API_BASE names a REACHABLE Bot API stub on 127.0.0.2 (not loopback by
+      the gate's rule) and the main channel's token file is a FIFO with no writer: the run ends in time (the token
+      file is never opened: opening the FIFO would block), exit 4, the preflight line names TELEGRAM_API_BASE, and
+      neither stub receives anything; T23b the same with an allowed loopback base but an env_gate.py that raises at
+      load: the same outcome, the preflight line says the gate "cannot be loaded"
   G1  every alert/recovery/blind text the script can build for the target names 'site', 'widget', 'website' and
       'caf\u00e9-booking' (example URLs only), with every error text in G1's own list (not every exception name the script
       can print), passes the outgoing-copy gate; G1k: the same alert with an em dash in it is REFUSED (the gate is
@@ -108,7 +113,9 @@ Controls (a mutant copy of the script; the named case must fail on it):
   without summing, the merged notice says the second streak's minutes only), M-state-type (T14c: without the field
   type check the run exits 1), M-gate-error (T15b: without the gate preflight the target-name check meets the broken
   gate and the run exits 1, not 4), M-answered (T17: if an unreadable answer counted as no answer, the run would be NOT
-  MEASURABLE).
+  MEASURABLE), M-env-gate-send and M-env-gate-preflight (T23: without the gate in telegram_send() or in the preflight
+  the token FIFO is opened and the run blocks), M-env-gate-load (T23b: a gate that cannot load, read as "allowed",
+  opens the token FIFO).
 A mutant whose anchor does not occur exactly once is NOT MEASURABLE (FAIL). The temporary directory is removed; a
 leftover is a FAIL.
 Run: python3 scripts/__tests__/uptime-monitor.test.py   (exit 0 = every case and control as expected, 1 = a mismatch)
@@ -150,7 +157,7 @@ OK, WOK, REF, DOWN = (200, SITE_OK), (200, WIDGET_OK), (204, ""), (503, "")
 class Server:
     """Per path a queue of (status, body); the last item repeats."""
 
-    def __init__(self):
+    def __init__(self, host="127.0.0.1"):
         self.answers = {}
         self.posts = []   # (path, form fields) of every POST: the Bot API stub's record
         srv = self
@@ -189,7 +196,7 @@ class Server:
             def log_message(self, *a):
                 pass
 
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd = http.server.ThreadingHTTPServer((host, 0), Handler)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
@@ -236,7 +243,7 @@ PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "no_proxy",
               "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 
 
-def run(script, folder, config_path, sender="file", env_extra=None, env_drop=()):
+def run(script, folder, config_path, sender="file", env_extra=None, env_drop=(), timeout=90):
     messages = os.path.join(folder, "messages.txt")
     env = dict(os.environ, UPTIME_CONFIG=config_path, UPTIME_STATE=os.path.join(folder, "state.json"),
                UPTIME_LOG=os.path.join(folder, "log.jsonl"), UPTIME_TIMEOUT="5",
@@ -246,7 +253,7 @@ def run(script, folder, config_path, sender="file", env_extra=None, env_drop=())
     for v in ("UPTIME_MAX_BYTES",) + PROXY_VARS + tuple(env_drop):
         env.pop(v, None)
     env.update(env_extra or {})
-    p = subprocess.run([sys.executable, script], env=env, capture_output=True, text=True, timeout=90)
+    p = subprocess.run([sys.executable, script], env=env, capture_output=True, text=True, timeout=timeout)
     try:
         msgs = open(messages, encoding="utf-8").read().splitlines()
     except FileNotFoundError:
@@ -776,12 +783,51 @@ def t22e(s, srv, m):
     return code == 3 and sent_to(calls, "555"), "code %s, calls %s, %s" % (code, calls, out[-300:])
 
 
+FIFO_WAIT = 30   # seconds: a run that has not ended by then is blocked on the token FIFO
+
+
+def gated_path(s, srv, m, base, gate_source=None):
+    """One run on the real Telegram path with the site down, the main channel's token file a FIFO with no writer (any
+    open() of it blocks), TELEGRAM_API_BASE=base; gate_source replaces the install's scripts/lib/env_gate.py.
+    Returns (code or "blocked", the posts of srv and of the 127.0.0.2 stub, the preflight line, output)."""
+    script = install_tree(s, m, "ALLOWED_CHAT_ID=111\n", {"allowFrom": ["222"]})
+    root = os.path.dirname(os.path.dirname(script))
+    token_file = os.path.join(root, ".claude", "channels", "telegram", ".env")
+    os.remove(token_file)
+    os.mkfifo(token_file)
+    if gate_source is not None:
+        with open(os.path.join(root, "scripts", "lib", "env_gate.py"), "w") as fh:
+            fh.write(gate_source)
+    srv.set([DOWN], [WOK], [REF])
+    srv.posts, FAR.posts = [], []
+    env = {"TELEGRAM_API_BASE": base, "TELEGRAM_STATE_DIR": decoy_state_dir(m)}
+    try:
+        code, _, out = run(script, m, config(srv, m), sender="telegram", env_extra=env, env_drop=("TELEGRAM_ENV",),
+                           timeout=FIFO_WAIT)
+    except subprocess.TimeoutExpired:
+        code, out = "blocked", "not ended in %d s: the token FIFO was opened" % FIFO_WAIT
+    return code, srv.posts + FAR.posts, preflight_missing(m), out
+
+
+def t23(s, srv, m):
+    code, posts, miss, out = gated_path(s, srv, m, "http://127.0.0.2:%d" % FAR.port)
+    return code == 4 and posts == [] and "TELEGRAM_API_BASE" in miss and "nothing was sent" in miss, \
+        "code %s, posts %s, missing %r, %s" % (code, posts, miss, out[-300:])
+
+
+def t23b(s, srv, m):
+    code, posts, miss, out = gated_path(s, srv, m, "http://127.0.0.1:%d" % srv.port,
+                                        gate_source="raise ValueError('broken gate')\n")
+    return code == 4 and posts == [] and "cannot be loaded (ValueError)" in miss, \
+        "code %s, posts %s, missing %r, %s" % (code, posts, miss, out[-300:])
+
+
 CASES = {"T1": t1, "T2": t2, "T3": t3, "T4": t4, "T5": t5, "T6": t6, "T7": t7, "T8": t8, "T9": t9, "T9b": t9b,
          "T9c": t9c, "T10": t10, "T11": t11, "T12": t12, "T13": t13, "T13b": t13b, "T13c": t13c, "T14": t14,
          "T15": t15, "T16": t16, "T7b": t7b, "T7c": t7c, "T11b": t11b, "T14b": t14b, "T16b": t16b, "T7d": t7d,
          "T13d": t13d, "T15b": t15b, "T17": t17, "T9d": t9d, "T18": t18, "T9e": t9e, "T14c": t14c, "T14d": t14d,
          "T15c": t15c, "T19": t19, "T20": t20, "T9f": t9f, "T21": t21, "T22": t22, "T22b": t22b, "T22c": t22c,
-         "T22d": t22d, "T22e": t22e}
+         "T22d": t22d, "T22e": t22e, "T23": t23, "T23b": t23b}
 
 MUTANTS = [
     ("M-confirm", "                final[c[\"name\"]] = e2\n", "                pass\n", "T3"),
@@ -828,6 +874,13 @@ MUTANTS = [
      "T9"),
     ("M-send-code", "    return 4 if send_failed else code\n", "    return code\n", "T6"),
     ("M-preflight", "    missing = preflight_error()\n", "    missing = None\n", "T15"),
+    ("M-env-gate-send", "    refused = telegram_base_refusal()\n    if refused:\n        print(\"not sending:",
+     "    refused = None\n    if refused:\n        print(\"not sending:", "T23"),
+    ("M-env-gate-preflight", "    token_check = ((\"TELEGRAM_API_BASE (%s)\" % refused, False) if refused\n",
+     "    token_check = ((\"TELEGRAM_API_BASE (%s)\" % refused, False) if False\n", "T23"),
+    ("M-env-gate-load",
+     "        return \"the env gate %s cannot be loaded (%s); nothing was sent.\" % (ENV_GATE_PATH, type(e).__name__)\n",
+     "        return None\n", "T23b"),
 ]
 
 
@@ -864,8 +917,13 @@ def gate_probe():
           not ok and "U+2014" in r, "%s | %s" % (dashed, r[:200]))
 
 
+FAR = None   # the Bot API stub on 127.0.0.2: reachable, but not loopback by the env gate's rule (T23)
+
+
 def main():
+    global FAR
     srv = Server()
+    FAR = Server("127.0.0.2")
     root = tempfile.mkdtemp(prefix="uptime-monitor-test-")
     try:
         gate_probe()
@@ -890,6 +948,7 @@ def main():
                 print("%s-KILLED: %s differs on the mutant (%s)" % (name, case, detail[:140].replace("\n", " ")))
     finally:
         srv.httpd.shutdown()
+        FAR.httpd.shutdown()
         shutil.rmtree(root, ignore_errors=True)
         if os.path.exists(root):
             check("the temporary directory can be removed", False, root)

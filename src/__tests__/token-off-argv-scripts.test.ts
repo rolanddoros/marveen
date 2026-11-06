@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AddressInfo } from 'node:net'
+import { endStdin } from './helpers/stdin-epipe.js'
 
 const execFileAsync = promisify(execFile)
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -120,7 +121,8 @@ function bash(script: string, env: Record<string, string>, input = ''): Promise<
   return new Promise((resolve) => {
     const child = execFile('bash', [script], { env: { PATH, ...env }, timeout: 30_000 },
       (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, out: stdout + stderr }))
-    child.stdin?.end(input)
+    // migrate.sh's "no token file" case exits before it reads stdin: EPIPE is expected there
+    endStdin(child, input)
   })
 }
 

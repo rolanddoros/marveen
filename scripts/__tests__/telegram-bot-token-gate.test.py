@@ -136,6 +136,20 @@ def main():
               and (why is None or why in refused), (base, refused))
         check('  ...the refusal does not show the secret part', secret not in (refused or ''), refused)
 
+    # U1 (Ron 11906): an '@' OUTSIDE the netloc. The cases above with u:pw/x@host stop at "not a valid URL" (the
+    # password parses as a bad port), so they never reach shown()'s second branch; these parse, and do.
+    root = tempfile.mkdtemp(prefix='bot-token-gate-root-')
+    for value in ('http://127.0.0.1/%s@x' % secret, 'http://127.0.0.1?k=%s@x' % secret,
+                  'http://127.0.0.1#%s@x' % secret, 'https://api.telegram.org/%s@x' % secret):
+        base, refused = tab(value)
+        check('U1 telegram: %r refused, "(not shown: it contains @)", no secret' % value,
+              base is None and '(not shown: it contains @)' in (refused or '') and secret not in (refused or ''),
+              refused)
+        refused = gate.check_env(root, {'MARVEEN_API_BASE': value})
+        check('U1 dashboard: %r refused, "(not shown: it contains @)", no secret' % value,
+              refused is not None and '(not shown: it contains @)' in refused and secret not in refused, refused)
+    shutil.rmtree(root, ignore_errors=True)
+
     # --- the five senders --------------------------------------------------------------------------------------------
     local, local_api, local_reqs = make_stub('127.0.0.1')
     other, other_api, other_reqs = make_stub('127.0.0.2')
@@ -208,6 +222,43 @@ def main():
                       tok is None and not sent and not local_reqs, (tok, sent, local_reqs))
             finally:
                 os.rename(os.path.join(inst, 'scripts', 'lib', 'off.py'), os.path.join(inst, 'scripts', 'lib', 'env_gate.py'))
+
+            # env_gate.py present but raising at load with something other than the import/OS errors (Ron 11906:
+            # marveen-commands caught only (OSError, ImportError, SyntaxError, AttributeError), so a ValueError
+            # escaped as an unhandled exception): a clean refusal, no token read, nothing sent, nothing raised
+            gate_path = os.path.join(inst, 'scripts', 'lib', 'env_gate.py')
+            os.rename(gate_path, os.path.join(inst, 'scripts', 'lib', 'off.py'))
+            with open(gate_path, 'w') as f:
+                f.write("raise ValueError('the gate module itself is broken')\n")
+            del local_reqs[:]
+            try:
+                mod = load(inst, name)
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    try:
+                        tok, escaped = read_token(mod, sd), None
+                    except Exception as e:
+                        tok, escaped = None, e
+                    try:
+                        send(mod, BOT_TOKEN)
+                        sent = True
+                    except Exception:
+                        sent = False
+                check('%s: env_gate.py raising ValueError at load: no exception escapes the token read, no token, '
+                      'nothing sent' % name, escaped is None and tok is None and not sent and not local_reqs,
+                      (escaped, tok, sent, local_reqs))
+                if hasattr(mod, 'env_gate_check'):
+                    try:
+                        mod.env_gate_check()
+                        got = None
+                    except Exception as e:
+                        got = e
+                    check('%s: env_gate_check() with that module: EnvGateRefused "cannot be loaded (ValueError)"' % name,
+                          type(got).__name__ == 'EnvGateRefused' and 'cannot be loaded (ValueError)' in str(got),
+                          repr(got))
+            finally:
+                os.remove(gate_path)
+                os.rename(os.path.join(inst, 'scripts', 'lib', 'off.py'), gate_path)
 
         # end to end, the CLI sender: exit 2, the reason on stderr, the reachable stub gets nothing, the token unshown
         env = {k: v for k, v in os.environ.items() if k != 'TELEGRAM_API_BASE'}

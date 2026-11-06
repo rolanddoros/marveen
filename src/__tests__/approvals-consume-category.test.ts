@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, renameSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -296,37 +296,71 @@ describe('validators', () => {
 // synchronous anyway. This one races SEPARATE processes, each with its own
 // connection to the same WAL file, released at the same instant: the only
 // thing deciding who wins is the conditional UPDATE inside SQLite.
+//
+// The release is a two-step barrier, so it does not depend on how fast the
+// children boot (B2, Tom 12023: under load 5 of 6 tsx children booted after a
+// fixed "now + 8 s" release and the precondition failed, the race itself never
+// did). Each child opens its database, then drops a ready file and sleeps
+// (Atomics.wait, no CPU burn while the others still boot). When all six are
+// ready the parent writes the go file with a release instant RELEASE_MS ahead;
+// each child reads it and spins until that instant. `late` keeps its meaning:
+// a child that saw the go file only after the instant was not waiting.
 describe('cross-process double consume', () => {
   const dir = mkdtempSync(join(tmpdir(), 'appr-race-'))
   afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+  const RELEASE_MS = 1000
+  const CHILDREN = 6
 
-  function runChild(script: string, args: string[]): Promise<{ code: number | null; out: string; err: string }> {
+  const script = join(dir, 'child.ts')
+  writeFileSync(script, [
+    `import { initDatabase, consumeCategoryApproval } from ${JSON.stringify(join(ROOT, 'src', 'db.ts'))}`,
+    `import { writeFileSync, existsSync, readFileSync } from 'node:fs'`,
+    `import { join } from 'node:path'`,
+    `const [dbPath, syncDir, who, slowWho, slowMs] = process.argv.slice(2)`,
+    `const nap = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) }`,
+    `if (who === slowWho) nap(Number(slowMs)) // a slow boot, made deterministic`,
+    `initDatabase(dbPath)`,
+    `writeFileSync(join(syncDir, 'ready-' + who), '')`,
+    `const go = join(syncDir, 'go')`,
+    `const giveUp = Date.now() + 55_000 // never outlive the test: no go file, no race`,
+    `while (!existsSync(go)) { if (Date.now() > giveUp) process.exit(3); nap(2) }`,
+    `const startAt = Number(readFileSync(go, 'utf-8'))`,
+    `const late = Date.now() > startAt`,
+    `while (Date.now() < startAt) { /* barrier */ }`,
+    `const r = consumeCategoryApproval({ id: 'race-1', category: ${JSON.stringify(CAT)}, contentHash: ${JSON.stringify(HASH)}, consumer: who, windowSeconds: 1800 })`,
+    `console.log(JSON.stringify({ ok: r.ok, reason: r.reason ?? null, late }))`,
+  ].join('\n'))
+
+  type Child = { code: number | null; out: string; err: string }
+  function runChild(args: string[], onClose: () => void): Promise<Child> {
     return new Promise((resolve) => {
       const p = spawn(process.execPath, ['--import', 'tsx', script, ...args], { cwd: ROOT, env: { ...process.env, LOG_LEVEL: 'silent' } })
       let out = ''
       let err = ''
       p.stdout.on('data', (d) => { out += d })
       p.stderr.on('data', (d) => { err += d })
-      p.on('close', (code) => resolve({ code, out, err }))
+      p.on('close', (code) => { onClose(); resolve({ code, out, err }) })
     })
   }
 
-  it('six processes consume one approval at the same instant: exactly one wins, five get already_consumed', async () => {
-    const dbPath = join(dir, 'race.db')
+  /** Six children on one approval; `slow` makes one of them boot `slowMs` later than the rest. */
+  async function race(name: string, slow?: { who: string; ms: number }) {
+    const dbPath = join(dir, `${name}.db`)
+    const syncDir = join(dir, `${name}-sync`)
+    mkdirSync(syncDir)
     initDatabase(dbPath)
     approval('race-1', { category: CAT })
-    const script = join(dir, 'child.ts')
-    writeFileSync(script, [
-      `import { initDatabase, consumeCategoryApproval } from ${JSON.stringify(join(ROOT, 'src', 'db.ts'))}`,
-      `const [dbPath, startAt, who] = process.argv.slice(2)`,
-      `initDatabase(dbPath)`,
-      `const late = Date.now() > Number(startAt)`,
-      `while (Date.now() < Number(startAt)) { /* barrier */ }`,
-      `const r = consumeCategoryApproval({ id: 'race-1', category: ${JSON.stringify(CAT)}, contentHash: ${JSON.stringify(HASH)}, consumer: who, windowSeconds: 1800 })`,
-      `console.log(JSON.stringify({ ok: r.ok, reason: r.reason ?? null, late }))`,
-    ].join('\n'))
-    const startAt = Date.now() + 8000
-    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => runChild(script, [dbPath, String(startAt), `proc-${i}`])))
+    let closed = 0
+    const running = Array.from({ length: CHILDREN }, (_, i) =>
+      runChild([dbPath, syncDir, `proc-${i}`, slow?.who ?? '', String(slow?.ms ?? 0)], () => { closed++ }))
+    // All six at the barrier first; a child that dies before it gets there ends the wait.
+    while (readdirSync(syncDir).filter(f => f.startsWith('ready-')).length < CHILDREN && closed === 0) {
+      await new Promise(r => setTimeout(r, 20))
+    }
+    const startAt = Date.now() + RELEASE_MS
+    writeFileSync(join(syncDir, 'go.tmp'), String(startAt))
+    renameSync(join(syncDir, 'go.tmp'), join(syncDir, 'go'))
+    const results = await Promise.all(running)
     const parsed = results.map((r) => {
       // The child's stderr goes in as one JSON-escaped line. Raw, its own "    at ..." lines
       // read as frames of this error, and vitest then parses the tsx frame's file for a source
@@ -337,11 +371,22 @@ describe('cross-process double consume', () => {
       return JSON.parse(r.out.trim().split('\n').pop()!) as { ok: boolean; reason: string | null; late: boolean }
     })
     // Every child reached the barrier before the release, so they really raced.
-    expect(parsed.map(p => p.late)).toEqual([false, false, false, false, false, false])
+    expect(parsed.map(p => p.late)).toEqual(Array(CHILDREN).fill(false))
     expect(parsed.filter(p => p.ok)).toHaveLength(1)
-    expect(parsed.filter(p => !p.ok).map(p => p.reason)).toEqual(Array(5).fill('already_consumed'))
+    expect(parsed.filter(p => !p.ok).map(p => p.reason)).toEqual(Array(CHILDREN - 1).fill('already_consumed'))
     initDatabase(dbPath)
     expect(listApprovalEvents('race-1').filter(e => e.event === 'consumed')).toHaveLength(1)
     expect(getApproval('race-1')!.consumed_at).not.toBeNull()
+  }
+
+  it('six processes consume one approval at the same instant: exactly one wins, five get already_consumed', async () => {
+    await race('race')
+  }, 60_000)
+
+  // The b25 failure, made deterministic: one child boots 3 s after the others
+  // (longer than RELEASE_MS). A release that does not wait for "all ready"
+  // leaves that child late; this one must still race all six.
+  it('a child that boots 3 s late still races: the release waits for all six to be ready', async () => {
+    await race('race-slow', { who: 'proc-2', ms: 3000 })
   }, 60_000)
 })

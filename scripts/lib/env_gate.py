@@ -22,10 +22,12 @@ scripts/hooks/marveen-commands.py, scripts/git-hooks/pre-push-review-gate.py.
 
 telegram_api_base() is the same gate for the Telegram BOT token (C2 PR4d): its users are the five python senders
 that read TELEGRAM_API_BASE (scripts/hooks/marveen-commands.py, telegram_fallback_send.py, telegram_progress.py,
-telegram_progress_clear.py, telegram_progress_watchdog.py). The bash path (scripts/lib/send-telegram.sh, and
-uptime-monitor.py through it) is not covered yet: a separate item.
+telegram_progress_clear.py, telegram_progress_watchdog.py). The bash path (scripts/lib/send-telegram.sh) runs the
+same rule through the command line entry at the end of this file (`--telegram-base`, C2 PR4e); scripts/uptime-monitor.py
+calls telegram_api_base() itself before it opens the token file, then sends through send-telegram.sh.
 """
 import os
+import sys
 import urllib.parse
 
 LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
@@ -147,3 +149,22 @@ def telegram_api_base(environ=None):
         return None, f'{name} is neither {TELEGRAM_DEFAULT_BASE} nor loopback; nothing was sent.'
     return b, None
 
+
+# --- the bash senders' entry (C2 PR4e, Kevin 11959) --------------------------------------------------------------
+# scripts/lib/send-telegram.sh runs `python3 -I <its own lib dir>/env_gate.py --telegram-base` when TELEGRAM_API_BASE
+# is set, so the bash path and the python senders obey ONE rule. Prints the base the bot token may go to (exit 0), or
+# the refusal line on stderr (exit 2); the refusal never shows user information (shown()).
+def _main(argv):
+    if argv != ['--telegram-base']:
+        print('usage: env_gate.py --telegram-base', file=sys.stderr)
+        return 2
+    base, refused = telegram_api_base()
+    if refused:
+        print(refused, file=sys.stderr)
+        return 2
+    print(base)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(_main(sys.argv[1:]))

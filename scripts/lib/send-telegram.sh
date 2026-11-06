@@ -40,10 +40,37 @@ telegram_api_call() {
     return 1
   fi
 
-  local response curl_exit base
+  local response curl_exit base gate_dir
   # TELEGRAM_API_BASE: test seam only (a local Bot API stub), the same variable
-  # telegram_fallback_send.py honours; unset in production.
-  base="${TELEGRAM_API_BASE:-https://api.telegram.org}"
+  # the python senders honour; unset in production. The URL below carries the
+  # bot token, so when the variable is set the shared env gate decides where it
+  # may go (C2 PR4e): https://api.telegram.org or loopback, nothing else, the
+  # same rule as the python senders. The gate runs as `python3 -I` from its
+  # exact path next to this file (resolved from this file's own location, never
+  # from the environment), and the URL is built from the base the gate returns,
+  # not from the raw variable. No python3, no gate file, or a refusal: nothing
+  # is sent. Unset (or blank): the real Bot API, python3 not needed.
+  base="https://api.telegram.org"
+  case "${TELEGRAM_API_BASE:-}" in
+    *[![:space:]]*)
+      gate_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+      if [ -z "$gate_dir" ] || [ ! -f "$gate_dir/env_gate.py" ] || ! command -v python3 >/dev/null 2>&1; then
+        echo "telegram_api_call(${method}): TELEGRAM_API_BASE is set, but the env gate (python3 and lib/env_gate.py) cannot run; nothing was sent." >&2
+        return 1
+      fi
+      if ! base=$(python3 -I "$gate_dir/env_gate.py" --telegram-base 2>&1); then
+        echo "telegram_api_call(${method}): ${base}" >&2
+        return 1
+      fi
+      case "$base" in
+        http://?*|https://?*) ;;
+        *)
+          echo "telegram_api_call(${method}): the env gate gave no usable base; nothing was sent." >&2
+          return 1
+          ;;
+      esac
+      ;;
+  esac
   # The URL carries the token, so it must never sit in curl's ARGV (ps -ww,
   # /proc/<pid>/cmdline). Same trick as lib/curl-tok.sh: a curl config line on
   # stdin (-K -), written by the printf builtin, so no other process carries it

@@ -103,11 +103,13 @@ parancssorba (a `ps` minden helyi felhasználónak megmutatja az argv-t). A szö
 napló, komment, üzenet) előbb írd fájlba a Write eszközzel, és a fájl útját add át: szöveget soha
 ne tegyél a parancssorba. A kilépési kód: 0 = 2xx, a válasz a stdout-on; 1 = HTTP-hiba, a törzs a
 stderr-en; 2 = hibás hívás, semmi nem ment el; 3 = a dashboard nem elérhető vagy nem válaszolt 30
-másodpercen belül; 4 = már lezárva vagy felhasználva (409): nem hiba, ne ismételd; 5 = a `message`
+másodpercen belül, az `approval-wait`-nél pedig a `--timeout` végéig nem jött döntés: hívd újra; 4 = már lezárva vagy felhasználva (409): nem hiba, ne ismételd, az `approval-wait`-nél pedig jóváhagyva, de már
+felhasználva vagy lejárt a felhasználási ablaka: ne cselekedj, kérj új jóváhagyást; 5 = a `message`
 szövegét a homoglifa-kapu elutasította, semmi nem ment el: javítsd a szöveget; 6 = a
 homoglifa-ellenőrző hibázott, az üzenet NEM ment el, ismételhető; 7 = a szerver elfogadta a kérést,
 de a kért állapotot nem állította be (kanban-írás 2xx-szel és ok:false-szal, NOT OK): olvasd vissza,
-ne csak ismételd. Időtúllépés után (3) a kérés már
+ne csak ismételd; 8 = az `approval-wait` döntést kapott, de NEM
+jóváhagyást (elutasítva vagy lejárt): ne cselekedj. Időtúllépés után (3) a kérés már
 elmehetett: írásnál ismétlés előtt olvass vissza (pl. `kanban-list`), különben dupla kártya vagy
 komment lesz. A `message` igénél az `OK id=<n>` / `FAIL` sor a mérvadó; a kilépési kódok ugyanezek
 (az `agent-msg.sh` is ezeket adja).
