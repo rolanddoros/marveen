@@ -183,6 +183,8 @@ describe('marveen-commands.py', () => {
     expect(r.stdout).toBe('')
     expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true, forwarded: false, messageId: '7' })
     expect(sends()).toEqual([{ chat_id: '42', text: 'minden rendben' }])
+    // the closing line carries the hook's own run time, before the reply text
+    expect(hookLog().filter(l => l.includes('/status answered (ran)')).at(-1)).toMatch(/ sid=\S+ elapsed=\d+\.\d{3}s reply="minden rendben"$/)
   })
 
   it('a reply over 4096 chars goes out in Telegram-sized chunks', async () => {
@@ -534,16 +536,30 @@ describe('marveen-commands.py', () => {
     // add up past the 45 s registration timeout (/usage measured 55.1 s), and
     // a killed hook does not block, so /usage became a paid model turn. Scaled
     // down here: a 4 s deadline must hold with both steps hanging for good.
+    // B2-1b: the assertion is on the hook's OWN run time (START -> closing log
+    // line), the share the deadline governs. A wall-clock bound around the
+    // spawn also counted interpreter start, which a host stall stretched by
+    // up to 2.3 s per call in one full run (8 of 9 full runs: 3.1-3.3 s). The
+    // test's 30 s timeout stays the guard against a hook that never ends.
     dispatchHangs = true
     const usage = join(install, 'scripts', 'usage-collect.py')
     const saved = readFileSync(usage, 'utf-8')
     writeFileSync(usage, 'import time\ntime.sleep(60)\n')
     try {
+      const seen = hookLog().length
       const t0 = Date.now()
       const r = await runHook(channel('/usage'), base, 'marveen', [], { MARVEEN_HOOK_DEADLINE_SEC: '4' })
       const took = Date.now() - t0
       expect(r.code).toBe(2)
-      expect(took).toBeLessThan(5_500)
+      const closing = hookLog().slice(seen).filter(l => l.includes('/usage: dashboard unreachable') && l.includes('turn blocked'))
+      expect(closing).toHaveLength(1)
+      const own = Number(closing[0].match(/ elapsed=(\d+\.\d{3})s$/)?.[1] ?? NaN)
+      expect(own, `hook elapsed ${own} s, wall clock ${took} ms`).toBeLessThanOrEqual(4 + 0.5)
+      // Ron 12002: the meter must not lie low either. The hung dispatch alone used
+      // its whole 2.0 s share (half of the 4 s deadline), and the hook's own time
+      // can never exceed the wall clock around the spawn.
+      expect(own).toBeGreaterThanOrEqual(1.9)
+      expect(own).toBeLessThanOrEqual(took / 1000)
       const s = sends()
       expect(s).toHaveLength(1)
       expect(s[0].text).toMatch(/Nem sikerült lekérdezni a keret-állapotot/)
