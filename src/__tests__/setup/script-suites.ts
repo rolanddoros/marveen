@@ -62,7 +62,12 @@ export const DIGEST_MAX_BYTES = 3072
 const TSC_ERROR = /error TS\d+:/
 const FAIL_LINE = /^\s*FAIL\b/
 
-export function failureDigest(name: string, res: { status: number | null; signal?: NodeJS.Signals | null; error?: Error; stdout?: string | null; stderr?: string | null }): string {
+// timeoutMs: the budget the suite actually ran with (runScriptSuite passes its own; the shards run with 300 s).
+export function failureDigest(
+  name: string,
+  res: { status: number | null; signal?: NodeJS.Signals | null; error?: Error; stdout?: string | null; stderr?: string | null },
+  timeoutMs: number = SUITE_TIMEOUT_MS,
+): string {
   const out = (res.stdout ?? '').split('\n')
   const err = (res.stderr ?? '').split('\n')
   const all = [...out, ...err].map((l) => l.trimEnd())
@@ -70,7 +75,7 @@ export function failureDigest(name: string, res: { status: number | null; signal
   // res.error without a timeout: the suite never ran (spawn ENOENT) or was cut off by spawnSync itself
   // (ENOBUFS). Its message is the cause, so it goes in the head line, not "an unknown signal" (Ron 12152).
   const head = res.status !== null ? `${name} exited ${res.status}`
-    : timedOut ? `${name} timed out after ${SUITE_TIMEOUT_MS / 1000} s`
+    : timedOut ? `${name} timed out after ${timeoutMs / 1000} s`
     : res.error ? `${name} did not complete: ${res.error.message}${res.signal ? ` (${res.signal})` : ''}`
     : `${name} was killed by ${res.signal ?? 'an unknown signal'}`
   const parts = [head]
@@ -97,12 +102,18 @@ export function failureDigest(name: string, res: { status: number | null; signal
 // Runs one suite. The case function gets the test context: ctx.skip() makes the outcome a SKIPPED test
 // that the reporter counts and shows. An early `return` from an `it` is counted as a pass, which is the
 // silent skip this branch exists to prevent (pinned by script-tests-runner-skip.test.ts).
-// `dir` is for the runner's own tests (a throwaway suite); the shards always use SCRIPT_TESTS_DIR.
-export function runScriptSuite(name: string, ctx: { skip: (note?: string) => void }, dir: string = SCRIPT_TESTS_DIR): void {
+// `dir` and `timeoutMs` are for the runner's own tests only (C2 B2-5b): a throwaway suite, a short timeout, to
+// prove that a failing or a hanging suite turns its case red. The shards pass neither (SCRIPT_TESTS_DIR, 300 s).
+export function runScriptSuite(
+  name: string,
+  ctx: { skip: (note?: string) => void },
+  dir: string = SCRIPT_TESTS_DIR,
+  timeoutMs: number = SUITE_TIMEOUT_MS,
+): void {
   const runner = name.endsWith('.py') ? 'python3' : 'bash'
   const res = spawnSync(runner, [join(dir, name)], {
     encoding: 'utf-8',
-    timeout: SUITE_TIMEOUT_MS,
+    timeout: timeoutMs,
     cwd: ROOT,
   })
   if (suiteOutcome(res.status) === 'skip') {
@@ -123,5 +134,5 @@ export function runScriptSuite(name: string, ctx: { skip: (note?: string) => voi
     console.error(`--- ${name} stdout ---\n${res.stdout ?? ''}`)
     console.error(`--- ${name} stderr ---\n${res.stderr ?? ''}`)
   }
-  expect(res.status, failureDigest(name, res)).toBe(0)
+  expect(res.status, failureDigest(name, res, timeoutMs)).toBe(0)
 }

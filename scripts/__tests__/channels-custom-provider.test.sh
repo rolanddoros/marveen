@@ -41,8 +41,14 @@ REAL_HELPER="$INSTALL_DIR/scripts/main-agent-custom-provider.mjs"
 # red instead. Build it ourselves on demand, and fail only if THAT fails --
 # a setup error still cannot report success, but a plain unbuilt tree (the
 # normal CI/fresh-checkout state) no longer needs a human to build first.
-if [ ! -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-  echo "dist/ not built -- building now (npm run build)..." >&2
+# Trusted only next to the test setup's stamp (C2 B2-5b, Ron 12358): a FAILED build emits this file anyway (tsc), so
+# after another suite's failed fallback build the file alone would let this suite go green on code that does not
+# compile. The stamp is written only by src/__tests__/setup/build-dist-once.ts after a build that succeeded; without it
+# this suite builds, and a failed build is its FAIL. Run alone, outside vitest, it builds only when no stamp is there
+# (fresh checkout, or after a failed setup build); a stamp left by an earlier vitest run is trusted as it stands, src
+# changes since then are NOT rechecked here, only by the setup.
+if [ ! -f "$INSTALL_DIR/dist/.test-build-ok" ] || [ ! -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
+  echo "dist/ not built by the test setup -- building now (npm run build)..." >&2
   if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then
     echo "FAIL: npm run build failed" >&2
     exit 1

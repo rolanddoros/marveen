@@ -59,6 +59,10 @@ export default defineConfig({
     //    the live-install gate above: that one inspects the CHECKOUT, and ~/.ssh is
     //    HOME-scoped -- a clean worktree run leaked 62 real keys (ENROLL813,
     //    2026-09-15). A seam, not a gate: it sets state, so it lives in its own file.
+    // One dist/ build before the workers start, unless dist/ carries this setup's stamp for the current source
+    // tree, with the live-install gate first
+    // (C2 B2-5b: two suites raced to build it once the script suites ran in shards; see that file's header).
+    globalSetup: ['./src/__tests__/setup/build-dist-once.ts'],
     setupFiles: [
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
