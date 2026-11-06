@@ -7,8 +7,9 @@
 // (found by @typescript-eslint/no-floating-promises, B2-4). Rules (Johnny 12196, Kevin
 // 12197): 'sent' -> lastWakeAt + attempts + the "nudged" line; anything else ->
 // lastWakeAt only (debounce), attempts unchanged, and the line names the outcome; a
-// rejected SEND -> the existing warn, lastWakeAt set (debounce), attempts unchanged; a failing
-// check BEFORE the send -> the same warn, no debounce (Kevin 12202).
+// rejected SEND -> the existing warn, lastWakeAt set and one attempt spent, so the attempt budget
+// ends a send that keeps failing (Kevin 12202, 12218); a failing check BEFORE the send -> the same
+// warn, no debounce, no attempt.
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -90,14 +91,35 @@ describe('maybeWakeSubAgentsForTelegram: the send outcome decides the state and 
     expect(send).toHaveBeenCalledTimes(1)
   })
 
-  it('a rejected send lands in the per-agent catch (warn), debounces, and spends no attempt', async () => {
+  it('a rejected send lands in the per-agent catch (warn), debounces, and spends one attempt', async () => {
     send.mockRejectedValue(new Error('tmux gone'))
     const l = logs()
     await maybeWakeSubAgentsForTelegram(NOW)
     expect(send).toHaveBeenCalledTimes(1)
     expect(l.warn()).toEqual(['telegram-inbox-wake: wake check failed'])
-    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 0 })
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 1 })
     expect(l.info()).toEqual([])
+  })
+
+  // Ron's cadence probe (12216): one tick a minute for two hours against a send that always
+  // rejects. Uncounted, it retried every 60 s with no end (121 sends); counted, the attempt budget
+  // and the backoff stop it after 5 sends, as before the fix.
+  it('a persistently rejecting send stops at the attempt budget (5 sends in 2 hours of ticks)', async () => {
+    send.mockRejectedValue(new Error('tmux gone'))
+    logs()
+    for (let minute = 0; minute <= 120; minute++) await maybeWakeSubAgentsForTelegram(NOW + minute * 60_000)
+    expect(send).toHaveBeenCalledTimes(5)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ attempts: 5 })
+  })
+
+  it('the peek is a copy: changing it does not change the wake state', async () => {
+    send.mockResolvedValue('sent')
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    const peek = _peekSubWakeStateForTest('sub1')!
+    peek.attempts = 99
+    peek.lastWakeAt = 0
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 1 })
   })
 
   it('a check that throws BEFORE the send: the same warn, but no debounce and no send', async () => {

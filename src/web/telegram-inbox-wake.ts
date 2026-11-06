@@ -224,9 +224,17 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
       // locked pane, and a send that rejects, are not hit again every tick. It is
       // set HERE, not in the catch below, because that catch also takes failures
       // of the session checks above, and those must not start a debounce (Kevin
-      // 12202). Only a prompt that was really sent spends an attempt of the budget.
+      // 12202). A send that REJECTS also spends an attempt, so a send that keeps
+      // failing stops at the attempt budget instead of retrying every debounce
+      // forever (Ron 12216, Kevin 12218); a non-'sent' outcome does not.
       state.lastWakeAt = now
-      const outcome = await sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+      let outcome: Awaited<ReturnType<typeof sendPromptToSession>>
+      try {
+        outcome = await sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+      } catch (err) {
+        state.attempts += 1
+        throw err
+      }
       if (outcome !== 'sent') {
         logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts, outcome }, `telegram-inbox-wake: nudge not sent (${outcome})`)
         continue
