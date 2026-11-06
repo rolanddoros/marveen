@@ -48,7 +48,8 @@ function snapshot(): string[] {
       const rel = relative(ROOT, p)
       if (st.isSymbolicLink()) out.push(`L ${rel} -> ${readlinkSync(p)}`)
       else if (st.isDirectory()) { out.push(`D ${rel} ${(st.mode & 0o777).toString(8)}`); walk(p) }
-      else out.push(`F ${rel} ${(st.mode & 0o777).toString(8)} ${createHash('sha256').update(readFileSync(p)).digest('hex')}`)
+      // The inode too: an atomic rewrite with the same bytes is still a write.
+      else out.push(`F ${rel} ${(st.mode & 0o777).toString(8)} ${st.ino} ${createHash('sha256').update(readFileSync(p)).digest('hex')}`)
     }
   }
   walk(ROOT)
@@ -334,5 +335,27 @@ describe('the last flag off removes the rendered product skills', () => {
     for (const n of PRODUCT_SKILLS) expect(existsSync(join(ROOT, '.claude', 'skills', n)), n).toBe(false)
     expect(existsSync(join(ROOT, 'store', 'claude-md-backup', 'product-skills', 'MANIFEST.json'))).toBe(false)
     expect(read(join(ROOT, '.claude', 'skills', 'marveen-frissites', 'SKILL.md'))).toBe('foreign\n')
+  })
+})
+
+describe('the v2 path keeps what the legacy start does besides the blocks', () => {
+  it('strict comes from deps.strict (agentRunsStrict): a strict agent gets the strict region', () => {
+    flagKevin()
+    applySubClaudeMdV2('kevin', PROFILE, deps({ strict: () => false }))
+    const loose = read(KEVIN)
+    applySubClaudeMdV2('kevin', PROFILE, deps({ strict: () => true }))
+    expect(read(KEVIN)).not.toBe(loose)
+    expect(read(KEVIN)).toMatch(/dontAsk/)
+    expect(loose).not.toMatch(/dontAsk/)
+  })
+
+  it('the v2 path keeps the owner-zone writers: project-root re-anchor and skill section (sub), federation block (main)', () => {
+    const src = readFileSync(join(SRC, 'web/claude-md/wire.ts'), 'utf-8')
+    const sub = src.slice(src.indexOf('export function applySubClaudeMdV2'), src.indexOf('export function applyMainClaudeMdV2'))
+    const main = src.slice(src.indexOf('export function applyMainClaudeMdV2'))
+    const at = (body: string, s: string) => { const i = body.indexOf(s); expect(i, s).toBeGreaterThan(-1); return i }
+    expect(at(sub, 'ensureProjectRootInClaudeMd(name)')).toBeLessThan(at(sub, 'writeV2('))
+    expect(at(sub, 'ensureSkillSectionCurrent(name)')).toBeLessThan(at(sub, 'writeV2('))
+    expect(at(main, 'ensureFederationClaudeMdSection()')).toBeLessThan(at(main, 'writeV2('))
   })
 })

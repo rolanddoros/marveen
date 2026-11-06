@@ -32,7 +32,7 @@ function snap(dir: string): string[] {
       const st = lstatSync(p)
       if (st.isSymbolicLink()) out.push(`L ${relative(dir, p)} ${readlinkSync(p)}`)
       else if (st.isDirectory()) { out.push(`D ${relative(dir, p)}`); walk(p) }
-      else out.push(`F ${relative(dir, p)} ${sha(readFileSync(p, 'utf-8'))}`)
+      else out.push(`F ${relative(dir, p)} ${st.ino} ${sha(readFileSync(p, 'utf-8'))}`)
     }
   }
   walk(dir)
