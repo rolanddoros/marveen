@@ -34,8 +34,18 @@ jobs:
       # runner must have it too -- a missing binary is a real failure there,
       # not a reason to skip. ubuntu-latest does not ship it (measured: run
       # 36302092314, spawnSync ffmpeg ENOENT).
+      # A hard time limit (C2, Johnny 12210): in fork runs 42150172494 and
+      # 42150141070 this step took 34 min instead of 18 s. The mirror is http
+      # and the download was slow but flowing (94.1 MB in 33 min 50 s, 99
+      # packages), so timeout-minutes is the brake; the 30 s http timeout only
+      # covers a stalled connection, and the retries cover a dropped one. A
+      # timeout is a visible, re-runnable failure. Only ffmpeg, without its
+      # recommends; no cache and no third-party action, by decision.
       - name: Install ffmpeg for the resize hook's tests
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 8
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends ffmpeg
       # The suite resolves the `claude` binary at module load (resolveFromPath
       # throws when it is absent) -- without this stub 17 suites fail at
       # COLLECTION, before a single test runs (measured on the first ubuntu
