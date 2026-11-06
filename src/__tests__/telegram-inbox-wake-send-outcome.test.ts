@@ -201,6 +201,22 @@ describe('maybeWakeSubAgentsForTelegram: one wake in flight per agent', () => {
     expect(send).toHaveBeenCalledTimes(2)
   })
 
+  // Only a DELIVERED nudge moves lastWakeAt to the end of the run (Ron 12422, mutant L2): a busy
+  // pane or a failing send keeps the tick time, so its retry window is not stretched.
+  it("an 'aborted-busy' send that takes 3 s keeps lastWakeAt at the tick (NOW), not the end of the run", async () => {
+    send.mockImplementation(async () => { vi.setSystemTime(NOW + 3_000); return 'aborted-busy' })
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 0 })
+  })
+
+  it('a rejecting send that takes 3 s keeps lastWakeAt at the tick (NOW), not the end of the run', async () => {
+    send.mockImplementation(async () => { vi.setSystemTime(NOW + 3_000); throw new Error('tmux gone') })
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 1 })
+  })
+
   it('a SHORT delivered send behaves as before, shifted only by its own few seconds', async () => {
     // a 3 s send: lastWakeAt is the end of the run (NOW + 3 s), so the 120 s backoff of
     // attempt 1 ends at NOW + 123 s instead of NOW + 120 s
