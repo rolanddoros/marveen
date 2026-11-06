@@ -101,13 +101,13 @@ describe('maybeWakeSubAgentsForTelegram: the send outcome decides the state and 
     expect(l.info()).toEqual([])
   })
 
-  // Ron's cadence probe (12216): one tick a minute for two hours against a send that always
-  // rejects. Uncounted, it retried every 60 s with no end (121 sends); counted, the attempt budget
-  // and the backoff stop it after 5 sends, as before the fix.
-  it('a persistently rejecting send stops at the attempt budget (5 sends in 2 hours of ticks)', async () => {
+  // Ron's cadence probe (12216), pinned as he ran it (Johnny 12221): a tick every 10 s for two
+  // simulated hours against a send that always rejects. Uncounted, it retried at every debounce
+  // with no end (121 sends); counted, the attempt budget is the brake: 5 sends, as on the base.
+  it('a persistently rejecting send stops at the attempt budget (5 sends in 2 hours of 10 s ticks)', async () => {
     send.mockRejectedValue(new Error('tmux gone'))
     logs()
-    for (let minute = 0; minute <= 120; minute++) await maybeWakeSubAgentsForTelegram(NOW + minute * 60_000)
+    for (let t = 0; t <= 2 * 60 * 60_000; t += 10_000) await maybeWakeSubAgentsForTelegram(NOW + t)
     expect(send).toHaveBeenCalledTimes(5)
     expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ attempts: 5 })
   })
