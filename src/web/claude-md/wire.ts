@@ -43,6 +43,7 @@
 // blocks must not be appended to a v2 file).
 
 import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_API_ORIGIN, DASHBOARD_PUBLIC_URL, HEARTBEAT_AGENT_ID, MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, WEB_PORT } from '../../config.js'
 import { readEnvFile } from '../../env.js'
@@ -55,7 +56,7 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { profileWantsThinChiefHandoff, type ProfileTemplate } from '../profiles.js'
 import { backupClaudeMd } from './backup.js'
 import { composeClaudeMd } from './compose.js'
-import { buildLiveContext, RENDERED_FIELDS } from './live-context.js'
+import { buildLiveContext, defaultManagedSettingsPath, RENDERED_FIELDS } from './live-context.js'
 import { renderRegion } from './registry.js'
 import { REGION_BEGIN } from './render.js'
 import { defaultSkillInstallPaths, installProductSkills, productSkillsInstalled, removeProductSkills, type SkillInstallPaths } from './skill-install.js'
@@ -108,6 +109,9 @@ export interface WireDeps {
   helperAllowed: (name: string) => boolean
   strict: (name: string, profile?: ProfileTemplate) => boolean
   now: () => Date
+  // The live ctx's settings sources (tests point them at the temp root).
+  homeDir: string
+  managedSettingsPath: string
 }
 
 export function defaultWireDeps(): WireDeps {
@@ -121,6 +125,8 @@ export function defaultWireDeps(): WireDeps {
     helperAllowed: (name) => agentUsesApiHelper(name),
     strict: (name, profile) => agentRunsStrict(name, profile),
     now: () => new Date(),
+    homeDir: homedir(),
+    managedSettingsPath: defaultManagedSettingsPath(),
   }
 }
 
@@ -171,7 +177,7 @@ function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boo
   try {
     const text = readFileSync(claudeMdPath, 'utf-8')
     hadRegion = hasV2Region(text)
-    const { ctx, assumptions } = buildLiveContext(deps.root, name, { helperAllowed: true, strict })
+    const { ctx, assumptions } = buildLiveContext(deps.root, name, { helperAllowed: true, strict, homeDir: deps.homeDir, managedSettingsPath: deps.managedSettingsPath })
     const assumedRendered = assumptions.filter((a) => (RENDERED_FIELDS as readonly string[]).includes(a))
     if (assumedRendered.length > 0) throw new Error(`rendered fields without a real source: ${assumedRendered.join(', ')}`)
     if (ctx.mainAgentId !== deps.mainAgentId) throw new Error(`.env MAIN_AGENT_ID ${ctx.mainAgentId} is not the running main id ${deps.mainAgentId}`)

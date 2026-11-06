@@ -192,6 +192,8 @@ const deps = (over: Partial<WireDeps> = {}): WireDeps => ({
   helperAllowed: () => true,
   strict: () => false,
   now: () => NOW,
+  homeDir: join(ROOT, 'home'),
+  managedSettingsPath: join(ROOT, 'managed-settings.json'),
   ...over,
 })
 const flagKevin = () => put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' }, claudeMdBuilder: 'v2' }))
@@ -357,5 +359,22 @@ describe('the v2 path keeps what the legacy start does besides the blocks', () =
     expect(at(sub, 'ensureProjectRootInClaudeMd(name)')).toBeLessThan(at(sub, 'writeV2('))
     expect(at(sub, 'ensureSkillSectionCurrent(name)')).toBeLessThan(at(sub, 'writeV2('))
     expect(at(main, 'ensureFederationClaudeMdSection()')).toBeLessThan(at(main, 'writeV2('))
+  })
+})
+
+describe('Ron S1: hooks without a real source stop the write by themselves', () => {
+  it('the main agent on another config root (MAIN_AGENT_ISOLATED_CONFIG=1): no region, legacy kept', () => {
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\nMAIN_AGENT_ISOLATED_CONFIG=1\n')
+    const before = read(join(ROOT, 'CLAUDE.md'))
+    expect(applyMainClaudeMdV2(deps())).toBe(false)
+    expect(read(join(ROOT, 'CLAUDE.md'))).toBe(before)
+    expect(backups()).toEqual([])
+  })
+  it('a managed settings file that does not parse: no region for a sub, legacy kept', () => {
+    flagKevin()
+    put('managed-settings.json', '{broken')
+    const before = read(KEVIN)
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(false)
+    expect(read(KEVIN)).toBe(before)
   })
 })
