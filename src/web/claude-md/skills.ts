@@ -27,12 +27,15 @@ import { TEMPLATES_DIR, TemplateError, checkBody, checkValue, loadTemplate, rend
 // templates/skills, beside templates/claude-md.
 export const SKILL_TEMPLATES_DIR = join(TEMPLATES_DIR, '..', 'skills')
 
-// The rendered skills, in a fixed order. PR 9a ships the three without an API
-// recipe; approvals, messaging and directive-auth follow in PR 9b.
+// The rendered skills, in a fixed order (design 2.4). marveen-directive-auth
+// stays only until the directive-verify hook ships (PR 13).
 export const PRODUCT_SKILLS = [
   'marveen-fleet-auth',
   'marveen-background-work',
   'marveen-skill-authoring',
+  'marveen-approvals',
+  'marveen-messaging',
+  'marveen-directive-auth',
 ] as const
 
 export type ProductSkillName = (typeof PRODUCT_SKILLS)[number]
@@ -44,7 +47,15 @@ export interface SkillContext {
   projectRoot: string
   // The main agent's id (MAIN_AGENT_ID).
   mainAgentId: string
+  // The dashboard origin the curl recipes call (agent-scaffold.ts
+  // resolveDashboardOrigin: AGENT_API_ORIGIN, DASHBOARD_PUBLIC_URL or
+  // http://localhost:<port>), without a trailing slash.
+  dashboardOrigin: string
 }
+
+// The origin goes into recipe lines unquoted, as in agent-scaffold.ts, so it
+// may hold only URL characters the shell leaves alone.
+const ORIGIN_RE = /^https?:\/\/[A-Za-z0-9._~:@[\]%/-]+$/
 
 // The placeholder values a skill template may use. `apiHelper` is derived the
 // same way agent-scaffold.ts builds it, so a space in the root is quoted
@@ -55,9 +66,14 @@ function skillVars(ctx: SkillContext): Record<string, string> {
   }
   checkValue('projectRoot', ctx.projectRoot)
   checkValue('mainAgentId', ctx.mainAgentId)
+  checkValue('dashboardOrigin', ctx.dashboardOrigin)
+  if (!ORIGIN_RE.test(ctx.dashboardOrigin) || ctx.dashboardOrigin.endsWith('/')) {
+    throw new TemplateError(`dashboardOrigin must be an http(s) origin without a trailing slash: ${ctx.dashboardOrigin}`)
+  }
   return {
     projectRoot: ctx.projectRoot,
     mainAgentId: ctx.mainAgentId,
+    dashboardOrigin: ctx.dashboardOrigin,
     apiHelper: `bash ${shellWord(join(ctx.projectRoot, 'scripts', 'marveen-api.sh'))}`,
   }
 }

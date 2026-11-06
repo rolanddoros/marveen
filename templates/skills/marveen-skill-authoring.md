@@ -88,3 +88,12 @@ Then send it, with your own two paths:
 ```bash
 {{apiHelper}} skill-propose <skill-name> <draft-file> --reason-file <reason-file>
 ```
+
+Without the helper (its deny rule is set for you): write the draft to `.claude/skill-javaslat/SKILL.md` under your
+working directory, let `python3` build the JSON body into a file, and send that file. `<your token file>` is
+described in the marveen-messaging skill ("Your token file"):
+
+```bash
+python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "skill_md": open(sys.argv[2]).read(), "reason": sys.argv[3]}))' <skill-name> .claude/skill-javaslat/SKILL.md "why it is needed, what it fixes" > .claude/skill-javaslat/body.json
+curl -s -X POST {{dashboardOrigin}}/api/skills/propose -H 'Content-Type: application/json' -H @<(printf 'Authorization: Bearer '; cat <your token file>) --data-binary @.claude/skill-javaslat/body.json
+```
