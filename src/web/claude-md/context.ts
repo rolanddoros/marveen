@@ -33,8 +33,11 @@ export interface AgentDocContext {
   // template renders "0" before pairing today).
   owner: { name: string; chatId: string | null }
   projectRoot: string
-  // Carried for the product skills (PR 9). It is NEVER rendered into the
-  // CLAUDE.md region; a test asserts that.
+  // The agent's dashboard token file. NEVER rendered into the CLAUDE.md region
+  // (a test asserts that), and not used by the product skills either: those
+  // live in the shared <project>/.claude/skills, so they carry no per-agent
+  // value and state the token-file rule as text (C1 PR 9, skills.ts). Its only
+  // readers today are the tests that assert it stays out of the output.
   tokenPath: string
   profile: { id: string; strict: boolean; helperAllowed: boolean }
   capabilities: {

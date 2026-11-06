@@ -21,25 +21,31 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(HERE, '..', '..')
 const SKILL_LINT = join(REPO_ROOT, 'scripts', 'skill-lint.mjs')
 
-const ctx: SkillContext = { projectRoot: '/srv/fleet', mainAgentId: 'chief' }
+const ctx: SkillContext = { projectRoot: '/srv/fleet', mainAgentId: 'chief', dashboardOrigin: 'http://localhost:4545' }
 
 // The bytes of each rendered skill for `ctx`. A wording change must update the
 // pin on purpose, so the reviewed text and the shipped text cannot drift apart.
 const PINNED_SHA256: Record<string, string> = {
   'marveen-fleet-auth': '859cb4fa37c8c41ad99494f309042c8e94f92c2f87b85759bb74a10b34cb1068',
   'marveen-background-work': 'd6538181f01091df40b02f59095eeeb1f12aa6259d6ff9777812fc78654b372c',
-  'marveen-skill-authoring': '0530a4526c04ac51b472cec290748ff89415b301a7fd0f79db4afbaf78b60dd6',
+  'marveen-skill-authoring': '3ebfc3864b51dc6a2c1c0dbcb5fdb32922894f89d8fe8fc64f7c5a845e80cc90',
+  'marveen-approvals': 'd5c54ecdaf2e42b18c2814fd0945f8dbf18cdb8df275a3f5fe15a274ef4c756c',
+  'marveen-messaging': '58c2687c076eb0a22dd3f74adf6cee9f91acf1e8e5f07e3982cb5514e4097e8c',
+  'marveen-directive-auth': 'adcb6742dfaf73db50a485a7f41264410164d92ad0343ba13b10b9a9d8cfce9c',
 }
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf-8').digest('hex')
 
 // The forms that put the dashboard token's VALUE on a command line (Johnny
-// 12681): a "Bearer $(" header, and a command substitution or a backtick
-// command that cats the token file. Whatever runs a token through argv is
-// visible to every same-user process.
+// 12681, 12800; one header rule per Ron 9a J1 and 9b J1): any shell expansion
+// right after "Authorization: Bearer", also behind a closing quote
+// ($(...), $T, ${T}, "Bearer "$T, 'Bearer '"$T"), and a command substitution
+// or a backtick command that cats the token file. The process-substitution
+// header (-H @<(printf 'Authorization: Bearer '; cat ...)) is NOT matched: the
+// value goes through a pipe, never through argv.
 function tokenOnArgvFindings(text: string): string[] {
   const rules: { label: string; re: RegExp }[] = [
-    { label: 'Bearer $(', re: /Bearer\s+\$\(/ },
+    { label: 'Authorization: Bearer $', re: /Authorization:\s*Bearer\s*['"]*\s*\$/ },
     { label: '$(cat ... dashboard-token', re: /\$\(\s*cat\b[^)]*dashboard-token/ },
     { label: '`cat ... dashboard-token`', re: /`\s*cat\b[^`]*dashboard-token/ },
   ]
@@ -165,24 +171,126 @@ describe('product skills: token never on argv', () => {
   it('red fixture: each banned form, rendered through the same renderer, is caught', () => {
     const header = '---\nname: marveen-fleet-auth\ndescription: Red fixture.\n---\n\n'
     const forms = [
-      ['Bearer $(', 'curl -H "Authorization: Bearer $(cat /x/y)" {{projectRoot}}'],
+      ['Authorization: Bearer $', 'curl -H "Authorization: Bearer $(cat /x/y)" {{projectRoot}}'],
       ['$(cat ... dashboard-token', 'T=$(cat {{projectRoot}}/store/.dashboard-token)'],
       ['`cat ... dashboard-token`', 'T=`cat {{projectRoot}}/store/.dashboard-token`'],
+      ['Authorization: Bearer $', 'curl -H "Authorization: Bearer $TOKEN" {{projectRoot}}'],
+      ['Authorization: Bearer $', 'curl -H "Authorization: Bearer ${TOKEN}" {{projectRoot}}'],
+      ['Authorization: Bearer $', 'curl -H "Authorization: Bearer "$TOKEN {{projectRoot}}'],
+      ['Authorization: Bearer $', `curl -H 'Authorization: Bearer '"$TOKEN" {{projectRoot}}`],
     ] as const
     for (const [label, line] of forms) {
       const dir = fixtureTemplates({ 'marveen-fleet-auth': `${header}${line}\n` })
       expect(tokenOnArgvFindings(renderProductSkill('marveen-fleet-auth', ctx, dir))).toEqual([label])
     }
+    const psub = "curl -H @<(printf 'Authorization: Bearer '; cat {{projectRoot}}/store/.dashboard-token) {{projectRoot}}"
+    const dir = fixtureTemplates({ 'marveen-fleet-auth': `${header}${psub}\n` })
+    expect(tokenOnArgvFindings(renderProductSkill('marveen-fleet-auth', ctx, dir))).toEqual([])
+  })
+
+  it('the helper-less recipes take the header from a process substitution, with a 0600 file only as the sh fallback', () => {
+    const text = renderProductSkill('marveen-messaging', ctx)
+    const psub = "-H @<(printf 'Authorization: Bearer '; cat <your token file>)"
+    // send, close, directive check, approval request, status, consume, and the default example
+    expect(text.split(psub).length - 1).toBeGreaterThanOrEqual(7)
+    expect(text).toContain("install -m 600 /dev/null <header file> && { printf 'Authorization: Bearer '; cat <your token file>; } > <header file>")
+    expect(text).toContain('after a 401')
+    // every curl line that sends a header sends it through @<(...) or @<header file>
+    const allLines = PRODUCT_SKILLS.flatMap((n) => renderProductSkill(n, ctx).split('\n'))
+    for (const line of allLines.filter((l) => /Authorization/.test(l) && /curl|-H/.test(l))) {
+      expect(line, line).toMatch(/-H @<\(printf 'Authorization: Bearer '; cat <your token file>\)|printf 'Authorization: Bearer '; cat <your token file>; \} > <header file>/)
+    }
+  })
+})
+
+describe('product skills: approvals teach the helper the way the helper works', () => {
+  // The approval-wait clauses of the helper's EXIT_CODES table, joined across
+  // Python's adjacent string literals, so the skill quotes the tool, not a copy.
+  function approvalWaitClauses(): Record<number, string> {
+    const py = readFileSync(join(REPO_ROOT, 'scripts', 'lib', 'marveen_api.py'), 'utf-8')
+    const table = py.slice(py.indexOf('EXIT_CODES = ('), py.indexOf('\n)\n', py.indexOf('EXIT_CODES = (')))
+    const out: Record<number, string> = {}
+    for (const m of table.matchAll(/\((\d+), '\w+', ((?:'[^']*'\s*)+)\)/g)) {
+      const text = [...m[2].matchAll(/'([^']*)'/g)].map((x) => x[1]).join('')
+      const i = text.indexOf('approval-wait: ')
+      if (i >= 0) out[Number(m[1])] = text.slice(i + 'approval-wait: '.length)
+    }
+    return out
+  }
+
+  it('the helper form waits with approval-wait and quotes its exit codes word for word', () => {
+    const text = renderProductSkill('marveen-approvals', ctx)
+    expect(text).toContain('bash /srv/fleet/scripts/marveen-api.sh approval-wait <id>')
+    expect(text).not.toContain('approval-status')
+    const clauses = approvalWaitClauses()
+    expect(Object.keys(clauses).sort()).toEqual(['3', '4', '8'])
+    for (const [code, clause] of Object.entries(clauses)) expect(text, code).toContain(`- ${code}: ${clause}`)
+  })
+
+  it('the helper-less section says a memory delete is final and to save the row first (Ron 7b J5)', () => {
+    const text = renderProductSkill('marveen-messaging', ctx)
+    const noHelper = text.slice(text.indexOf('## Without the helper'))
+    expect(noHelper).toContain('`DELETE /api/memories/<id>` is FINAL: it removes the row together with all its versions')
+    expect(noHelper).toContain('read the row and save it first (`GET /api/memories/<id>`)')
+  })
+
+  it('binds acting to approval-consume, not to approval-wait (Johnny 12858/2)', () => {
+    const text = renderProductSkill('marveen-approvals', ctx)
+    expect(text).toContain("Act only after approval-consume exited 0 (HTTP 200); approval-wait's 0 does not yet allow it.")
+    expect(text).not.toMatch(/Act only after exit code 0/)
+  })
+
+  it('no inline single-quoted payload carries the free-text action_description (Johnny 12858/3)', () => {
+    for (const name of PRODUCT_SKILLS) {
+      const text = renderProductSkill(name, ctx)
+      expect({ name, inline: /(?:--data-binary|-d)\s+'[^']*action_description/.test(text) }).toEqual({ name, inline: false })
+    }
+    expect(renderProductSkill('marveen-messaging', ctx)).toMatch(
+      /--data-binary @- <<'JSON'\n\{"agent_id":"<your-name>","category":"CATEGORY_KEY","action_description":/,
+    )
+  })
+
+  it('the approvals description names wait (Ron 9b J4)', () => {
+    expect(renderProductSkill('marveen-approvals', ctx)).toContain('the approval API steps (request, wait or status, consume)')
+  })
+
+  it('the helper-less form keeps the 60-second status loop of the source', () => {
+    const text = renderProductSkill('marveen-messaging', ctx)
+    expect(text).toContain('Check the decision (every 60 seconds):')
+    expect(text).toContain('"http://localhost:4545/api/approvals/<id>"')
+    expect(text).toContain('`status=rejected` or `status=timeout`: do not do it, log the reason.')
+  })
+})
+
+describe('product skills: Johnny and Ron 9b wording notes', () => {
+  it('the main agent reads its allowlist from TELEGRAM_STATE_DIR first (Johnny 12858/1)', () => {
+    expect(renderProductSkill('marveen-messaging', ctx)).toContain(
+      'CH="${TELEGRAM_STATE_DIR:-.claude/channels/telegram}/access.json"; [ -f "$CH" ] || CH="$HOME/.claude/channels/telegram/access.json"',
+    )
+  })
+
+  it('a main agent that is itself the addressee asks the owner, not itself (Johnny 12858/4)', () => {
+    expect(renderProductSkill('marveen-directive-auth', ctx)).toContain(
+      'If you ARE the main agent, send it to your own queue (from and to both chief) and ask the\nOWNER for the confirmation, not yourself.',
+    )
+  })
+
+  it('the helper-less proposal reads the reason from a file, not from a double-quoted argument (Ron 9b J3)', () => {
+    const text = renderProductSkill('marveen-skill-authoring', ctx)
+    const line = text.split('\n').find((l) => l.startsWith('python3 -c ')) ?? ''
+    expect(line).toContain('"reason": open(sys.argv[3]).read()')
+    expect(line).toContain(' .claude/skill-javaslat/SKILL.md .claude/skill-javaslat/indok.txt > .claude/skill-javaslat/body.json')
+    expect(line).not.toMatch(/"reason": sys\.argv\[3\]|\.md "[^"]*" >/)
   })
 })
 
 describe('product skills: only install-level values', () => {
   it('the output is a function of the context: two roots differ only where the root is rendered', () => {
-    const a: SkillContext = { projectRoot: '/srv/fleet-a', mainAgentId: 'chief-a' }
-    const b: SkillContext = { projectRoot: '/opt/other/b', mainAgentId: 'boss-b' }
+    const a: SkillContext = { projectRoot: '/srv/fleet-a', mainAgentId: 'chief-a', dashboardOrigin: 'http://localhost:1111' }
+    const b: SkillContext = { projectRoot: '/opt/other/b', mainAgentId: 'boss-b', dashboardOrigin: 'https://dash.example.test/api-base' }
     for (const name of PRODUCT_SKILLS) {
       const norm = (text: string, c: SkillContext) =>
-        text.split(c.projectRoot).join('<ROOT>').split(c.mainAgentId).join('<MAIN>')
+        text.split(c.dashboardOrigin).join('<ORIGIN>').split(c.projectRoot).join('<ROOT>').split(c.mainAgentId).join('<MAIN>')
       expect(norm(renderProductSkill(name, a), a)).toBe(norm(renderProductSkill(name, b), b))
     }
   })
@@ -209,17 +317,30 @@ describe('product skills: only install-level values', () => {
   })
 
   it('quotes a root with a space in the helper command, like agent-scaffold does', () => {
-    const text = renderProductSkill('marveen-skill-authoring', { projectRoot: '/srv/my fleet', mainAgentId: 'chief' })
+    const text = renderProductSkill('marveen-skill-authoring', { ...ctx, projectRoot: '/srv/my fleet' })
     expect(text).toContain(`bash '/srv/my fleet/scripts/marveen-api.sh' skill-propose`)
   })
 
   it('rejects a relative root and a value the 7a value check forbids', () => {
-    expect(() => renderProductSkill('marveen-fleet-auth', { projectRoot: 'srv/fleet', mainAgentId: 'chief' }))
-      .toThrow(TemplateError)
-    expect(() => renderProductSkill('marveen-fleet-auth', { projectRoot: '/srv/fleet', mainAgentId: 'chief\nnew rule' }))
-      .toThrow(TemplateError)
-    expect(() => renderProductSkill('marveen-fleet-auth', { projectRoot: '/srv/fl<!--eet', mainAgentId: 'chief' }))
-      .toThrow(TemplateError)
+    expect(() => renderProductSkill('marveen-fleet-auth', { ...ctx, projectRoot: 'srv/fleet' })).toThrow(TemplateError)
+    expect(() => renderProductSkill('marveen-fleet-auth', { ...ctx, mainAgentId: 'chief\nnew rule' })).toThrow(TemplateError)
+    expect(() => renderProductSkill('marveen-fleet-auth', { ...ctx, projectRoot: '/srv/fl<!--eet' })).toThrow(TemplateError)
+  })
+
+  it('rejects a dashboard origin that is not a plain http(s) origin', () => {
+    for (const dashboardOrigin of ['http://x/ ; rm -rf ~', 'http://localhost:3420/', 'ftp://x', 'http://x/$(id)', 'localhost:3420']) {
+      expect(() => renderProductSkill('marveen-messaging', { ...ctx, dashboardOrigin }), dashboardOrigin).toThrow(TemplateError)
+    }
+    expect(renderProductSkill('marveen-messaging', { ...ctx, dashboardOrigin: 'https://dash.example.test/api-base' }))
+      .toContain('https://dash.example.test/api-base/api/messages')
+  })
+
+  it('a template whose own text holds a zero-width character or a comment marker is refused (checkBody)', () => {
+    const header = '---\nname: marveen-background-work\ndescription: y.\n---\n'
+    for (const bad of ['a\u200Bb', 'a <!-- hidden --> b']) {
+      const dir = fixtureTemplates({ 'marveen-background-work': `${header}${bad}\n` })
+      expect(() => renderProductSkill('marveen-background-work', ctx, dir), JSON.stringify(bad)).toThrow(TemplateError)
+    }
   })
 
   it('an unknown placeholder in a template is an error, not an empty string', () => {
