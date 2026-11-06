@@ -40,12 +40,56 @@ jobs:
       # packages), so timeout-minutes is the brake; the 30 s http timeout only
       # covers a stalled connection, and the retries cover a dropped one. A
       # timeout is a visible, re-runnable failure. Only ffmpeg, without its
-      # recommends; no cache and no third-party action, by decision.
+      # recommends.
+      # The .deb files come through a cache (C2, Johnny 12569 option 1, Kevin
+      # 12570; the earlier "no cache, no new action" rule is lifted for THIS
+      # case only). Measured: on a slow runner the list update is fast (12.9 MB
+      # in 1 s, run 42150172494) and only the .deb download crawls (46.4 kB/s),
+      # so the .deb files are what is cached. Johnny's six conditions:
+      #   (1) only actions/cache/restore and actions/cache/save, pinned by SHA;
+      #   (2) save ONLY on a push to main, never from a PR branch;
+      #   (3) the cache holds only the .deb files (~/ffmpeg-debs/*.deb);
+      #   (4) the key holds the runner image (ImageOS, ImageVersion), the
+      #       ffmpeg version and a hash of the resolved .deb set;
+      #   (5) apt does NOT check the hash of a .deb it finds in its archive
+      #       dir, only the size (measured; deb-cache-verify.test.sh measures
+      #       it on the runner's own apt), so deb-cache-verify.py prune removes
+      #       every cached .deb that is not byte for byte the file the signed
+      #       index names, BEFORE the install;
+      #   (6) ci-workflow-pins.test.ts pins the save condition.
+      # A miss downloads as before, under the same 8 min limit. The install
+      # keeps what it downloaded (Keep-Downloaded-Packages), or the save would
+      # find no .deb to store.
+      - name: Resolve the ffmpeg .deb set and its cache key
+        id: ffmpeg-key
+        timeout-minutes: 4
+        run: |
+          : "${ImageOS:?}" "${ImageVersion:?}"
+          mkdir -p "$HOME/ffmpeg-debs/partial"
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives="$HOME/ffmpeg-debs" install --print-uris -qq -y --no-install-recommends ffmpeg > "$RUNNER_TEMP/ffmpeg-uris.txt"
+          # an assignment, not an echo argument: a failed key fails the step (bash -e)
+          set_key="$(python3 scripts/deb-cache-verify.py key "$RUNNER_TEMP/ffmpeg-uris.txt" ffmpeg)"
+          echo "key=ffmpeg-debs-$ImageOS-$ImageVersion-$set_key" >> "$GITHUB_OUTPUT"
+      - name: Restore the ffmpeg .deb cache
+        id: ffmpeg-debs
+        timeout-minutes: 4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/ffmpeg-debs/*.deb
+          key: ${{ steps.ffmpeg-key.outputs.key }}
       - name: Install ffmpeg for the resize hook's tests
         timeout-minutes: 8
         run: |
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends ffmpeg
+          python3 scripts/deb-cache-verify.py prune "$HOME/ffmpeg-debs"
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives="$HOME/ffmpeg-debs" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends ffmpeg
+      - name: Save the ffmpeg .deb cache (a push to main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ffmpeg-debs.outputs.cache-hit != 'true'
+        timeout-minutes: 4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/ffmpeg-debs/*.deb
+          key: ${{ steps.ffmpeg-key.outputs.key }}
       # The suite resolves the `claude` binary at module load (resolveFromPath
       # throws when it is absent) -- without this stub 17 suites fail at
       # COLLECTION, before a single test runs (measured on the first ubuntu
