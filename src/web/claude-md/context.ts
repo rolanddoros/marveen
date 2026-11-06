@@ -12,6 +12,7 @@
 // - `hooks` is keyed by the closed HookId union, so a new hook can only arrive
 //   by widening the type, and every exhaustive switch over it stops compiling
 //   until it handles the new id.
+// - `roster` carries names only (PR 7b, Kevin 12773); see the field.
 
 // A hook whose presence lets a rule drop its prose and render as one line
 // ("enforced by hook X"). Which settings entry counts as "wired" for each id is
@@ -50,7 +51,11 @@ export interface AgentDocContext {
   }
   autonomy: Record<string, AutonomyLevel>
   team: { reportsTo: string | null; directReports: string[] }
-  // Every other agent of the fleet, without self.
-  roster: { name: string; role: string }[]
+  // Every other agent of the fleet, without self. Names only (C1 PR 7b, Kevin
+  // 12773, deviation from design 2.1): free text from an editable config (the
+  // agent-config description) must never be able to break the render for every
+  // sub at once, so no description reaches the region. The relation comes from
+  // `team`.
+  roster: { name: string }[]
   hooks: Record<HookId, boolean>
 }

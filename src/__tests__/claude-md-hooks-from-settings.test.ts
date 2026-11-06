@@ -134,6 +134,22 @@ describe('negative: the script name outside a command that runs it', () => {
     }
   })
 
+  it('the documented fail-closed forms read false although the script would run (header list)', () => {
+    for (const c of [
+      `python3 -I /srv/fleet/scripts/hooks/${SHELL}`,
+      `nice -n 19 python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `env A=1 python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `uv run /srv/fleet/scripts/hooks/${SHELL}`,
+      `sudo python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `timeout -s KILL 8 python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `timeout 8 exec python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `"$CLAUDE_PROJECT_DIR"/.venv/bin/python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `/srv/fleet/scripts/hooks/${SHELL}`,
+    ]) {
+      expect(commandRunsScript(c, SHELL), c).toBe(false)
+    }
+  })
+
   it('a relative path (resolves against the hook cwd) is not wired', () => {
     for (const c of [
       `python3 ./scripts/hooks/${SHELL}`,

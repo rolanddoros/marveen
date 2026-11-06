@@ -32,8 +32,11 @@
 // runs: a separator or keyword inside a quoted argument
 // (`echo "a; python3 /x/scripts/hooks/<script>"`, `echo do python3 ...`). And
 // known to read FALSE although the script runs (fail-closed, only a longer
-// region): interpreter flags (python3 -I), `nice`/`env`/`uv run` prefixes, a
-// script run directly by its shebang. These entries are written by our own
+// region): interpreter flags (python3 -I), `nice`/`env`/`uv run`/`sudo`
+// prefixes, a timeout option with a non-numeric value (`timeout -s KILL 8
+// python3 X`), `exec` behind `timeout` (`timeout 8 exec python3 X`), an
+// interpreter under a quoted variable (`"$CLAUDE_PROJECT_DIR"/.venv/bin/python3
+// X`), a script run directly by its shebang (Ron, 7a review 12738). These entries are written by our own
 // scaffold; the check is there against stale, mis-placed or disabled wiring,
 // not against the settings' author. "Wired" is not "present": whether the
 // script file exists and is executable is PR 10's check (Ron, 7a J4).
