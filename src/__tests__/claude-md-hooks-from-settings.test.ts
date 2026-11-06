@@ -283,12 +283,15 @@ describe('J4 (Ron 7a): wired means the named script is an existing, readable reg
   })
 
   it('a path that cannot be resolved without a shell is not wired, and the check is never asked', () => {
-    for (const raw of ['$HOME/scripts/hooks/x.py', '"$ROOT"/scripts/hooks/x.py', '$CLAUDE_PROJECT_DIRX/scripts/hooks/x.py']) {
+    for (const raw of ['$HOME/scripts/hooks/x.py', '"$ROOT"/scripts/hooks/x.py', '$CLAUDE_PROJECT_DIRX/scripts/hooks/x.py',
+      '/srv/$USER/scripts/hooks/x.py', '"/srv/${D}"/scripts/hooks/x.py', '$CLAUDE_PROJECT_DIR/$SUB/scripts/hooks/x.py']) {
       expect(resolveHookScriptPath(raw, '/srv/agent'), raw).toBeNull()
     }
     expect(resolveHookScriptPath('$CLAUDE_PROJECT_DIR/scripts/hooks/x.py', 'relative/dir')).toBeNull()
     seen.length = 0
     expect(hfs([{ hooks: { PreToolUse: [entry(`python3 "$HOME/scripts/hooks/${SHELL}"`, 'Bash')] } }], spy).shellRescan).toBe(false)
+    // An absolute path with a variable inside it is no more resolvable than one that starts with a variable.
+    expect(hfs([{ hooks: { PreToolUse: [entry(`python3 /srv/$USER/scripts/hooks/${SHELL}`, 'Bash')] } }], spy).shellRescan).toBe(false)
     expect(seen).toEqual([])
   })
 

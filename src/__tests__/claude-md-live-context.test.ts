@@ -494,7 +494,8 @@ describe('import tree', () => {
       files.push(rel)
       const text = readFileSync(join(SRC_ROOT, rel), 'utf-8')
       expect(text, `${rel}: a dynamic import or require hides an edge from this walk`).not.toMatch(/\bimport\s*\(|\brequire\s*\(/)
-      for (const m of text.matchAll(/^\s*(?:import|export)\b[^'"]*?from\s+['"]([^'"]+)['"]/gm)) {
+      // `import ... from 'x'`, `export ... from 'x'`, and the side-effect form `import 'x'` (no from).
+      for (const m of text.matchAll(/^\s*(?:(?:import|export)\b[^'"]*?\bfrom\s+|import\s+)['"]([^'"]+)['"]/gm)) {
         const spec = m[1]
         if (spec.startsWith('node:')) { builtins.add(spec); continue }
         expect(spec.startsWith('.'), `${rel}: bare import ${spec}`).toBe(true)
