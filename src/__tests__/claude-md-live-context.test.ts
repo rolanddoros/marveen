@@ -36,7 +36,7 @@ const team = (reportsTo: unknown) => ({ team: { reportsTo } })
 // The overrides the dashboard path passes; most cases are not about them.
 const OV = { helperAllowed: true, strict: false }
 const build = (name: string, opts: Parameters<typeof buildLiveContext>[2] = OV) =>
-  buildLiveContext(root, name, { homeDir: home, ...opts })
+  buildLiveContext(root, name, { homeDir: home, managedSettingsPath: join(home, 'managed-settings.json'), ...opts })
 
 describe('.env', () => {
   it('no .env: the config.ts defaults', () => {
@@ -521,7 +521,8 @@ describe('import tree', () => {
     const seen = new Set<string>()
     for (const f of tree('web/claude-md/live-context.ts').files) {
       const text = readFileSync(join(SRC_ROOT, f), 'utf-8')
-      expect(text, `${f}: process or globalThis reaches modules around the import list`).not.toMatch(/\b(?:process|globalThis)\b/)
+      const code = text.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+      expect(code, `${f}: process or globalThis reaches modules around the import list`).not.toMatch(/\b(?:process|globalThis)\b/)
       for (const m of text.matchAll(/^\s*import\s+([^'"]*?)\s+from\s+['"](node:fs(?:\/[a-z]+)?|fs(?:\/[a-z]+)?)['"]/gm)) {
         expect(m[2], `${f}: ${m[2]}`).toBe('node:fs')
         const clause = m[1].trim()

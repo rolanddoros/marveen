@@ -31,12 +31,13 @@
 //   agents whose stored reportsTo is this agent, except this agent's own lead
 //   (a two-agent cycle), as buildFleetRosterBody tags them. (team.delegatesTo, which the
 //   legacy roster prints as its delegates line, is not part of the v2 ctx.)
-// - profile.strict: opts.strict, else the effective written
-//   permissions.defaultMode === "dontAsk" (the highest settings layer that sets
-//   a mode decides; a strict profile pins it, agent-scaffold.ts
-//   enforceStrictPermissionMode); a layer above the deciding one that does not
-//   parse makes it ASSUMED (read false). The main agent has no profile and is
-//   never strict.
+// - profile.strict: opts.strict (the write path passes agentRunsStrict), else
+//   the effective defaultMode OF THE WRITTEN SETTINGS === "dontAsk" (the highest
+//   settings layer that sets a mode decides; a strict profile pins it,
+//   agent-scaffold.ts enforceStrictPermissionMode). That is not the running
+//   process's mode: a CLI switch (agent-process.ts --permission-mode) is outside
+//   it (Ron S4). A layer above the deciding one that does not parse makes it
+//   ASSUMED (read false). The main agent has no profile and is never strict.
 // - profile.helperAllowed: opts.helperAllowed (the dashboard passes
 //   agentUsesApiHelper), else a simplified deny-rule reading: ASSUMED.
 // - capabilities.kanbanWrite: false only for the heartbeat worker
@@ -53,14 +54,20 @@
 //   file check (an existing, readable regular file). Layers: main
 //   <root>/.claude/settings.json, settings.local.json and <home>/.claude/
 //   settings.json; a sub agents/<n>/.claude/settings.json, settings.local.json
-//   and agents/<n>/.claude-config/settings.json. A missing file is skipped; one
-//   that does not parse makes every hook false (fail-closed).
+//   and agents/<n>/.claude-config/settings.json; above all of them the managed
+//   settings file (/etc/claude-code/managed-settings.json, the macOS path on
+//   darwin), whose allowManagedHooksOnly leaves only its own hooks. A missing
+//   file is skipped; one that does not parse makes every hook false
+//   (fail-closed). Ron S1: where the layers read are not the session's (the
+//   main agent with MAIN_AGENT_CONFIG_DIR or MAIN_AGENT_ISOLATED_CONFIG, or a
+//   managed file that does not parse), hooks are all false and ASSUMED, so the
+//   write gate stops.
 // - ASSUMED (not rendered): profile.id, capabilities.emailSend, browser,
 //   thinChief, tokenPath. botName falls back to the code default "Marveen",
 //   which is config.ts's own default, so that is a source, not an assumption.
 
 import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, platform } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { parseEnvContent } from '../../env-parse.js'
 import { isAgentName } from './agent-name.js'
@@ -81,6 +88,14 @@ export interface LiveContextOptions {
   strict?: boolean
   // For the main agent's user-scope settings layer; default os.homedir().
   homeDir?: string
+  // The managed settings file, Claude Code's highest-priority layer; default the platform path.
+  managedSettingsPath?: string
+}
+
+// Claude Code's managed settings file (code.claude.com/docs/en/settings): the highest-priority layer, for every
+// session on the host. It can set hooks, disableAllHooks, allowManagedHooksOnly and defaultMode.
+export function defaultManagedSettingsPath(os: string = platform()): string {
+  return os === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json' : '/etc/claude-code/managed-settings.json'
 }
 
 export interface LiveContext {
@@ -237,6 +252,20 @@ function helperDeniedSimplified(layers: unknown[]): boolean {
   return false
 }
 
+// Whether the main agent runs on a config root other than <home>/.claude: MAIN_AGENT_CONFIG_DIR set, or
+// MAIN_AGENT_ISOLATED_CONFIG on, by the dashboard's own precedence (the store overrides file over .env; an
+// overrides file that does not parse reads as empty there too). "On" is read wide: anything but empty, 0, false,
+// off or no, so an unknown spelling counts as another root (the safe side).
+function mainOnOtherConfigRoot(root: string, env: Record<string, string>): boolean {
+  const overrides = readJsonObject(join(root, 'store', 'config-overrides.json')) ?? {}
+  const value = (key: string): string => {
+    const o = overrides[key]
+    return String(o !== undefined && o !== null ? o : env[key] ?? '').trim()
+  }
+  if (value('MAIN_AGENT_CONFIG_DIR') !== '') return true
+  return !['', '0', 'false', 'off', 'no'].includes(value('MAIN_AGENT_ISOLATED_CONFIG').toLowerCase())
+}
+
 // The effective permissions.defaultMode is "dontAsk": the highest layer that
 // sets a defaultMode decides, as in Claude Code. A strict profile pins it in the
 // project settings the scaffold writes, and only a strict one does, because
@@ -290,9 +319,28 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
   const directReports = names.filter((n) => n !== name && n !== reportsTo
     && (n === mainAgentId ? null : reportsToOf(root, n)) === name)
 
-  const layers = settingsLayers(root, name, role, opts.homeDir ?? homedir())
+  const projectLayers = settingsLayers(root, name, role, opts.homeDir ?? homedir())
+  const managedFile = opts.managedSettingsPath ?? defaultManagedSettingsPath()
+  const managedValue = readJsonObject(managedFile)
+  const managed: SettingsLayer[] = managedValue === null ? [] : [{ file: managedFile, value: managedValue ?? null }]
+  // Highest first: managed, then local project, shared project, user scope.
+  const layers = [...managed, ...projectLayers]
   const values = layers.map((l) => l.value)
-  const hooks = hooksFromSettings(values, { projectDir: agentDir, usable: isUsableFile })
+  const check = { projectDir: agentDir, usable: isUsableFile }
+  // allowManagedHooksOnly: only the managed layer's hooks run. Anything but an absent or false value reads as on.
+  const managedTop = managed.length > 0 ? managed[0].value : undefined
+  const managedOnly = managedTop !== undefined && managedTop !== null
+    && managedTop.allowManagedHooksOnly !== undefined && managedTop.allowManagedHooksOnly !== false
+  let hooks = hooksFromSettings(managedOnly ? [managedTop] : values, check)
+  // Ron S1: a false "wired" drops a rule's prose while its hook does not run. Where the layers read here are not
+  // the ones the session loads, the hooks have no real source: all false and ASSUMED, so the write gate stops.
+  // - The main agent on another config root (MAIN_AGENT_CONFIG_DIR, or MAIN_AGENT_ISOLATED_CONFIG on): its user
+  //   layer is not <home>/.claude/settings.json.
+  // - A managed file that does not parse: the highest layer is unknown.
+  if ((role === 'main' && mainOnOtherConfigRoot(root, env)) || managedTop === null) {
+    hooks = hooksFromSettings([null], check)
+    assumptions.push('hooks')
+  }
   let strict: boolean
   if (role === 'main') {
     strict = false

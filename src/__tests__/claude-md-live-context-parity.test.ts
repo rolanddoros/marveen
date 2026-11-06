@@ -37,7 +37,7 @@ import { validateFederationConfig } from '../web/federation/config.js'
 import type { ProfileTemplate } from '../web/profiles.js'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
-const OV = { helperAllowed: true, strict: false, homeDir: HOME }
+const OV = { helperAllowed: true, strict: false, homeDir: HOME, managedSettingsPath: join(HOME, 'managed-settings.json') }
 const live = (name: string, opts: Parameters<typeof buildLiveContext>[2] = OV) => buildLiveContext(ROOT, name, opts)
 
 function put(rel: string, content: string): void {
@@ -191,7 +191,7 @@ describe('profile.strict parity with agentRunsStrict, for every shipped profile'
       put('agents/nocfg/.claude/settings.json', JSON.stringify(settings))
       const want = agentRunsStrict('nocfg', p)
       if (want) strictSeen++
-      expect(live('nocfg', { helperAllowed: true, homeDir: HOME }).ctx.profile.strict, f).toBe(want)
+      expect(live('nocfg', { helperAllowed: true, homeDir: HOME, managedSettingsPath: join(HOME, 'managed-settings.json') }).ctx.profile.strict, f).toBe(want)
     }
     expect(strictSeen).toBeGreaterThan(0)
     rmSync(join(ROOT, 'agents', 'nocfg', '.claude'), { recursive: true })
