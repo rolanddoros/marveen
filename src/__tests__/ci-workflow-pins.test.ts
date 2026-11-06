@@ -40,8 +40,10 @@ const RELEASES: Record<string, { sha: string; version: string }> = {
 
 // The one condition under which the .deb cache is written (C2, Johnny 12569 (2), (6)): a push to main, never a PR
 // branch. A pull_request run's github.ref is refs/pull/<n>/merge and its event is pull_request, so both halves are
-// needed; the cache-hit half only skips a save of what was just restored.
-const SAVE_IF = "if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ffmpeg-debs.outputs.cache-hit != 'true'"
+// needed; the cache-hit half only skips a save of what was just restored. The last half (Kevin 12587): the install
+// step's prune said unverified=false. It is `== 'false'`, not `!= 'true'`: a missing output (prune never ran) must
+// not count as verified, so a run that could not verify its cache never saves one.
+const SAVE_IF = "if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ffmpeg-debs.outputs.cache-hit != 'true' && steps.ffmpeg-install.outputs.unverified == 'false'"
 
 const PINNED = /^\s*(-\s+)?uses:\s+[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$/
 

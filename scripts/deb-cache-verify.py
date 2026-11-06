@@ -23,8 +23,11 @@ measures the same on whatever apt it runs on (its control case), so the CI runne
 The index is the Packages files apt has just fetched with `apt-get update`, which apt accepts only when the signed
 InRelease names their hashes. A cached .deb therefore stays only if it is byte for byte the file the signed index
 names. Everything else (corrupted, unknown, another version, a symlink) is removed, and apt downloads the real file.
-A .deb that cannot be checked is removed, never kept. With .deb files present but no readable index at all, prune
-exits 1: a cache that cannot be verified is a setup failure, not a silent skip.
+A .deb that cannot be checked is removed, never kept (fail-closed, Johnny 12583, Kevin 12587). With .deb files
+present but no readable index at all, EVERY cached .deb is removed: apt downloads them as on a cache miss, and the
+step stays green with a GitHub ::warning:: annotation naming why the cache could not be verified. Under GitHub Actions
+prune also writes `unverified=true|false` to $GITHUB_OUTPUT; the save step of test.yml does not run after
+unverified=true, so a run that could not verify its cache never stores one.
 """
 import gzip
 import hashlib
@@ -106,14 +109,29 @@ def cached_key(name):
     return (parts[0], urllib.parse.unquote(parts[1]), parts[2])
 
 
+def write_output(name, value):
+    # a step output under GitHub Actions; elsewhere (a local run, the suite without it) nothing to write
+    path = os.environ.get('GITHUB_OUTPUT')
+    if path:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(f'{name}={value}\n')
+
+
 def cmd_prune(lists_dir, archives_dir):
     debs = sorted(n for n in os.listdir(archives_dir) if n.endswith('.deb'))
     if not debs:
         print(f'deb-cache-verify: no cached .deb in {archives_dir} (a cache miss): nothing to check')
+        write_output('unverified', 'false')
         return
     index, files = read_index(lists_dir)
     if not index:
-        die(f'{len(debs)} cached .deb, but no readable Packages index in {lists_dir} ({files} file(s)): cannot verify')
+        # fail-closed: nothing that cannot be checked is kept; apt downloads it all, as on a miss
+        for name in debs:
+            os.remove(os.path.join(archives_dir, name))
+        print(f'::warning title=ffmpeg .deb cache not verified::no readable Packages index in {lists_dir} '
+              f'({files} file(s)); all {len(debs)} cached .deb removed, apt downloads them')
+        write_output('unverified', 'true')
+        return
     kept, removed = [], []
     for name in debs:
         path = os.path.join(archives_dir, name)
@@ -128,6 +146,7 @@ def cmd_prune(lists_dir, archives_dir):
     print(f'deb-cache-verify: {len(kept)} cached .deb match the signed index, {len(removed)} removed')
     for name in removed:
         print(f'  removed: {name}')
+    write_output('unverified', 'false')
 
 
 def main(argv):

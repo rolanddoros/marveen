@@ -55,7 +55,10 @@ jobs:
       #       dir, only the size (measured; deb-cache-verify.test.sh measures
       #       it on the runner's own apt), so deb-cache-verify.py prune removes
       #       every cached .deb that is not byte for byte the file the signed
-      #       index names, BEFORE the install;
+      #       index names, BEFORE the install. Fail-closed (Johnny 12583,
+      #       Kevin 12587): with no readable index it removes them ALL, apt
+      #       downloads as on a miss, a ::warning:: says why, and the save does
+      #       not run (it needs unverified=false from this step);
       #   (6) ci-workflow-pins.test.ts pins the save condition.
       # A miss downloads as before, under the same 8 min limit. The install
       # keeps what it downloaded (Keep-Downloaded-Packages), or the save would
@@ -79,12 +82,13 @@ jobs:
           path: ~/ffmpeg-debs/*.deb
           key: ${{ steps.ffmpeg-key.outputs.key }}
       - name: Install ffmpeg for the resize hook's tests
+        id: ffmpeg-install
         timeout-minutes: 8
         run: |
           python3 scripts/deb-cache-verify.py prune "$HOME/ffmpeg-debs"
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives="$HOME/ffmpeg-debs" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends ffmpeg
       - name: Save the ffmpeg .deb cache (a push to main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ffmpeg-debs.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ffmpeg-debs.outputs.cache-hit != 'true' && steps.ffmpeg-install.outputs.unverified == 'false'
         timeout-minutes: 4
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:

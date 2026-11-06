@@ -245,6 +245,8 @@ describe('CI apt step: a hard time limit, retries, only ffmpeg, no cache (Johnny
     expect(order.every((at, i) => at > -1 && (i === 0 || at > order[i - 1])), String(order)).toBe(true)
     expect(stepLines(KEY_STEP)).toContain('id: ffmpeg-key')
     expect(stepLines(RESTORE_STEP)).toContain('id: ffmpeg-debs')
+    // the save reads the prune's unverified output by this id (ci-workflow-pins.test.ts pins the condition)
+    expect(stepLines(STEP_NAME)).toContain('id: ffmpeg-install')
   })
 
   it('the .deb cache key holds the runner image, the ffmpeg version and the .deb set hash, and fails empty (4)', () => {

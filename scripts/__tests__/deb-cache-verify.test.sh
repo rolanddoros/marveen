@@ -94,8 +94,10 @@ ok "(1) control: same size, other bytes; apt hands the CORRUPTED $A to dpkg (the
 
 # --- (2) prune removes it, keeps the good ones; apt downloads the real file and hands only real files ----------
 fill; corrupt "$ARCH_DIR/$A"
-out="$(python3 "$VERIFY" prune "$ARCH_DIR" "$LISTS" 2>&1)"; rc=$?
+: > "$T/gh-out.txt"
+out="$(GITHUB_OUTPUT="$T/gh-out.txt" python3 "$VERIFY" prune "$ARCH_DIR" "$LISTS" 2>&1)"; rc=$?
 ok "(2) prune exits 0 and names the removed file" "$([ $rc = 0 ] && grep -q "removed: $A" <<<"$out"; echo $?)" "$out"
+ok "(2) a verified cache: the step output says unverified=false (the save may run)" "$([ "$(cat "$T/gh-out.txt")" = "unverified=false" ]; echo $?)" "$(cat "$T/gh-out.txt")"
 ok "(2) the good files stay (B, and C with its epoch name)" "$([ -f "$ARCH_DIR/$B" ] && [ -f "$ARCH_DIR/$C" ] && [ ! -e "$ARCH_DIR/$A" ]; echo $?)"
 install
 ok "(2) dpkg gets exactly the three REAL files, the corrupted one never" \
@@ -115,16 +117,26 @@ python3 "$VERIFY" prune "$ARCH_DIR" "$LISTS" > "$T/p3.log" 2>&1
 left="$(cd "$ARCH_DIR" && ls ./*.deb 2>/dev/null | sed 's#^\./##' | sort | tr '\n' ' ')"
 ok "(3) only the one real, regular file the index vouches for is left" "$([ "$left" = "$A " ]; echo $?)" "left: $left"
 
-# --- (4) fail closed: .deb files present, no readable index -> exit 1, nothing claimed as checked ---------------
-fill
+# --- (4) fail closed (Johnny 12583, Kevin 12587): no readable index -> every cached .deb drops out, apt downloads -
+fill; corrupt "$ARCH_DIR/$A"
 mkdir -p "$T/nolists"
-python3 "$VERIFY" prune "$ARCH_DIR" "$T/nolists" > "$T/p4.log" 2>&1; rc=$?
-ok "(4) no Packages index: prune exits 1 and says it cannot verify" "$([ $rc = 1 ] && grep -q 'cannot verify' "$T/p4.log"; echo $?)" "rc=$rc $(cat "$T/p4.log")"
+: > "$T/gh-out.txt"
+GITHUB_OUTPUT="$T/gh-out.txt" python3 "$VERIFY" prune "$ARCH_DIR" "$T/nolists" > "$T/p4.log" 2>&1; rc=$?
+ok "(4) no Packages index: exit 0 (the step stays green), with a ::warning:: that names why" \
+  "$([ $rc = 0 ] && grep -q '^::warning title=ffmpeg .deb cache not verified::no readable Packages index' "$T/p4.log"; echo $?)" "rc=$rc $(cat "$T/p4.log")"
+ok "(4) no cached .deb is left, not even the good ones" "$([ -z "$(ls "$ARCH_DIR"/*.deb 2>/dev/null)" ]; echo $?)" "$(ls "$ARCH_DIR")"
+ok "(4) the step output says unverified=true (test.yml does not save after it)" "$([ "$(cat "$T/gh-out.txt")" = "unverified=true" ]; echo $?)" "$(cat "$T/gh-out.txt")"
+install
+ok "(4) 0 cached files reach dpkg: it gets the three real files, all downloaded again" \
+  "$(handed_has "$(repo_sha "$A")" && handed_has "$(repo_sha "$B")" && handed_has "$(repo_sha "$C_REPO")" && ! handed_has "$bad" \
+     && [ "$(wc -l < "$T/handed.txt")" -eq 3 ] && [ "$(grep -c '^Get:' "$T/install.log")" -eq 3 ]; echo $?)" "handed: $(tr '\n' ' ' < "$T/handed.txt")"
 
 # --- (5) a cache miss (no .deb at all) needs no index and is fine -------------------------------------------------
 rm -f "$ARCH_DIR"/*.deb
-python3 "$VERIFY" prune "$ARCH_DIR" "$T/nolists" > "$T/p5.log" 2>&1; rc=$?
-ok "(5) an empty archive dir: exit 0, nothing to check" "$([ $rc = 0 ] && grep -q 'nothing to check' "$T/p5.log"; echo $?)"
+: > "$T/gh-out.txt"
+GITHUB_OUTPUT="$T/gh-out.txt" python3 "$VERIFY" prune "$ARCH_DIR" "$T/nolists" > "$T/p5.log" 2>&1; rc=$?
+ok "(5) an empty archive dir: exit 0, nothing to check, unverified=false" \
+  "$([ $rc = 0 ] && grep -q 'nothing to check' "$T/p5.log" && [ "$(cat "$T/gh-out.txt")" = "unverified=false" ]; echo $?)"
 
 # --- (6) key: from apt's own --print-uris of an EMPTY archive dir ------------------------------------------------
 rm -f "$ARCH_DIR"/*.deb
