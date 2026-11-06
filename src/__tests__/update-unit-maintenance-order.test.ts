@@ -119,8 +119,10 @@ describe('the morning-timer and channels repairs, executed for real; the other r
     sliceShellFn(UPDATE, 'run_unit_maintenance'),
   ].join('\n')
 
+  // stderr joins stdout here (exec 2>&1): on success runScript returns stdout only, and bash
+  // writes "command not found" to stderr, so without it the assert below would see nothing (Ron 12237).
   function run(dir: string, failing?: string) {
-    return runScript(`${body(failing)}\nrun_unit_maintenance "${dir}"`)
+    return runScript(`exec 2>&1\n${body(failing)}\nrun_unit_maintenance "${dir}"`)
   }
   const calls = (out: string) => out.split('\n').filter((l) => l.startsWith('CALL ')).map((l) => l.trimEnd())
 
@@ -137,6 +139,8 @@ describe('the morning-timer and channels repairs, executed for real; the other r
     try {
       const r = run(dir)
       expect(r.code).toBe(0)
+      // first: a repair the wrapper calls but the probe does not stub shows up here, as bash's own line
+      expect(r.out).not.toContain('command not found')
       expect(calls(r.out)).toEqual([
         `CALL install_keepalive_probe_timer ${dir}`,
         `CALL install_keepalive_probe_launchd ${dir}`,
@@ -146,7 +150,6 @@ describe('the morning-timer and channels repairs, executed for real; the other r
         `CALL park_morning_timer ${dir}`,
         'CALL scrub_rc_secrets',
       ])
-      expect(r.out).not.toContain('command not found')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

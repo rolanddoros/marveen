@@ -412,10 +412,14 @@ describe('cross-process double consume', () => {
   }, 60_000)
 
   // The wait's own deadline, and the cleanup behind it: a child stuck before its ready file fails
-  // the race by name, and no child of this race outlives it.
+  // the race by name, and no child of this race outlives it. The deadline here must sit ABOVE a
+  // loaded tsx boot (Ron 12237 measured the healthy five at 2.4-4.5 s under load; with 2 s this
+  // case failed alone, green only after the earlier races had warmed the boot) and below the stuck
+  // child's 30 s nap and the 60 s test timeout. The message must NAME proc-4; whether a slow
+  // healthy child is named too is not what this case is about.
   it('a child that never gets ready fails the race by name, and every child is gone afterwards', async () => {
     const before = pidsSeen.length
-    await expect(race('race-stuck', { who: 'proc-4', ms: 30_000 }, 2_000)).rejects.toThrow(/race race-stuck: not ready after 2000 ms: proc-4$/)
+    await expect(race('race-stuck', { who: 'proc-4', ms: 30_000 }, 12_000)).rejects.toThrow(/race race-stuck: not ready after 12000 ms: .*\bproc-4\b/)
     const mine = pidsSeen.slice(before)
     expect(mine).toHaveLength(CHILDREN)
     const alive = mine.filter((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
