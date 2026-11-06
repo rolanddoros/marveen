@@ -30,7 +30,7 @@ const ctx: AgentDocContext = {
   },
   autonomy: {},
   team: { reportsTo: 'kevin', directReports: [] },
-  roster: [{ name: 'kevin', role: 'PM' }],
+  roster: [{ name: 'kevin' }],
   hooks: { directiveVerify: false, childClaudeGuard: true, shellRescan: false },
 }
 
@@ -179,9 +179,11 @@ describe('registry', () => {
     expect(renderRegion(ctx, secs)).toBe(renderRegion(ctx, secs))
   })
 
-  it('never renders the token path (the default registry, 7a: empty)', () => {
-    expect(renderRegion(ctx)).toBe(`${REGION_BEGIN}\n${REGION_END}\n`)
-    expect(renderRegion(ctx)).not.toContain(ctx.tokenPath)
+  it('the default registry renders a framed region without the token path', () => {
+    const region = renderRegion(ctx)
+    expect(region.startsWith(`${REGION_BEGIN}\n`)).toBe(true)
+    expect(region.endsWith(`\n${REGION_END}\n`)).toBe(true)
+    expect(region).not.toContain(ctx.tokenPath)
   })
 })
 

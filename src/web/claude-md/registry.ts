@@ -3,14 +3,13 @@
 // The registry joins the applicable sections into the body of the ONE v2
 // region (render.ts wrapRegion).
 //
-// C1 PR 7a ships the engine only: SECTIONS is empty here and is filled with
-// the target content (identity, rule index, evidence, helper index, roster /
-// federation; design 2.3) in PR 7b, together with the golden and budget tests.
-// Nothing outside src/web/claude-md and its tests imports this module yet;
-// wiring is PR 10.
+// The target content (identity, rule index, evidence, helper index, roster /
+// federation; design 2.3) is in sections.ts (PR 7b). Nothing outside
+// src/web/claude-md and its tests imports this module yet; wiring is PR 10.
 
 import type { AgentDocContext } from './context.js'
 import { TemplateError, wrapRegion } from './render.js'
+import { DEFAULT_SECTIONS } from './sections.js'
 
 export interface Section {
   // Stable, kebab-case; unique within a registry.
@@ -19,7 +18,7 @@ export interface Section {
   render(ctx: AgentDocContext): string
 }
 
-export const SECTIONS: readonly Section[] = []
+export const SECTIONS: readonly Section[] = DEFAULT_SECTIONS
 
 const SECTION_ID_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
