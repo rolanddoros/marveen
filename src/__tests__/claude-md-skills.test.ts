@@ -29,8 +29,8 @@ const PINNED_SHA256: Record<string, string> = {
   'marveen-fleet-auth': '859cb4fa37c8c41ad99494f309042c8e94f92c2f87b85759bb74a10b34cb1068',
   'marveen-background-work': 'd6538181f01091df40b02f59095eeeb1f12aa6259d6ff9777812fc78654b372c',
   'marveen-skill-authoring': 'dba406eaa70352b10214a516273d8dad409fd62942dfeb307a2308af46ab3796',
-  'marveen-approvals': '4549cbae813016200785ddd22f5b0507c813b0a2ef0a87237b5d48424b19db66',
-  'marveen-messaging': 'b67075e1234c2fef7bd1100d35a727d3046536496ce9522938c54079c13bac99',
+  'marveen-approvals': 'b11cc7a5575165a5a3bd6d3a85571a06ef8f129f96fe22c694a06c83ded60b1f',
+  'marveen-messaging': '847fb6ddfa6babc52af31724045641ec9efd838f0f0c4e57f05c73fe7cf4ad7e',
   'marveen-directive-auth': '5ddb840683102b3c316c3c800f93376614576a3725283376456aa27a9214b3f2',
 }
 
@@ -197,6 +197,38 @@ describe('product skills: token never on argv', () => {
     for (const line of allLines.filter((l) => /Authorization/.test(l) && /curl|-H/.test(l))) {
       expect(line, line).toMatch(/-H @<\(printf 'Authorization: Bearer '; cat <your token file>\)|printf 'Authorization: Bearer '; cat <your token file>; \} > <header file>/)
     }
+  })
+})
+
+describe('product skills: approvals teach the helper the way the helper works', () => {
+  // The approval-wait clauses of the helper's EXIT_CODES table, joined across
+  // Python's adjacent string literals, so the skill quotes the tool, not a copy.
+  function approvalWaitClauses(): Record<number, string> {
+    const py = readFileSync(join(REPO_ROOT, 'scripts', 'lib', 'marveen_api.py'), 'utf-8')
+    const table = py.slice(py.indexOf('EXIT_CODES = ('), py.indexOf('\n)\n', py.indexOf('EXIT_CODES = (')))
+    const out: Record<number, string> = {}
+    for (const m of table.matchAll(/\((\d+), '\w+', ((?:'[^']*'\s*)+)\)/g)) {
+      const text = [...m[2].matchAll(/'([^']*)'/g)].map((x) => x[1]).join('')
+      const i = text.indexOf('approval-wait: ')
+      if (i >= 0) out[Number(m[1])] = text.slice(i + 'approval-wait: '.length)
+    }
+    return out
+  }
+
+  it('the helper form waits with approval-wait and quotes its exit codes word for word', () => {
+    const text = renderProductSkill('marveen-approvals', ctx)
+    expect(text).toContain('bash /srv/fleet/scripts/marveen-api.sh approval-wait <id>')
+    expect(text).not.toContain('approval-status')
+    const clauses = approvalWaitClauses()
+    expect(Object.keys(clauses).sort()).toEqual(['3', '4', '8'])
+    for (const [code, clause] of Object.entries(clauses)) expect(text, code).toContain(`- ${code}: ${clause}`)
+  })
+
+  it('the helper-less form keeps the 60-second status loop of the source', () => {
+    const text = renderProductSkill('marveen-messaging', ctx)
+    expect(text).toContain('Check the decision (every 60 seconds):')
+    expect(text).toContain('"http://localhost:4545/api/approvals/<id>"')
+    expect(text).toContain('`status=rejected` or `status=timeout`: do not do it, log the reason.')
   })
 })
 

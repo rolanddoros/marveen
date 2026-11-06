@@ -202,7 +202,8 @@ Check the decision (every 60 seconds):
 curl -s -H @<(printf 'Authorization: Bearer '; cat <your token file>) "{{dashboardOrigin}}/api/approvals/<id>"
 ```
 
-Consume it, once, before acting; act only after HTTP 200:
+`status=rejected` or `status=timeout`: do not do it, log the reason. `status=approved`: consume it, once, before
+acting; act only after HTTP 200:
 
 ```bash
 curl -s -X POST {{dashboardOrigin}}/api/approvals/<id>/consume -H "Content-Type: application/json" \

@@ -45,18 +45,27 @@ Ask for approval through the API BEFORE you act.
    ```
 
    The answer carries the id you check the decision with.
-2. Check the decision, repeated every 60 seconds:
+2. Wait for the decision:
 
    ```bash
-   {{apiHelper}} approval-status <id>
+   {{apiHelper}} approval-wait <id>
    ```
 
-   - `status=rejected` or `status=timeout`: do not do it, log the reason.
-   - `status=approved`: the approval can be used ONCE. BEFORE you act, consume it (APPROVALCONSUME1022):
+   It polls every 60 s until decided (default `--timeout 540`, under the Bash tool's 600 s limit): call it with
+   timeout 600000. It never consumes. Its exit codes (scripts/lib/marveen_api.py, the usage text and EXIT_CODES):
+
+   - 0: approved. The approval can be used ONCE. BEFORE you act, consume it (APPROVALCONSUME1022):
 
      ```bash
      {{apiHelper}} approval-consume <id> CATEGORY_KEY <your-name>
      ```
+
+   - 3: no decision before --timeout, call again
+   - 8: decided but NOT approved (rejected, or timed out on the server): do not act. Log the reason.
+   - 4: approved, but already consumed or past the use window: request a new approval
+   - 2: unknown id: there is nothing to wait for.
+
+   Without the helper, the marveen-messaging recipe checks the status every 60 seconds instead.
 
 3. Act only after exit code 0 (HTTP 200). A 409 (already_consumed, expired, not_approved, hash_mismatch) means do
    NOT do it: request a new approval.
