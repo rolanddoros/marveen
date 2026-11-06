@@ -1,40 +1,52 @@
-// C1 PR 8a: `node dist/web/claude-md/cli.js --dry-run --root <dir> (--agent <name> | --all) [--json] [--excerpts]`
+// C1 PR 8: `node dist/web/claude-md/cli.js --dry-run --root <dir> (--agent <name> | --all)
+//   [--json] [--excerpts] [--show-chat-id] [--home <dir>]`
 //
 // Read-only report over an install's CLAUDE.md files (dry-run.ts). The main
 // agent runs it against the live tree and pastes the output into a PR
 // description, so the DEFAULT output carries no owner-zone text: a finding is
-// file:line, detector and pattern name. `--excerpts` adds a masked excerpt of
-// each finding's line; that output is NOT for a PR description (the owner
-// zones belong to the agents' principals).
+// file:line, detector and pattern name, and the region diff (PR 8b) has no
+// context lines and shows a changed owner line only as a placeholder. The
+// owner chat_id is masked unless --show-chat-id. `--excerpts` adds a masked
+// excerpt of each finding's line and a diff with 3 verbatim context lines;
+// that output is NOT for a PR description (the owner zones belong to the
+// agents' principals). `--home` names the directory whose .claude/settings.json
+// is the main agent's user-scope settings layer (default: os.homedir()).
 //
 // --dry-run is mandatory: there is no other mode (the writing path is PR 10).
 //
 // On a live tree, run it under Node's permission model with read access only,
 // so the kernel-side check does not depend on this code being right:
-//   node --permission --allow-fs-read=<checkout>/dist --allow-fs-read=<root> \
-//     <checkout>/dist/web/claude-md/cli.js --dry-run --root <root> --all
-// claude-md-dry-run-readonly.test.ts runs exactly this shape on a fixture tree.
+//   node --permission --allow-fs-read=<checkout>/dist --allow-fs-read=<checkout>/templates \
+//     --allow-fs-read=<root> --allow-fs-read=<home>/.claude/settings.json \
+//     <checkout>/dist/web/claude-md/cli.js --dry-run --root <root> --home <home> --all
+// (templates: the region text; the settings file: the main agent's user layer.)
+// A hook script outside the allowed paths reads as not wired (fail-closed: a
+// longer region, never a dropped rule). claude-md-dry-run-readonly.test.ts runs
+// this shape on a fixture tree.
 //
 // Exit codes:
 //   0  every requested agent was evaluated (owner-zone findings are information);
 //   1  at least one file was refused (the v2 composer would not accept it:
-//      marker or fence problem, not UTF-8) or could not be read; the report
-//      still covers every other agent;
+//      marker or fence problem, not UTF-8), could not be read, or its context
+//      or region could not be built (status "error"); the report still covers
+//      every other agent;
 //   2  usage error (arguments, --root, unknown agent).
 
 import { readFileSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { dryRun, UsageError, type AgentReport, type DryRunResult } from './dry-run.js'
+import { REGION_BUDGET, dryRun, UsageError, type AgentReport, type DryRunResult } from './dry-run.js'
 import { maskedExcerpt } from './owner-zone.js'
 
-export const USAGE = 'usage: cli.js --dry-run --root <dir> (--agent <name> | --all) [--json] [--excerpts]'
+export const USAGE = 'usage: cli.js --dry-run --root <dir> (--agent <name> | --all) [--json] [--excerpts] [--show-chat-id] [--home <dir>]'
 
 interface Options {
   root: string
   agent?: string
   json: boolean
   excerpts: boolean
+  showChatId: boolean
+  home?: string
 }
 
 export function parseArgs(argv: readonly string[]): Options {
@@ -44,6 +56,8 @@ export function parseArgs(argv: readonly string[]): Options {
   let agent: string | undefined
   let json = false
   let excerpts = false
+  let showChatId = false
+  let home: string | undefined
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     const value = () => {
@@ -55,6 +69,8 @@ export function parseArgs(argv: readonly string[]): Options {
     else if (a === '--all') all = true
     else if (a === '--json') json = true
     else if (a === '--excerpts') excerpts = true
+    else if (a === '--show-chat-id') showChatId = true
+    else if (a === '--home') home = value()
     else if (a === '--root') root = value()
     else if (a === '--agent') agent = value()
     else throw new UsageError(`unknown argument: ${JSON.stringify(a)}`)
@@ -70,11 +86,18 @@ export function parseArgs(argv: readonly string[]): Options {
     isDir = false
   }
   if (!isDir) throw new UsageError(`--root is not a directory: ${abs}`)
-  return { root: abs.replace(/(.)\/+$/, '$1'), agent, json, excerpts }
+  if (home !== undefined && !isAbsolute(home)) throw new UsageError(`--home must be an absolute path: ${home}`)
+  return { root: abs.replace(/(.)\/+$/, '$1'), agent, json, excerpts, showChatId, home }
+}
+
+// Why a rendered value is only an assumption (live-context.ts).
+const NOTES: Readonly<Record<string, string>> = {
+  'profile.helperAllowed': 'simplified deny-rule reading; the dashboard passes agentUsesApiHelper',
+  'profile.strict': 'a settings layer above the deciding one does not parse',
 }
 
 export function exitCodeOf(result: DryRunResult): 0 | 1 {
-  return result.agents.some((a) => a.status === 'refused' || a.status === 'unreadable') ? 1 : 0
+  return result.agents.some((a) => a.status === 'refused' || a.status === 'unreadable' || a.status === 'error') ? 1 : 0
 }
 
 function excerptOf(root: string, a: AgentReport, line: number): string {
@@ -88,7 +111,7 @@ function excerptOf(root: string, a: AgentReport, line: number): string {
 
 export function formatText(result: DryRunResult, excerpts = false): string {
   const out: string[] = [`claude-md dry-run (read-only), root ${result.root}, main agent ${result.mainAgentId}`]
-  if (excerpts) out.push('EXCERPTS ON: owner-zone text below, masked; not for a PR description')
+  if (excerpts) out.push('EXCERPTS ON: owner-zone text below (findings masked, diff context verbatim); not for a PR description')
   for (const a of result.agents) {
     out.push('')
     out.push(`${a.name} (${a.role}) ${a.file}: ${a.status}`)
@@ -111,11 +134,25 @@ export function formatText(result: DryRunResult, excerpts = false): string {
       out.push(`    ${a.file}:${x.line} ${x.detector} ${x.pattern}${flags}`)
       if (excerpts) out.push(`      | ${excerptOf(result.root, a, x.line)}`)
     }
+    if (a.context) {
+      const rendered = Object.entries(a.context.assumedRendered).map(([k, v]) => `${k}=${JSON.stringify(v)}${NOTES[k] ? ` (${NOTES[k]})` : ''}`)
+      const other = a.context.assumptions.filter((f) => !(f in a.context!.assumedRendered))
+      out.push(`  assumed, rendered: ${rendered.length > 0 ? rendered.join('; ') : 'none'}`)
+      out.push(`  assumed, not rendered: ${other.length > 0 ? other.join(', ') : 'none'}`)
+    }
+    if (a.after) {
+      out.push(`  after: file ${a.after.file}, region ${a.after.region} chars (${a.after.regionLength} of the ${REGION_BUDGET} budget`
+        + `${a.after.overBudget ? ', OVER BUDGET' : ''}); removes ${a.after.removedBlocks.length > 0 ? a.after.removedBlocks.join(', ') : 'nothing'}`)
+    }
+    if (a.diff !== undefined) {
+      out.push(excerpts ? '  diff (3 context lines, verbatim):' : '  diff (no owner text: no context lines, a changed owner line as a placeholder):')
+      out.push(a.diff.replace(/\n$/, '') || '  (no change)')
+    }
   }
   const count = (s: string) => result.agents.filter((a) => a.status === s).length
   out.push('')
   out.push(`summary: ${result.agents.length} agent(s): ${count('ok')} ok, ${count('refused')} refused, `
-    + `${count('unreadable')} unreadable, ${count('missing')} missing; exit ${exitCodeOf(result)}`)
+    + `${count('unreadable')} unreadable, ${count('error')} error, ${count('missing')} missing; exit ${exitCodeOf(result)}`)
   return `${out.join('\n')}\n`
 }
 
@@ -138,7 +175,7 @@ export function runCli(argv: readonly string[], write: (s: string) => void, writ
   }
   let result: DryRunResult
   try {
-    result = dryRun(opts.root, opts.agent)
+    result = dryRun(opts.root, opts.agent, { homeDir: opts.home, fullDiff: opts.excerpts, showChatId: opts.showChatId })
   } catch (err) {
     if (!(err instanceof UsageError)) throw err
     writeErr(`${err.message}\n${USAGE}\n`)

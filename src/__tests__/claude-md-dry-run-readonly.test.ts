@@ -25,7 +25,7 @@
 //    would make every check above pass vacuously.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,13 +41,20 @@ const ALLOWED_MODULES = [
   'src/env-parse.ts',
   'src/web/claude-md/cli.ts',
   'src/web/claude-md/compose.ts',
+  'src/web/claude-md/context.ts',
   'src/web/claude-md/dry-run.ts',
+  'src/web/claude-md/hooks-from-settings.ts',
   'src/web/claude-md/legacy-markers.ts',
+  'src/web/claude-md/line-diff.ts',
+  'src/web/claude-md/live-context.ts',
   'src/web/claude-md/owner-zone.ts',
+  'src/web/claude-md/registry.ts',
   'src/web/claude-md/render.ts',
+  'src/web/claude-md/sections.ts',
 ]
-const ALLOWED_BUILTINS = ['node:fs', 'node:path', 'node:url']
-const ALLOWED_FS = ['lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'statSync'] // sort() order
+const ALLOWED_BUILTINS = ['node:fs', 'node:os', 'node:path', 'node:url']
+// sort() order; accessSync and existsSync are live-context.ts's hook-script and roster checks
+const ALLOWED_FS = ['accessSync', 'constants', 'existsSync', 'lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'statSync']
 
 interface Graph { modules: string[]; builtins: string[]; fsNames: string[]; dynamic: string[] }
 
@@ -165,13 +172,19 @@ const CONTROLS: Record<string, string> = {
 
 let base: string
 let out: string
+let templates: string
 let root: string
+let home: string
 let childTmp: string
 let childHome: string
 
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), 'claude-md-readonly-'))
-  out = join(base, 'build')
+  // The checkout layout: <base>/dist/web/claude-md/render.js finds its region
+  // templates at <base>/templates/claude-md, three levels up (render.ts).
+  out = join(base, 'dist')
+  templates = join(base, 'templates')
+  cpSync(join(REPO, 'templates', 'claude-md'), join(templates, 'claude-md'), { recursive: true })
   // tsc only (no bundler, no new or transitive dependency in the test path; Kevin 12995).
   const tsc = spawnSync(process.execPath, [
     join(REPO, 'node_modules', 'typescript', 'bin', 'tsc'), '--outDir', out, '--rootDir', join(REPO, 'src'),
@@ -185,6 +198,9 @@ beforeAll(() => {
   root = join(base, 'install')
   mkdirSync(root)
   writeDryRunTree(root)
+  // The main agent's user-scope settings layer: a home inside the readable
+  // tree (outside it the read itself would be denied, and the run would fail).
+  home = join(root, 'home')
   childTmp = join(base, 'child-tmp')
   childHome = join(base, 'child-home')
   mkdirSync(childTmp)
@@ -198,7 +214,7 @@ afterAll(() => {
 // The one spawn helper for the CLI and the controls alike.
 function sandboxed(script: string, args: string[]) {
   const r = spawnSync(process.execPath, [
-    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${root}`,
+    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${templates}`, `--allow-fs-read=${root}`,
     '--import', join(out, 'guard.mjs'), join(out, script), ...args,
   ], {
     encoding: 'utf-8',
@@ -278,7 +294,7 @@ describe('read-only: runtime under node --permission (read access only)', () => 
     [['--agent', 'alpha'], 0],
   ])('the CLI %j runs to the end, writes nothing, calls no network', (extra, code) => {
     const before = manifest(root)
-    const r = sandboxed(CLI, ['--dry-run', '--root', root, ...(extra as string[])])
+    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, ...(extra as string[])])
     expect(r.stderr).toBe('')
     expect(r.code).toBe(code)
     expect(r.stdout).toMatch(/\nsummary: \d+ agent\(s\)|"exit": \d/)
@@ -289,9 +305,15 @@ describe('read-only: runtime under node --permission (read access only)', () => 
   })
 
   it('the sandboxed --json output is the full report (same agents as in-process)', () => {
-    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--all', '--json'])
+    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, '--all', '--json'])
     const data = JSON.parse(r.stdout)
     expect(data.agents.map((a: { name: string; status: string }) => `${a.name}:${a.status}`))
       .toEqual(['chief:ok', 'alpha:ok', 'beta:refused', 'delta:refused', 'gamma:missing'])
+    // PR 8b: the region and the diff were built inside the sandbox too
+    for (const a of data.agents.slice(0, 2)) {
+      expect(a.after.regionLength).toBeGreaterThan(1000)
+      expect(a.diff).toContain('+<!-- END MARVEEN GENERATED v2 -->')
+      expect(a.context.assumptions).toContain('profile.helperAllowed')
+    }
   })
 })

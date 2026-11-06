@@ -3,8 +3,10 @@
 // For each agent: is the file one the v2 composer accepts (and if not, which
 // line refuses it), which legacy generated blocks it carries and how many
 // characters they take, and what the owner zone holds that the region rollout
-// will have to clean (owner-zone.ts). The region diff and the "after" numbers
-// need the live AgentDocContext and come in PR 8b.
+// will have to clean (owner-zone.ts). For every accepted file (PR 8b) also:
+// the live AgentDocContext (live-context.ts, C1 PR 10a) with its assumptions,
+// the v2 region it renders, what composeClaudeMd would write, and the unified
+// diff between today's file and that.
 //
 // READ-ONLY by construction, because the main agent runs it against the live
 // tree: this module and everything it imports use only reading fs calls
@@ -20,11 +22,16 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { parseEnvContent } from '../../env-parse.js'
-import { ComposeError, scanClaudeMd, type ScannedLine } from './compose.js'
+import { ComposeError, composeClaudeMd, scanClaudeMd, type ScannedLine } from './compose.js'
+import { type DiffLine, splitRaw, unifiedDiff } from './line-diff.js'
+import { LiveContextError, RENDERED_FIELDS, buildLiveContext } from './live-context.js'
 import { ownerZoneFindings, retiredSectionFindings, type Finding } from './owner-zone.js'
+import { renderRegion } from './registry.js'
+import { TemplateError } from './render.js'
 
 export type AgentRole = 'main' | 'sub' | 'heartbeat'
-export type FileStatus = 'ok' | 'refused' | 'missing' | 'unreadable'
+// 'error': the file was accepted, but its context or region could not be built.
+export type FileStatus = 'ok' | 'refused' | 'missing' | 'unreadable' | 'error'
 
 export interface BlockInfo {
   id: string
@@ -42,7 +49,39 @@ export interface AgentReport {
   chars?: { file: number; generated: number }
   blocks: BlockInfo[]
   ownerZone: { segmented: boolean; findings: Finding[] }
+  // PR 8b, for an accepted file:
+  context?: {
+    // every ctx field path without a real source (live-context.ts), sorted
+    assumptions: string[]
+    // the rendered ones among them, with the value the region was rendered with
+    assumedRendered: Record<string, unknown>
+  }
+  after?: {
+    file: number // code points
+    region: number // code points
+    regionLength: number // UTF-16 units, the unit of the budget test (claude-md-goldens.test.ts)
+    overBudget: boolean
+    removedBlocks: string[]
+  }
+  // The unified diff, today's file -> what composeClaudeMd would write
+  // (PlanOptions decide how much owner text it shows).
+  diff?: string
 }
+
+export interface PlanOptions {
+  // The main agent's user-scope settings layer lives under it (live-context.ts).
+  homeDir?: string
+  // false (default): no owner text in the diff: no context lines, and a
+  // changed non-blank owner line (the last line gaining its final newline)
+  // is printed as a placeholder. true: 3 context lines, verbatim; NOT for a
+  // PR description.
+  fullDiff?: boolean
+  // false (default): the owner chat_id is masked wherever the diff shows it.
+  showChatId?: boolean
+}
+
+// The v2 region budget of design 2.3, as claude-md-goldens.test.ts measures it.
+export const REGION_BUDGET = 5500
 
 // src/config.ts defaults: MAIN_AGENT_ID ?? 'marveen'; HEARTBEAT_AGENT_ID is a constant.
 export const DEFAULT_MAIN_AGENT_ID = 'marveen'
@@ -248,7 +287,70 @@ export class UsageError extends Error {
 
 // The dry run over `root`: every listed agent (main first, then the subs in
 // name order), or the one named. Throws UsageError for an unknown agent.
-export function dryRun(root: string, agent?: string): DryRunResult {
+function valueAt(obj: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((o, k) => (o !== null && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), obj)
+}
+
+// The region part of the report: context, region, composed file, diff lines.
+// Old lines are tagged with the scan (owner / generated), new lines as owner
+// text up to the region and as region after it, so the diff never pairs an
+// owner line with a generated one (line-diff.ts).
+export function planRegion(report: AgentReport, text: string, root: string, opts: PlanOptions = {}): AgentReport {
+  let live
+  let region: string
+  let composed
+  try {
+    live = buildLiveContext(root, report.name, opts.homeDir === undefined ? {} : { homeDir: opts.homeDir })
+    region = renderRegion(live.ctx)
+    composed = composeClaudeMd(text, region)
+  } catch (err) {
+    if (err instanceof LiveContextError || err instanceof TemplateError || err instanceof ComposeError) {
+      return { ...report, status: 'error', error: { message: `${err.name}: ${err.message}` } }
+    }
+    throw err
+  }
+  const rendered = new Set<string>(RENDERED_FIELDS)
+  const assumedRendered: Record<string, unknown> = {}
+  for (const f of live.assumptions) if (rendered.has(f)) assumedRendered[f] = valueAt(live.ctx, f)
+
+  const bom = text.startsWith('\ufeff') ? '\ufeff' : ''
+  const scanned = scanClaudeMd(text).lines
+  const oldLines: DiffLine[] = scanned.map((l) => ({ raw: l.raw, tag: l.kind === 'owner' ? 'owner' : 'generated' }))
+  const newRaw = splitRaw(composed.text.slice(bom.length))
+  const regionCount = splitRaw(region).length
+  const newLines: DiffLine[] = newRaw.map((raw, i) => ({ raw, tag: i >= newRaw.length - regionCount ? 'region' : 'owner' }))
+  // A BOM is file-level (compose keeps it); it rides on line 1 of both sides.
+  if (bom && oldLines.length > 0) oldLines[0] = { ...oldLines[0], raw: bom + oldLines[0].raw }
+  if (bom && newLines.length > 0) newLines[0] = { ...newLines[0], raw: bom + newLines[0].raw }
+
+  const chatId = live.ctx.owner.chatId
+  const mask = (line: string) => (chatId && !opts.showChatId ? line.split(chatId).join('<chat_id masked>') : line)
+  const diff = unifiedDiff(oldLines, newLines, {
+    from: report.file,
+    to: report.file,
+    context: opts.fullDiff ? 3 : 0,
+    show: (_side, line, index) => {
+      const content = line.raw.replace(/\n$/, '')
+      if (!opts.fullDiff && line.tag === 'owner' && content.trim() !== '') return `<owner line ${index + 1}, text not shown>`
+      return mask(content)
+    },
+  })
+
+  return {
+    ...report,
+    context: { assumptions: live.assumptions, assumedRendered },
+    after: {
+      file: codePoints(composed.text),
+      region: codePoints(region),
+      regionLength: region.length,
+      overBudget: region.length > REGION_BUDGET,
+      removedBlocks: composed.removed,
+    },
+    diff,
+  }
+}
+
+export function dryRun(root: string, agent?: string, opts: PlanOptions = {}): DryRunResult {
   const mainId = readMainAgentId(root)
   const subs = listSubAgents(root, mainId)
   const roleOf = (n: string): AgentRole => (n === mainId ? 'main' : n === HEARTBEAT_AGENT_ID ? 'heartbeat' : 'sub')
@@ -267,7 +369,9 @@ export function dryRun(root: string, agent?: string): DryRunResult {
         notes: [], blocks: [], ownerZone: { segmented: false, findings: [] },
       }
     }
-    return evaluateFile(n, roleOf(n), file, got, root, retired)
+    const report = evaluateFile(n, roleOf(n), file, got, root, retired)
+    if (report.status !== 'ok' || got === null) return report
+    return planRegion(report, new TextDecoder('utf-8', { ignoreBOM: true }).decode(got), root, opts)
   })
   return { root, mainAgentId: mainId, agents }
 }
