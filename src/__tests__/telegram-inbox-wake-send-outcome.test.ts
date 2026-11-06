@@ -299,5 +299,29 @@ describe('maybeWakeSubAgentsForTelegram: a future lastWakeAt and a new inbound',
     // a tick that took its clock at NOW + 61 s, before the send ended, reaches the agent after it
     await maybeWakeSubAgentsForTelegram(NOW + 61_000)
     expect(send).toHaveBeenCalledTimes(1)
+    // the same backlog keeps the END: the clamp is only for a new inbound (Ron 12571, mutant Mall)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 70_000 })
+  })
+
+  // The clamp uses the wall clock, not the late call's tick clock (Ron 12571, Kevin 12573): with
+  // `now`, a new inbound seen by a late call pulled the END of a delivered send back to that
+  // `now`, and the next nudge came early.
+  it('a late call that sees a new inbound keeps the END of a delivered send', async () => {
+    send.mockImplementationOnce(async () => { vi.setSystemTime(NOW + 70_000); return 'sent' }).mockResolvedValue('sent')
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    // a new inbound at NOW + 10 s; a tick that took its clock at NOW + 61 s runs after the send ended
+    newInbound(NOW + 10_000)
+    vi.setSystemTime(NOW + 71_000)
+    await maybeWakeSubAgentsForTelegram(NOW + 61_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 70_000, attempts: 0, inboxMtimeMs: NOW + 10_000 })
+    // the 60 s backoff of the new backlog counts from the END
+    vi.setSystemTime(NOW + 129_000)
+    await maybeWakeSubAgentsForTelegram(NOW + 129_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(NOW + 130_000)
+    await maybeWakeSubAgentsForTelegram(NOW + 130_000)
+    expect(send).toHaveBeenCalledTimes(2)
   })
 })
