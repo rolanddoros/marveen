@@ -711,14 +711,6 @@ export function getChannelChatId(provider: ChannelProviderType, env: Record<stri
 
 // -- Provider registry --
 
-const providers: Record<ChannelProviderType, ChannelProvider> = {
-  telegram: telegramProvider,
-  slack: slackProvider,
-  discord: discordProvider,
-  googlechat: googlechatProvider,
-  teams: teamsProvider,
-}
-
 // Every provider send is routed through the test-run marker: getProvider has
 // many callers beyond notifyChannel (agent-process, channel-monitor, agent
 // routes), and any of them reached from a test run must label its outbound

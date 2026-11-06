@@ -15,7 +15,7 @@ import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RE
 import { agentIdEnvExport } from './agent-id-env.js'
 import { launchableDistributionDefaultSync } from './default-model-guard.js'
 import { agentDir, listAgentNames, readAgentChannelProvider, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
-import { listKanbanCards, createAgentMessage } from '../db.js'
+import { createAgentMessage } from '../db.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -31,9 +31,7 @@ import {
   startAgentProcess,
   stopAgentProcess,
   scheduleIdentitySetup,
-  ensureMainAgentIsolatedConfigDir,
   ensureSharedClaudeOnboarded,
-  hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
   answerFirstRunGates,
   shSingleQuote,
@@ -107,20 +105,10 @@ const claudeBin = makeLazyBinResolver('claude')
 const RESOLVE_PLAN_TOKEN_PATH = join(PROJECT_ROOT, 'scripts', 'resolve-plan-token-env.mjs')
 const CHANNELS_FAILURES_LOG_PATH = join(PROJECT_ROOT, 'store', 'channels-failures.log')
 
-// How long the agent's claude process has been running. Returns -1 when it
-// cannot be determined, which the restart policy treats as "do not restart".
-function getProcessAgeMs(pid: number): number {
-  try {
-    const out = execFileSync('/bin/ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 3000, encoding: 'utf-8' })
-    return etimeOutputToMs(out)
-  } catch {
-    return -1
-  }
-}
-
 const execFileAsyncCm = promisify(execFile)
-// Async twin of getProcessAgeMs for the per-minute check(): the sweep must not hold the
-// event loop on one ps per agent.
+// How long the agent's claude process has been running, for the per-minute check().
+// Returns -1 when it cannot be determined, which the restart policy treats as
+// "do not restart". Async: the sweep must not hold the event loop on one ps per agent.
 async function getProcessAgeMsAsync(pid: number): Promise<number> {
   try {
     const { stdout } = await execFileAsyncCm('/bin/ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 3000, encoding: 'utf-8' })

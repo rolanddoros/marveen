@@ -23,7 +23,7 @@ import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { launchableInstallDefault } from '../default-model-guard.js'
 import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
-import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
+import { getSecret, setSecret, deleteSecret } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import { listCustomProviders } from '../custom-providers.js'
 import {
@@ -54,7 +54,6 @@ import {
   writeAgentClaudePlan,
   readAgentMemoryIsolation,
   writeAgentMemoryIsolation,
-  readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRunAsUser,
   readAgentRemoteHost,
@@ -85,14 +84,12 @@ import {
   readMarveenTelegramConfig,
   sendAvatarChangeMessage,
   sendWelcomeMessage,
-  validateTelegramToken,
   parseTelegramToken,
 } from '../telegram.js'
 import {
   createInvite,
   listInvites,
   revokeInvite,
-  agentChannelDir,
 } from '../channel-invites.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { channelsRestartCommand, isMainChannelsAgent, MAIN_CHANNELS_SESSION, withoutMainAgent } from '../main-agent.js'

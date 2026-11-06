@@ -1,7 +1,3 @@
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import { execFileSync } from 'node:child_process'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import {
@@ -12,7 +8,6 @@ import {
   deleteVaultSshServer,
   computeSshKeyStatus,
   getVaultSshKey,
-  listVaultSshKeys,
   type VaultSshServer,
   type VaultSshKey,
 } from '../../db.js'

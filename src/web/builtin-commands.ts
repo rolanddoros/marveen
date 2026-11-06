@@ -6,8 +6,6 @@
 // the same `usage`; the nonce writes (/runs stop, /jobs on|off|run|skip,
 // /approvals approve|reject|renew) stay planned (CMD920 2.).
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, OWNER_NAME, APP_TZ, BOT_NAME } from '../config.js'
 import {
   listApprovals,
@@ -39,7 +37,7 @@ import {
 } from './system-status.js'
 import { fetchAnthropicStatus } from './routes/status.js'
 import { collectQueue, formatBlocks, collectRuns, formatRunsList, formatRunDetail } from './queue-view.js'
-import { readActiveModelFromProjectDir, readContextTokensFromProjectDir, readLastAssistantModel } from './active-model.js'
+import { readContextTokensFromProjectDir, readLastAssistantModel } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
 import { readGateConfig, readGateRunState } from './context-restart-gate-store.js'
 import { getAgentRunningSince } from './agent-process.js'

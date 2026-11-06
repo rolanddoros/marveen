@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, readdirSync, mkdirSync, unlinkSync, rmSync, statSync } from 'node:fs'
-import { join, sep, basename } from 'node:path'
+import { join, sep } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'

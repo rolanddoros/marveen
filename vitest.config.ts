@@ -40,6 +40,14 @@ export default defineConfig({
     // bump: without this line those three red out as timeouts, with it the
     // suite is green. This is a timeout budget, not a behavioural change.
     testTimeout: 60000,
+    // B2-2a: the app logger (src/logger.ts reads LOG_LEVEL at import) is silent
+    // in tests unless the runner sets LOG_LEVEL itself. Measured on a full run
+    // (2026-11-05): ~125 KB of the 238 KB plain-text output was pino lines from
+    // code under test, which nobody reads and every agent pays for in tokens.
+    // Debug a test with e.g. `LOG_LEVEL=info npx vitest run <file>`. Workers and
+    // the processes they spawn inherit it; a test that needs log output sets its
+    // own level (logger-token-redact sets 'trace' on its own capture logger).
+    env: { LOG_LEVEL: process.env.LOG_LEVEL ?? 'silent' },
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).

@@ -1194,7 +1194,6 @@ export async function runMessageRouterTick(): Promise<void> {
       }
       const { category, safeFrom: safeFromAgent } = cls
       const isChannelInbound = category === 'channel-inbound'
-      const trusted = category === 'trusted-peer'
 
       // Stamp trace context onto inter-agent messages (not channel-inbound).
       // Uses the in-memory deliveredTraceCtx to inherit from the last delivered

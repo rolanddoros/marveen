@@ -23,11 +23,23 @@ import { tmpdir } from 'node:os'
 const ROOT = mkdtempSync(join(tmpdir(), 'vault-resolve-test-'))
 const SECRET_VALUE = 'sv-3f6f1e2b-not-a-real-secret'
 
+// The suite runs with LOG_LEVEL=silent (vitest.config.ts, B2-2a). The stub
+// logger below is noisy unless LOG_LEVEL is 'silent', so a child that inherited
+// the runner's value would be quiet whatever the script does, and the "no logger
+// noise on stdout" checks would measure nothing (Ron 12088). The child gets the
+// runner's env WITHOUT LOG_LEVEL: only the script's own silent line quiets it.
+function childEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  delete env.LOG_LEVEL
+  return env
+}
+
 function run(stdin: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => {
     const child = execFile(
       process.execPath,
       [join(ROOT, 'scripts', 'vault-resolve.mjs')],
+      { env: childEnv() },
       (error, stdout, stderr) => {
         const code = error && typeof (error as NodeJS.ErrnoException & { code?: number }).code === 'number'
           ? ((error as unknown as { code: number }).code)

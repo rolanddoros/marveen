@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
   createBackgroundTaskAtomic, finishBackgroundTask, getBackgroundTasks,
-  getBackgroundTask, getRunningBackgroundTasks, markOrphanedTasksFailed,
+  getBackgroundTask, getRunningBackgroundTasks,
   type BackgroundTask,
 } from '../../db.js'
 import { resolveFromPath } from '../../platform.js'
