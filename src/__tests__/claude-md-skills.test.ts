@@ -30,7 +30,7 @@ const PINNED_SHA256: Record<string, string> = {
   'marveen-background-work': 'd6538181f01091df40b02f59095eeeb1f12aa6259d6ff9777812fc78654b372c',
   'marveen-skill-authoring': 'dba406eaa70352b10214a516273d8dad409fd62942dfeb307a2308af46ab3796',
   'marveen-approvals': 'b11cc7a5575165a5a3bd6d3a85571a06ef8f129f96fe22c694a06c83ded60b1f',
-  'marveen-messaging': '847fb6ddfa6babc52af31724045641ec9efd838f0f0c4e57f05c73fe7cf4ad7e',
+  'marveen-messaging': '9a39f3f0749495a8b516bbcfe406fb031ffff0dd6d2511f4c3912ee360529a3b',
   'marveen-directive-auth': '5ddb840683102b3c316c3c800f93376614576a3725283376456aa27a9214b3f2',
 }
 
@@ -222,6 +222,13 @@ describe('product skills: approvals teach the helper the way the helper works', 
     const clauses = approvalWaitClauses()
     expect(Object.keys(clauses).sort()).toEqual(['3', '4', '8'])
     for (const [code, clause] of Object.entries(clauses)) expect(text, code).toContain(`- ${code}: ${clause}`)
+  })
+
+  it('the helper-less section says a memory delete is final and to save the row first (Ron 7b J5)', () => {
+    const text = renderProductSkill('marveen-messaging', ctx)
+    const noHelper = text.slice(text.indexOf('## Without the helper'))
+    expect(noHelper).toContain('`DELETE /api/memories/<id>` is FINAL: it removes the row together with all its versions')
+    expect(noHelper).toContain('read the row and save it first (`GET /api/memories/<id>`)')
   })
 
   it('the helper-less form keeps the 60-second status loop of the source', () => {

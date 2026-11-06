@@ -161,6 +161,12 @@ catches it.
 When the payload carries a sender's own text (the unknown-sender ping), the quoted heredoc is MANDATORY: drop raw `"`
 characters from the quoted text, or write the payload to a file (`--data-binary @file`).
 
+### Deleting a memory is final
+
+`DELETE /api/memories/<id>` is FINAL: it removes the row together with all its versions, so nothing can restore it
+afterwards (only an overwrite keeps the previous content, under `GET /api/memories/<id>/versions`). If you still
+have to delete one, read the row and save it first (`GET /api/memories/<id>`).
+
 ### Recipes
 
 Send a message (level-1 notice, unknown-sender ping):
