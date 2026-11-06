@@ -259,3 +259,45 @@ describe('maybeWakeSubAgentsForTelegram: one wake in flight per agent', () => {
     await first
   })
 })
+
+// A new inbound carries the last wake time over, clamped to the tick (Ron 12422, Kevin 12550):
+// a clock stepped forward and then back left a FUTURE lastWakeAt, and the gate
+// (now - lastWakeAt < backoff) blocked every new inbound until the clock caught up.
+describe('maybeWakeSubAgentsForTelegram: a future lastWakeAt and a new inbound', () => {
+  function newInbound(at: number) {
+    writeFileSync(INBOX, '{"text":"hi"}\n{"text":"again"}\n')
+    utimesSync(INBOX, at / 1000, at / 1000)
+  }
+
+  it('a clock stepped forward then back: the new inbound waits one backoff from the tick, not until the clock catches up', async () => {
+    // the delivered send ends on a clock 1 h ahead, so lastWakeAt is NOW + 1 h
+    send.mockImplementationOnce(async () => { vi.setSystemTime(NOW + 3_600_000); return 'sent' }).mockResolvedValue('sent')
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 3_600_000, attempts: 1 })
+    // the clock steps back; a new inbound lands at NOW + 10 s
+    vi.setSystemTime(NOW + 40_000)
+    newInbound(NOW + 10_000)
+    await maybeWakeSubAgentsForTelegram(NOW + 40_000)
+    // clamped to this tick, which is no immediate wake: 0 s is inside the 60 s backoff
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 40_000, attempts: 0, inboxMtimeMs: NOW + 10_000 })
+    // one backoff later the new inbound is nudged, about an hour before the clock catches up
+    vi.setSystemTime(NOW + 100_000)
+    await maybeWakeSubAgentsForTelegram(NOW + 100_000)
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  // Why the clamp and not "a negative now - lastWakeAt counts as expired" at the gates: the
+  // router's tick clock can be older than the END of a delivered send (calls overlap), and that
+  // negative difference is a nudge that just landed, not a clock step (Ron 12296, Kevin 12380).
+  it('a call whose tick clock is older than the end of a delivered send does not nudge again', async () => {
+    send.mockImplementationOnce(async () => { vi.setSystemTime(NOW + 70_000); return 'sent' }).mockResolvedValue('sent')
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 70_000, attempts: 1 })
+    // a tick that took its clock at NOW + 61 s, before the send ended, reaches the agent after it
+    await maybeWakeSubAgentsForTelegram(NOW + 61_000)
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+})

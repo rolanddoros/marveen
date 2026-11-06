@@ -71,6 +71,19 @@ const SUB_TELEGRAM_WAKE_NUDGE =
 // Per-agent wake state (module-scoped). `attempts` counts nudges spent on the
 // CURRENT stuck backlog; `inboxMtimeMs` is the mtime we last acted on, used to
 // detect a fresh inbound (mtime advance) and reset the attempt budget.
+//
+// lastWakeAt on a new inbound is clamped to the tick's `now` (Ron 12422, Kevin 12550/12553).
+// Not the alternative "a negative now - lastWakeAt counts as expired" at the gates: the
+// router passes its tick clock and calls overlap, so a call can legitimately see the END
+// of a delivered send (set from Date.now() after the send) ahead of its own `now`; reading
+// that as expired would nudge again right after a nudge (Ron 12296, Kevin 12380). Two edges:
+// - the clamp can lower an END value to an older `now` of an overlapping call, so the next
+//   wake may come earlier by END - now, at most the send's duration. With one real clock
+//   this needs an inbound newer than the stat of the call that sent and at least the 25 s
+//   min age older than the late call's `now`, i.e. a send longer than 25 s; the gain is
+//   then under (send duration - 25 s).
+// - the SAME backlog (no new inbound) keeps a future lastWakeAt until the clock catches
+//   up; the next new inbound releases it.
 interface SubWakeState {
   lastWakeAt: number
   attempts: number
@@ -195,7 +208,11 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
       // attempt budget so a fresh message always earns a fresh round of nudges.
       let state = _subWakeState.get(name)
       if (!state || state.inboxMtimeMs !== mtimeMs) {
-        state = { lastWakeAt: state?.lastWakeAt ?? 0, attempts: 0, inboxMtimeMs: mtimeMs }
+        // The last wake time carries over (a new inbound right after a nudge still waits one
+        // backoff), but never as a time past this tick: a clock stepped forward and back left
+        // a future lastWakeAt that blocked every new inbound until the clock caught up (Ron
+        // 12422, Kevin 12550). See SubWakeState for the two edges of this clamp.
+        state = { lastWakeAt: Math.min(state?.lastWakeAt ?? 0, now), attempts: 0, inboxMtimeMs: mtimeMs }
         _subWakeState.set(name, state)
       }
       // Budget + backoff cheap gates (no tmux I/O yet).
