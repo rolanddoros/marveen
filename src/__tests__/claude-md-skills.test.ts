@@ -46,6 +46,24 @@ function tokenOnArgvFindings(text: string): string[] {
   return rules.filter((r) => r.re.test(text)).map((r) => r.label)
 }
 
+// Paths of the machine running the test that must not reach a rendered skill.
+// The repo root and cwd are flagged wherever they appear (long, never a
+// generic word). /root, home and tmpdir are flagged only as the parent of a
+// concrete path ("<dir>/..."): the bare name of a system directory, like the
+// scratchpad's "/tmp" folder, is information, and on CI tmpdir() IS /tmp.
+function machinePathLeaks(text: string): string[] {
+  const under = (p: string) => `${p.replace(/\/+$/, '')}/`
+  const esc = (p: string) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const leaks = new Set<string>()
+  for (const p of [REPO_ROOT, process.cwd()]) {
+    if (p.length > 1 && (text.includes(under(p)) || new RegExp(`${esc(p)}(?![\\w.-])`).test(text))) leaks.add(p)
+  }
+  for (const p of ['/root', homedir(), tmpdir()]) {
+    if (p.length > 1 && text.includes(under(p))) leaks.add(p)
+  }
+  return [...leaks]
+}
+
 let work: string
 beforeEach(() => {
   work = mkdtempSync(join(tmpdir(), 'mskills-'))
@@ -169,14 +187,25 @@ describe('product skills: only install-level values', () => {
     }
   })
 
-  it('leaks no path of the test machine (repo root, /root/, home, tmpdir, cwd)', () => {
-    const machinePaths = [REPO_ROOT, '/root/', homedir(), tmpdir(), process.cwd()]
+  it('leaks no path of the test machine (repo root, /root, home, tmpdir, cwd)', () => {
     for (const name of PRODUCT_SKILLS) {
-      const text = renderProductSkill(name, ctx)
-      for (const p of machinePaths) expect({ name, p, leaked: text.includes(p) }).toEqual({ name, p, leaked: false })
+      expect({ name, leaks: machinePathLeaks(renderProductSkill(name, ctx)) }).toEqual({ name, leaks: [] })
     }
     // The root the context gives IS used (it is what an agent needs to find the helper).
     expect(PRODUCT_SKILLS.some((n) => renderProductSkill(n, ctx).includes(`${ctx.projectRoot}/`))).toBe(true)
+  })
+
+  it('the leak check flags a concrete machine path but not a generic system directory word', () => {
+    // Positive controls: a concrete path under each machine directory, and the repo root or cwd even bare.
+    expect(machinePathLeaks(`see ${tmpdir()}/x here`)).toContain(tmpdir())
+    expect(machinePathLeaks(`see ${homedir()}/x here`)).toContain(homedir())
+    expect(machinePathLeaks('see /root/x here')).toContain('/root')
+    expect(machinePathLeaks(`see \`${REPO_ROOT}\` here`)).toContain(REPO_ROOT)
+    expect(machinePathLeaks(`see ${process.cwd()}/src here`)).toContain(process.cwd())
+    // A system directory named as a word (the scratchpad "/tmp" folder) is information, not a leak,
+    // whatever tmpdir() is on the machine running the test (CI: /tmp).
+    expect(machinePathLeaks(`that \`${tmpdir()}\` folder is bound to the session`)).not.toContain(tmpdir())
+    expect(machinePathLeaks('that `/tmp` folder, and `~/.claude/skills`')).toEqual([])
   })
 
   it('quotes a root with a space in the helper command, like agent-scaffold does', () => {
