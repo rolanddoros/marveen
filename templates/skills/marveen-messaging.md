@@ -84,9 +84,10 @@ reflex. Instead:
 1. Allowlist check, against YOUR OWN paired allowlist: is `[ID]` in your own channel's `allowFrom`?
 
    ```bash
-   # Your OWN channel config is in your working directory (<cwd>/.claude/channels/...).
-   # $HOME/.claude/channels is only a fallback: on a Marveen install there is no such file there.
-   CH=".claude/channels/telegram/access.json"; [ -f "$CH" ] || CH="$HOME/.claude/channels/telegram/access.json"
+   # Your OWN channel config: $TELEGRAM_STATE_DIR when it is set (the authoritative place), otherwise your working
+   # directory's .claude/channels/telegram. $HOME/.claude/channels is only a fallback: on a Marveen install there is
+   # no such file there.
+   CH="${TELEGRAM_STATE_DIR:-.claude/channels/telegram}/access.json"; [ -f "$CH" ] || CH="$HOME/.claude/channels/telegram/access.json"
    python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('IGEN' if sys.argv[2] in d.get('allowFrom',[]) else 'NEM')" "$CH" "[ID]"
    ```
 
@@ -199,8 +200,12 @@ Approvals (see the marveen-approvals skill for when and what to check). Request:
 ```bash
 curl -s -X POST {{dashboardOrigin}}/api/approvals -H "Content-Type: application/json" \
   -H @<(printf 'Authorization: Bearer '; cat <your token file>) \
-  --data-binary '{"agent_id":"<your-name>","category":"CATEGORY_KEY","action_description":"what you plan to do and why","timeout_seconds":3600}'
+  --data-binary @- <<'JSON'
+{"agent_id":"<your-name>","category":"CATEGORY_KEY","action_description":"what you plan to do and why","timeout_seconds":3600}
+JSON
 ```
+
+The description is free text, so it goes in a quoted heredoc: an apostrophe in it would break a single-quoted payload.
 
 Check the decision (every 60 seconds):
 

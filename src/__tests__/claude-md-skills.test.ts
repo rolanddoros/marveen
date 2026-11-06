@@ -28,23 +28,24 @@ const ctx: SkillContext = { projectRoot: '/srv/fleet', mainAgentId: 'chief', das
 const PINNED_SHA256: Record<string, string> = {
   'marveen-fleet-auth': '859cb4fa37c8c41ad99494f309042c8e94f92c2f87b85759bb74a10b34cb1068',
   'marveen-background-work': 'd6538181f01091df40b02f59095eeeb1f12aa6259d6ff9777812fc78654b372c',
-  'marveen-skill-authoring': 'dba406eaa70352b10214a516273d8dad409fd62942dfeb307a2308af46ab3796',
-  'marveen-approvals': 'b11cc7a5575165a5a3bd6d3a85571a06ef8f129f96fe22c694a06c83ded60b1f',
-  'marveen-messaging': '9a39f3f0749495a8b516bbcfe406fb031ffff0dd6d2511f4c3912ee360529a3b',
-  'marveen-directive-auth': '5ddb840683102b3c316c3c800f93376614576a3725283376456aa27a9214b3f2',
+  'marveen-skill-authoring': '3ebfc3864b51dc6a2c1c0dbcb5fdb32922894f89d8fe8fc64f7c5a845e80cc90',
+  'marveen-approvals': 'd5c54ecdaf2e42b18c2814fd0945f8dbf18cdb8df275a3f5fe15a274ef4c756c',
+  'marveen-messaging': '58c2687c076eb0a22dd3f74adf6cee9f91acf1e8e5f07e3982cb5514e4097e8c',
+  'marveen-directive-auth': 'adcb6742dfaf73db50a485a7f41264410164d92ad0343ba13b10b9a9d8cfce9c',
 }
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf-8').digest('hex')
 
 // The forms that put the dashboard token's VALUE on a command line (Johnny
-// 12681, 12800; one header rule per Ron 9a J1): any shell expansion right
-// after "Authorization: Bearer" ($(...), $T, ${T}), and a command substitution
+// 12681, 12800; one header rule per Ron 9a J1 and 9b J1): any shell expansion
+// right after "Authorization: Bearer", also behind a closing quote
+// ($(...), $T, ${T}, "Bearer "$T, 'Bearer '"$T"), and a command substitution
 // or a backtick command that cats the token file. The process-substitution
 // header (-H @<(printf 'Authorization: Bearer '; cat ...)) is NOT matched: the
 // value goes through a pipe, never through argv.
 function tokenOnArgvFindings(text: string): string[] {
   const rules: { label: string; re: RegExp }[] = [
-    { label: 'Authorization: Bearer $', re: /Authorization:\s*Bearer\s+\$/ },
+    { label: 'Authorization: Bearer $', re: /Authorization:\s*Bearer\s*['"]*\s*\$/ },
     { label: '$(cat ... dashboard-token', re: /\$\(\s*cat\b[^)]*dashboard-token/ },
     { label: '`cat ... dashboard-token`', re: /`\s*cat\b[^`]*dashboard-token/ },
   ]
@@ -175,6 +176,8 @@ describe('product skills: token never on argv', () => {
       ['`cat ... dashboard-token`', 'T=`cat {{projectRoot}}/store/.dashboard-token`'],
       ['Authorization: Bearer $', 'curl -H "Authorization: Bearer $TOKEN" {{projectRoot}}'],
       ['Authorization: Bearer $', 'curl -H "Authorization: Bearer ${TOKEN}" {{projectRoot}}'],
+      ['Authorization: Bearer $', 'curl -H "Authorization: Bearer "$TOKEN {{projectRoot}}'],
+      ['Authorization: Bearer $', `curl -H 'Authorization: Bearer '"$TOKEN" {{projectRoot}}`],
     ] as const
     for (const [label, line] of forms) {
       const dir = fixtureTemplates({ 'marveen-fleet-auth': `${header}${line}\n` })
@@ -231,11 +234,53 @@ describe('product skills: approvals teach the helper the way the helper works', 
     expect(noHelper).toContain('read the row and save it first (`GET /api/memories/<id>`)')
   })
 
+  it('binds acting to approval-consume, not to approval-wait (Johnny 12858/2)', () => {
+    const text = renderProductSkill('marveen-approvals', ctx)
+    expect(text).toContain("Act only after approval-consume exited 0 (HTTP 200); approval-wait's 0 does not yet allow it.")
+    expect(text).not.toMatch(/Act only after exit code 0/)
+  })
+
+  it('no inline single-quoted payload carries the free-text action_description (Johnny 12858/3)', () => {
+    for (const name of PRODUCT_SKILLS) {
+      const text = renderProductSkill(name, ctx)
+      expect({ name, inline: /(?:--data-binary|-d)\s+'[^']*action_description/.test(text) }).toEqual({ name, inline: false })
+    }
+    expect(renderProductSkill('marveen-messaging', ctx)).toMatch(
+      /--data-binary @- <<'JSON'\n\{"agent_id":"<your-name>","category":"CATEGORY_KEY","action_description":/,
+    )
+  })
+
+  it('the approvals description names wait (Ron 9b J4)', () => {
+    expect(renderProductSkill('marveen-approvals', ctx)).toContain('the approval API steps (request, wait or status, consume)')
+  })
+
   it('the helper-less form keeps the 60-second status loop of the source', () => {
     const text = renderProductSkill('marveen-messaging', ctx)
     expect(text).toContain('Check the decision (every 60 seconds):')
     expect(text).toContain('"http://localhost:4545/api/approvals/<id>"')
     expect(text).toContain('`status=rejected` or `status=timeout`: do not do it, log the reason.')
+  })
+})
+
+describe('product skills: Johnny and Ron 9b wording notes', () => {
+  it('the main agent reads its allowlist from TELEGRAM_STATE_DIR first (Johnny 12858/1)', () => {
+    expect(renderProductSkill('marveen-messaging', ctx)).toContain(
+      'CH="${TELEGRAM_STATE_DIR:-.claude/channels/telegram}/access.json"; [ -f "$CH" ] || CH="$HOME/.claude/channels/telegram/access.json"',
+    )
+  })
+
+  it('a main agent that is itself the addressee asks the owner, not itself (Johnny 12858/4)', () => {
+    expect(renderProductSkill('marveen-directive-auth', ctx)).toContain(
+      'If you ARE the main agent, send it to your own queue (from and to both chief) and ask the\nOWNER for the confirmation, not yourself.',
+    )
+  })
+
+  it('the helper-less proposal reads the reason from a file, not from a double-quoted argument (Ron 9b J3)', () => {
+    const text = renderProductSkill('marveen-skill-authoring', ctx)
+    const line = text.split('\n').find((l) => l.startsWith('python3 -c ')) ?? ''
+    expect(line).toContain('"reason": open(sys.argv[3]).read()')
+    expect(line).toContain(' .claude/skill-javaslat/SKILL.md .claude/skill-javaslat/indok.txt > .claude/skill-javaslat/body.json')
+    expect(line).not.toMatch(/"reason": sys\.argv\[3\]|\.md "[^"]*" >/)
   })
 })
 

@@ -1,6 +1,6 @@
 ---
 name: marveen-approvals
-description: The autonomy levels of this Marveen install (1 notify only, 2 approval first, 3 act and report) and the approval API steps (request, status, consume). Use before any autonomous action in a category of store/autonomy-config.json, when an action needs owner approval, and when an approval comes back approved, rejected, timed out or with a 409 or 403.
+description: The autonomy levels of this Marveen install (1 notify only, 2 approval first, 3 act and report) and the approval API steps (request, wait or status, consume). Use before any autonomous action in a category of store/autonomy-config.json, when an action needs owner approval, and when an approval comes back approved, rejected, timed out or with a 409 or 403.
 ---
 
 Generated from templates/skills/marveen-approvals.md; local edits are overwritten.
@@ -67,7 +67,7 @@ Ask for approval through the API BEFORE you act.
 
    Without the helper, the marveen-messaging recipe checks the status every 60 seconds instead.
 
-3. Act only after exit code 0 (HTTP 200). A 409 (already_consumed, expired, not_approved, hash_mismatch) means do
+3. Act only after approval-consume exited 0 (HTTP 200); approval-wait's 0 does not yet allow it. A 409 (already_consumed, expired, not_approved, hash_mismatch) means do
    NOT do it: request a new approval.
 4. With your own token (AGENT_TOKENS, see marveen-messaging): a 403 (agent-identity-binding) means the approval is
    NOT for you. With your own token you may consume only your own request, or one the main agent ({{mainAgentId}})
