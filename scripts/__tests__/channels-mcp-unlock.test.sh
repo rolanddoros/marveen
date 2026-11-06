@@ -127,6 +127,22 @@ expect_probe() {
 BOX_SEP='──────────────────────────────'
 PANE_STATE_JS="${CHANNELS_PANE_STATE_JS:-$INSTALL_DIR/dist/pane-state.js}"
 
+# No silent skip on a missing build (C2 B2-5b, Kevin 12101): the same fallback as channels-auth-probe.test.sh.
+# Without dist/pane-state.js the probe cases below used to SKIP and the suite still exited 0, so whether they ran
+# depended on another suite having built dist/ first. Build it on demand; a failed build is a FAIL, never a skip.
+# The SKIP below is left for one case only: no node on this host (then no build can run either).
+if [ -z "${CHANNELS_PANE_STATE_JS:-}" ] && [ ! -f "$PANE_STATE_JS" ] && command -v node >/dev/null 2>&1; then
+  echo "dist/pane-state.js not built -- building now (npm run build)..." >&2
+  if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then
+    echo "FAIL: npm run build failed" >&2
+    exit 1
+  fi
+  if [ ! -f "$PANE_STATE_JS" ]; then
+    echo "FAIL: dist/pane-state.js still missing after npm run build" >&2
+    exit 1
+  fi
+fi
+
 if command -v node >/dev/null 2>&1 && [ -f "$PANE_STATE_JS" ]; then
   export CHANNELS_PANE_STATE_JS="$PANE_STATE_JS"
 
