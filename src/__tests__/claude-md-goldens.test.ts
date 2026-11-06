@@ -25,6 +25,23 @@ const BUDGET = 5500
 const cp = (n: number) => String.fromCodePoint(n)
 const names = Object.keys(FIXTURES)
 const golden = (n: string) => readFileSync(join(GOLDEN, `${n}.md`), 'utf-8')
+// The delta tests read the RENDERED region, not the golden file: a source mutant leaves the goldens untouched.
+const region = (n: string) => renderRegion(FIXTURES[n])
+const py = readFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), 'utf-8')
+const usage = py.slice(py.indexOf('usage: bash scripts/marveen-api.sh'), py.indexOf('A <content-file> is a path'))
+const usageVerbs = new Set([...usage.matchAll(/^ {2}([a-z]+(?:-[a-z]+)*)\b/gm)].map((m) => m[1]))
+const ALL_OFF = { directiveVerify: false, childClaudeGuard: false, shellRescan: false }
+const ALL_ON = { directiveVerify: true, childClaudeGuard: true, shellRescan: true }
+
+// The helper verbs a text tells the reader to run. A hook or skill NAME is not a verb to run
+// ("hook directive-verify"), so those are cut first. A hyphenated verb counts anywhere; the
+// one-word verb "message" is also plain English, so it counts only in a command form.
+function verbsTaught(text: string): string[] {
+  const t = text.replace(/\b(?:hook|skill) [a-z0-9-]+/gi, '')
+  return [...usageVerbs].filter((v) => v.includes('-')
+    ? new RegExp(`(?<![a-z-])${v}(?![a-z-])`).test(t)
+    : new RegExp(`\`${v}\\b|\\b${v} (?:verb|<)`).test(t))
+}
 
 describe('golden files', () => {
   it('there are the eight agreed fixtures', () => {
@@ -85,9 +102,44 @@ describe('content per role', () => {
     expect(g).not.toContain('### API helper')
   })
 
-  it('the strict note only for a strict profile; kanban write verbs only with kanbanWrite', () => {
-    expect(golden('sub-strict')).toContain('Your profile denies heredocs and pipes')
-    expect(golden('sub-permissive')).not.toContain('Your profile denies heredocs and pipes')
+  it('a helper-denied agent is taught no helper verb, in any role and with every hook on or off (Ron 12839 B2)', () => {
+    expect(usageVerbs.size).toBe(26)
+    expect(verbsTaught(golden('sub-helper-denied'))).toEqual([])
+    expect(verbsTaught(region('sub-helper-denied'))).toEqual([])
+    for (const n of names) {
+      for (const hooks of [ALL_OFF, ALL_ON]) {
+        const ctx = FIXTURES[n]
+        const denied = { ...ctx, hooks, profile: { ...ctx.profile, helperAllowed: false } }
+        expect(verbsTaught(renderRegion(denied)), `${n} ${hooks.shellRescan ? 'hooks on' : 'hooks off'}`).toEqual([])
+      }
+    }
+    // the probe sees verbs where they are taught, so an empty answer above means something
+    expect(verbsTaught(golden('sub-strict'))).toEqual(expect.arrayContaining(['directive-verify', 'message-close', 'message']))
+    expect(verbsTaught(renderRegion({ ...FIXTURES['sub-helper-denied'], profile: { ...FIXTURES['sub-helper-denied'].profile, helperAllowed: true } })))
+      .toEqual(expect.arrayContaining(['directive-verify', 'message-close', 'message']))
+  })
+
+  it('the helper-denied variants: the directive check, the message close and the roster header point to marveen-messaging', () => {
+    const g = region('sub-helper-denied')
+    expect(g).toContain('verify it first, as skill marveen-messaging describes')
+    expect(g).toContain('Close a message addressed to you when it is handled, as skill marveen-messaging describes')
+    expect(g).toContain('### Fleet (other agents; reach them as skill marveen-messaging describes)')
+    // the pointer promises only what the skill's helper-less section holds (Ron 12850 J2, Kevin 12853)
+    expect(g).toContain('The recipes for messages, closing, approvals, directive checks and memory deletion are in skill marveen-messaging.')
+    const api = g.slice(g.indexOf('### Dashboard API'), g.indexOf('### Fleet'))
+    expect(api).toContain('Your profile denies the API helper.')
+    expect(api).not.toMatch(/daily log|memory save|memory search|messages, memory/i)
+    expect(region('sub-strict')).toContain('### Fleet (other agents; reach them with the helper\'s message verb)')
+  })
+
+  it('the strict note only for a strict profile, in the dontAsk wording; kanban write verbs only with kanbanWrite', () => {
+    const note = 'Your profile runs in dontAsk mode: a heredoc or a pipe is auto-denied; create the file with the Write tool.'
+    for (const n of names) {
+      expect(region(n), n).toContain(FIXTURES[n].profile.strict && FIXTURES[n].profile.helperAllowed ? note : '### ')
+      if (!FIXTURES[n].profile.strict) expect(region(n), n).not.toContain('dontAsk')
+      expect(region(n), n).not.toContain('denies heredocs')
+    }
+    expect(region('sub-strict')).toContain(note)
     expect(golden('sub-all-hooks')).toContain('kanban-create')
     expect(golden('sub-permissive')).not.toContain('kanban-create')
   })
@@ -147,11 +199,41 @@ describe('rule-hook coupling', () => {
       const off = { ...on, hooks: { ...on.hooks, [r.enforcedBy!]: false } }
       const lineOn = ruleLine(r, on)
       const lineOff = ruleLine(r, off)
-      expect(lineOn, r.id).toContain('hook ')
+      expect(lineOn, r.id).toMatch(/\bhook /i)
       expect(lineOff, r.id).not.toBe(lineOn)
       expect(golden('main')).toContain(lineOn)
       expect(golden('main-no-hooks')).toContain(ruleLine(r, { ...FIXTURES['main-no-hooks'] }))
       expect(golden('main-no-hooks')).not.toContain(lineOn)
+    }
+  })
+
+  it('payload: the hooked line states the hook scope and keeps the $(...) ban; both branches ban it (Ron 12839 B1)', () => {
+    const r = RULES.find((x) => x.id === 'payload')!
+    const on = ruleLine(r, { ...FIXTURES.main, hooks: { ...ALL_OFF, shellRescan: true } })
+    const off = ruleLine(r, { ...FIXTURES.main, hooks: ALL_OFF })
+    expect(on).toContain('refuses a backtick in a double-quoted payload and substitutions in an unquoted heredoc')
+    expect(on).toContain('a `$(...)` in a double-quoted string it does NOT')
+    for (const line of [on, off]) {
+      expect(line).toContain('`$(...)`')
+      expect(line).toMatch(/never build a payload in a double-quoted string/i)
+      expect(line).toContain('a quoted heredoc')
+    }
+  })
+
+  it('child-claude fallback: TELEGRAM_STATE_DIR is an empty DIRECTORY, never unset (Ron 12839 B3)', () => {
+    const r = RULES.find((x) => x.id === 'child-claude')!
+    const off = ruleLine(r, { ...FIXTURES.main, hooks: ALL_OFF })
+    expect(off).toContain('TELEGRAM_STATE_DIR set to an empty directory (never unset')
+    expect(off).toContain('falls back to the main bot\'s state dir and kills its poller')
+    expect(off).not.toContain('an empty TELEGRAM_STATE_DIR')
+    expect(golden('main-no-hooks')).toContain(off)
+  })
+
+  it('withoutHelper never replaces a hooked line: a wired hook renders the same text either way', () => {
+    for (const r of RULES.filter((x) => x.enforcedBy !== undefined)) {
+      const ctx = { ...FIXTURES.main, role: r.roles[0], hooks: ALL_ON }
+      const denied = { ...ctx, profile: { ...ctx.profile, helperAllowed: false } }
+      expect(ruleLine(r, denied), r.id).toBe(ruleLine(r, ctx))
     }
   })
 
@@ -176,7 +258,19 @@ describe('templates', () => {
     const keys = Object.fromEntries(files.map((f) => [f, templateKeys(readFileSync(join(TEMPLATES_DIR, f), 'utf-8'))]))
     expect(keys['identity.md'].sort()).toEqual(['leadSentence', 'mainAgentId', 'name', 'ownerSentence', 'roleText'])
     expect(keys['helper-index.md'].sort()).toEqual(['kanbanWriteVerbs', 'projectRoot', 'strictNote'])
-    for (const f of files.filter((x) => x !== 'identity.md' && x !== 'helper-index.md')) expect(keys[f], f).toEqual([])
+    expect(keys['roster.md']).toEqual(['reach'])
+    const keyed = ['identity.md', 'helper-index.md', 'roster.md']
+    for (const f of files.filter((x) => !keyed.includes(x))) expect(keys[f], f).toEqual([])
+  })
+
+  it('every skill the region names is an agreed one (no pointer to a skill no PR ships; K1)', () => {
+    const agreed = ['marveen-approvals', 'marveen-background-work', 'marveen-directive-auth', 'marveen-fleet-auth',
+      'marveen-messaging', 'marveen-skill-authoring']
+    const named = new Set<string>()
+    for (const n of names) for (const m of region(n).matchAll(/\bskill (marveen-[a-z-]+)/gi)) named.add(m[1])
+    expect([...named].sort()).toEqual(agreed)
+    expect(region('main-with-federation')).toContain('### Federation\nThis install is linked to peer systems: federation is enabled.\n')
+    for (const n of names) expect(region(n), n).not.toContain('marveen-federation')
   })
 
   it('no em dash and no TAB in any template', () => {
@@ -189,9 +283,6 @@ describe('templates', () => {
 })
 
 describe('helper index parity with scripts/lib/marveen_api.py', () => {
-  const py = readFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), 'utf-8')
-  const usage = py.slice(py.indexOf('usage: bash scripts/marveen-api.sh'), py.indexOf('A <content-file> is a path'))
-  const usageVerbs = new Set([...usage.matchAll(/^ {2}([a-z]+(?:-[a-z]+)*)\b/gm)].map((m) => m[1]))
   const indexText = renderRegion(FIXTURES['sub-all-hooks'])
   const indexBlock = indexText.slice(indexText.indexOf('### API helper'), indexText.indexOf('\nExit:'))
 
@@ -214,5 +305,12 @@ describe('helper index parity with scripts/lib/marveen_api.py', () => {
     expect(codes).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8])
     const exit = indexText.slice(indexText.indexOf('\nExit:'))
     for (const c of codes) expect(exit, `exit code ${c}`).toMatch(new RegExp(`(?:Exit: |; |or )${c} `))
+  })
+
+  it('the approvals line carries the approval-wait meaning of exit 3 and 4 (J3; EXIT_CODES says the same)', () => {
+    expect(indexBlock).toContain('approval-wait (exit 3: no decision yet: call again; exit 4: approved but already '
+      + 'consumed or the window expired: request a new one)')
+    expect(py).toContain('approval-wait: no decision before')
+    expect(py).toContain('approval-wait: approved, but')
   })
 })
