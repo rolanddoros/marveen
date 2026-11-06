@@ -1,8 +1,38 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { stampCustomApiKeyApproval } from '../web/agent-process.js'
+import type { CustomProviderDef } from '../web/custom-providers.js'
+
+// buildCustomProviderLaunchEnv (the caller contract at the end of this file) reads the agent's
+// provider, its model and the vault key, and writes the key to STORE_DIR/.launch-secrets.
+// Those four are mocked, and STORE_DIR is a tmp dir of this file's own, so nothing here
+// touches the real store or the .launch-secrets dir other suites use.
+const providerMock = vi.hoisted(() => ({ current: null as CustomProviderDef | null }))
+const LAUNCH_KEY = 'test-provider-key-0123456789abcdefghij'
+vi.mock('../config.js', async (importOriginal) => {
+  const { mkdtempSync: mk } = await import('node:fs')
+  const { tmpdir: td } = await import('node:os')
+  const { join: j } = await import('node:path')
+  return { ...(await importOriginal<typeof import('../config.js')>()), STORE_DIR: mk(j(td(), 'stamp-launch-store-')) }
+})
+vi.mock('../web/agent-config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/agent-config.js')>()),
+  readAgentCustomProvider: () => 'test-provider',
+  readAgentModel: () => 'test-model',
+}))
+vi.mock('../web/custom-providers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/custom-providers.js')>()),
+  loadCustomProvider: () => providerMock.current,
+}))
+vi.mock('../web/vault.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/vault.js')>()),
+  getSecret: () => 'test-provider-key-0123456789abcdefghij',
+}))
+
+const { stampCustomApiKeyApproval, buildCustomProviderLaunchEnv } = await import('../web/agent-process.js')
+const { STORE_DIR } = await import('../config.js')
+afterAll(() => { rmSync(STORE_DIR, { recursive: true, force: true }) })
 
 // Mirrors the CLI's Jne function (empirically verified from 2.1.222 binary):
 // function Jne(e) { return e.trim().slice(-20) }
@@ -73,6 +103,14 @@ describe('stampCustomApiKeyApproval', () => {
     expect(existsSync(dotClaude)).toBe(false)
   })
 
+  // A key shorter than the 20-char window is stored whole (slice(-20) of a short string is the
+  // string itself), as the CLI does (Ron 12280, Stuart 12318).
+  it('a key shorter than 20 chars is stored whole', () => {
+    expect(stampCustomApiKeyApproval(dotClaude, 'short')).toBe(true)
+    const data = JSON.parse(readFileSync(dotClaude, 'utf-8'))
+    expect(data.customApiKeyResponses.approved).toEqual(['short'])
+  })
+
   it('returns false and is a no-op for a whitespace-only key', () => {
     expect(stampCustomApiKeyApproval(dotClaude, '   ')).toBe(false)
     expect(existsSync(dotClaude)).toBe(false)
@@ -90,19 +128,36 @@ describe('stampCustomApiKeyApproval', () => {
     expect(result).toBe(false)
     expect(readFileSync(dotClaude, 'utf-8')).toBe(corrupt)
   })
+})
 
-  // Regression: Bearer/authorization providers must NOT trigger a stamp
-  // (they export ANTHROPIC_AUTH_TOKEN, not ANTHROPIC_API_KEY, so no gate).
-  // This test documents the caller contract: stampCustomApiKeyApproval is
-  // only invoked when authHeader === 'x-api-key'; the Bearer path never calls
-  // it. This test verifies the stamp itself is correctly driven by caller logic.
-  it('only caller-invoked for x-api-key; Bearer callers do not call it', () => {
-    // Simulate: Bearer agent spawns WITHOUT calling stampCustomApiKeyApproval.
-    // The .claude.json should remain untouched.
-    // (In production agent-process.ts only sets customApiKeyForApproval in the
-    //  x-api-key branch; Bearer uses ANTHROPIC_AUTH_TOKEN and skips this stamp.)
-    expect(existsSync(dotClaude)).toBe(false)
-    // No call made for Bearer -- file must not be created
-    expect(existsSync(dotClaude)).toBe(false)
+// The caller contract the stamp relies on: buildCustomProviderLaunchEnv hands the raw key to
+// the caller for stamping ONLY on the x-api-key path (ANTHROPIC_API_KEY, which the CLI gates
+// behind the approval prompt). Bearer and keyless providers export ANTHROPIC_AUTH_TOKEN, have
+// no prompt, and get null, so no stamp. (This replaces a test of the same name that called
+// nothing and asserted twice that a file did not exist.)
+describe('buildCustomProviderLaunchEnv: only the x-api-key path hands a key to the stamp', () => {
+  const def = (authHeader: CustomProviderDef['authHeader']): CustomProviderDef =>
+    ({ id: 'test-provider', label: 'Test', baseUrl: 'http://127.0.0.1:9', authHeader, vaultKey: 'TEST_PROVIDER_KEY' })
+  afterEach(() => { providerMock.current = null })
+
+  it('x-api-key: customApiKeyForApproval is the key, and the launch line exports ANTHROPIC_API_KEY by reference', () => {
+    providerMock.current = def('x-api-key')
+    const env = buildCustomProviderLaunchEnv('stamp-agent')!
+    expect(env.customApiKeyForApproval).toBe(LAUNCH_KEY)
+    expect(env.envPrefix).toContain('export ANTHROPIC_API_KEY=')
+    expect(env.envPrefix).not.toContain(LAUNCH_KEY)
+  })
+
+  it('Bearer: customApiKeyForApproval is null (no stamp), the key goes to ANTHROPIC_AUTH_TOKEN', () => {
+    providerMock.current = def('Bearer')
+    const env = buildCustomProviderLaunchEnv('stamp-agent')!
+    expect(env.customApiKeyForApproval).toBeNull()
+    expect(env.envPrefix).toContain('export ANTHROPIC_AUTH_TOKEN=')
+    expect(env.envPrefix).not.toContain('ANTHROPIC_API_KEY')
+  })
+
+  it('none (keyless): customApiKeyForApproval is null', () => {
+    providerMock.current = def('none')
+    expect(buildCustomProviderLaunchEnv('stamp-agent')!.customApiKeyForApproval).toBeNull()
   })
 })
