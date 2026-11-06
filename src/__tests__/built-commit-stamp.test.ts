@@ -43,9 +43,10 @@ function run(root: string): { status: number; out: string } {
 describe('build stamps dist/.built-commit (BUILTSTAMPKEZI920)', () => {
   it('STATIC: the build script chains the stamp behind tsc with &&, so a failed compile never stamps', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
-    expect(pkg.scripts.build).toBe('tsc && node scripts/write-built-commit.cjs')
+    // B2-2b: the compile uses tsconfig.build.json (no tests in dist), after the stale-tests cleanup
+    expect(pkg.scripts.build).toBe('node scripts/clean-dist-tests.cjs && tsc -p tsconfig.build.json && node scripts/write-built-commit.cjs')
     // `;` or `||` here would stamp a half-built dist as fresh -- the blinding case.
-    expect(pkg.scripts.build).not.toMatch(/tsc\s*;/)
+    expect(pkg.scripts.build).not.toMatch(/tsc[^;|&]*[;|]/)
   })
 
   it('in a git tree with a dist/: the stamp is the full HEAD sha plus one newline, exit 0', () => {

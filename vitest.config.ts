@@ -14,8 +14,9 @@ export default defineConfig({
     // with zero failing tests, just three unloadable files (Marveen, #1224).
     // Running a vendor's suite is a separate workflow with the vendor's own
     // install, never this one.
-    // dist/**: `npm run build` compiles every src/__tests__/*.test.ts into
-    // dist/__tests__/*.test.js, and vitest collects those copies too -- measured
+    // dist/**: `npm run build` compiled every src/__tests__/*.test.ts into
+    // dist/__tests__/*.test.js until B2-2b (tsconfig.build.json leaves them out;
+    // a plain `tsc` still emits them), and vitest collects those copies too -- measured
     // 2026-09-16: 888 files / 10723 tests instead of 444 / 5633, with 67 files
     // RED and not one real failure in them. The upgrade procedure is exactly
     // build-then-test, so this lands precisely where a red suite is least

@@ -8,7 +8,9 @@ import { configDefaults } from 'vitest/config'
 // a @types dependency for one test.
 const picomatch = createRequire(import.meta.url)('picomatch') as (glob: string) => (p: string) => boolean
 
-// `npm run build` compiles every src/__tests__/*.test.ts into dist/__tests__/*.test.js.
+// `npm run build` compiled every src/__tests__/*.test.ts into dist/__tests__/*.test.js
+// until B2-2b (tsconfig.build.json now leaves them out, dist-no-tests.test.ts); the
+// exclusion stays for any dist built before that or by hand with plain `tsc`.
 // If the suite collects those copies too, every test runs twice and the compiled
 // halves are unloadable -- measured 2026-09-16: 888 files / 10723 tests instead of
 // 444 / 5633, 67 files RED with not one real failure among them.
