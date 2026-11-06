@@ -5,7 +5,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DIGEST_MAX_BYTES, failureDigest, runScriptSuite } from './setup/script-suites.js'
+import { DIGEST_MAX_BYTES, SUITE_TIMEOUT_MS, failureDigest, runScriptSuite } from './setup/script-suites.js'
 
 const ts = (i: number) => `src/web/f${i}.ts(${i},1): error TS2322: Type 'string' is not assignable to type 'number'.`
 const noise = (n: number) => Array.from({ length: n }, (_, i) => `noise ${i + 1}`)
@@ -61,6 +61,15 @@ describe('failureDigest: what a failed suite puts into its failure message', () 
 
   // A 4-byte character with a 0-3 byte shift in front of it: at least three of the four cuts land inside
   // a character, so the trailing replacement-character trim is exercised, not just a lucky boundary.
+  // the kept-TMPDIR line sits right after the head line, so the 3 KB cut never drops it (Ron 12597, R2)
+  it('a digest cut at 3 KB still names the kept TMPDIR', () => {
+    const stderr = [...[1, 2, 3, 4, 5].map(ts), ...Array.from({ length: 20 }, (_, i) => `${i} ${'n'.repeat(257)}`)].join('\n')
+    const d = failureDigest('cut.test.sh', { status: 1, stdout: '', stderr }, 300_000, '/kept/dir')
+    expect(Buffer.byteLength(d)).toBeLessThanOrEqual(DIGEST_MAX_BYTES)
+    expect(d).toContain('cut at 3 KB')
+    expect(d).toContain('TMPDIR kept as evidence: /kept/dir')
+  })
+
   it('a cut inside a 4-byte character leaves no replacement character, at every offset', () => {
     for (const shift of [0, 1, 2, 3]) {
       const d = failureDigest('emoji.test.sh', { status: 1, stdout: '', stderr: 'x'.repeat(shift) + '\u{1F600}'.repeat(1000) })
@@ -83,7 +92,7 @@ describe('runScriptSuite: the digest reaches the failure message (end to end)', 
       ].join('\n') + '\n')
       const dump = vi.spyOn(console, 'error').mockImplementation(() => {})
       let message = ''
-      try { runScriptSuite('fake-build.test.sh', { skip: () => {} }, dir) } catch (e) { message = (e as Error).message }
+      try { runScriptSuite('fake-build.test.sh', { skip: () => {} }, dir, SUITE_TIMEOUT_MS, dir) } catch (e) { message = (e as Error).message }
       expect(message).toContain('fake-build.test.sh exited 1')
       expect(message).toContain(ts(1))
       expect(message).toContain(ts(5))
@@ -104,7 +113,7 @@ describe('runScriptSuite: the digest reaches the failure message (end to end)', 
       writeFileSync(join(dir, 'killed.test.sh'), 'echo "  PASS: before the kill"\nkill -9 $$\necho "not reached"\n')
       vi.spyOn(console, 'error').mockImplementation(() => {})
       let message = ''
-      try { runScriptSuite('killed.test.sh', { skip: () => {} }, dir) } catch (e) { message = (e as Error).message }
+      try { runScriptSuite('killed.test.sh', { skip: () => {} }, dir, SUITE_TIMEOUT_MS, dir) } catch (e) { message = (e as Error).message }
       expect(message).toContain('killed.test.sh was killed by SIGKILL')
       expect(message).toContain('expected null to be +0')
     } finally {
@@ -119,7 +128,7 @@ describe('runScriptSuite: the digest reaches the failure message (end to end)', 
       vi.stubEnv('PATH', join(dir, 'no-such-bin'))
       vi.spyOn(console, 'error').mockImplementation(() => {})
       let message = ''
-      try { runScriptSuite('unspawnable.test.sh', { skip: () => {} }, dir) } catch (e) { message = (e as Error).message }
+      try { runScriptSuite('unspawnable.test.sh', { skip: () => {} }, dir, SUITE_TIMEOUT_MS, dir) } catch (e) { message = (e as Error).message }
       expect(message).toContain('unspawnable.test.sh did not complete: spawnSync bash ENOENT')
       expect(message).not.toContain('unknown signal')
     } finally {

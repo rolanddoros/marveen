@@ -136,10 +136,10 @@ describe('runScriptSuite: a suite case is red unless the suite exits 0 (or skips
       const ctx = { skip: vi.fn() }
       vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => runScriptSuite('ok.test.sh', ctx, dir)).not.toThrow()
-        expect(() => runScriptSuite('ok.test.py', ctx, dir)).not.toThrow()
-        expect(() => runScriptSuite('bad.test.sh', ctx, dir)).toThrow()
-        expect(() => runScriptSuite('bad.test.py', ctx, dir)).toThrow()
+        expect(() => runScriptSuite('ok.test.sh', ctx, dir, SUITE_TIMEOUT_MS, dir)).not.toThrow()
+        expect(() => runScriptSuite('ok.test.py', ctx, dir, SUITE_TIMEOUT_MS, dir)).not.toThrow()
+        expect(() => runScriptSuite('bad.test.sh', ctx, dir, SUITE_TIMEOUT_MS, dir)).toThrow()
+        expect(() => runScriptSuite('bad.test.py', ctx, dir, SUITE_TIMEOUT_MS, dir)).toThrow()
         expect(ctx.skip).not.toHaveBeenCalled()
       } finally {
         vi.restoreAllMocks()
@@ -153,9 +153,9 @@ describe('runScriptSuite: a suite case is red unless the suite exits 0 (or skips
       'bare77.test.sh': 'exit 77\n',
     }, (dir) => {
       const ctx = { skip: vi.fn() }
-      runScriptSuite('skip.test.sh', ctx, dir)
+      runScriptSuite('skip.test.sh', ctx, dir, SUITE_TIMEOUT_MS, dir)
       expect(ctx.skip).toHaveBeenCalledTimes(1)
-      expect(() => runScriptSuite('bare77.test.sh', { skip: vi.fn() }, dir)).toThrow()
+      expect(() => runScriptSuite('bare77.test.sh', { skip: vi.fn() }, dir, SUITE_TIMEOUT_MS, dir)).toThrow()
     })
   })
 
@@ -166,7 +166,9 @@ describe('runScriptSuite: a suite case is red unless the suite exits 0 (or skips
       try {
         const t0 = Date.now()
         // the digest names the budget the suite ran with, not the shards' 300 s
-        expect(() => runScriptSuite('slow.test.sh', { skip: vi.fn() }, dir, 500)).toThrow(/slow\.test\.sh timed out after 0\.5 s/)
+        expect(() => runScriptSuite('slow.test.sh', { skip: vi.fn() }, dir, 500, dir)).toThrow(/slow\.test\.sh timed out after 0\.5 s/)
+        // a timeout is red: its TMPDIR is kept as evidence, not removed with the green ones (Ron 12597, R1)
+        expect(readdirSync(dir).filter((e) => e.startsWith('script-suite-slow.test.sh-'))).toHaveLength(1)
         expect(Date.now() - t0).toBeLessThan(4000)
       } finally {
         vi.restoreAllMocks()
@@ -178,7 +180,8 @@ describe('runScriptSuite: a suite case is red unless the suite exits 0 (or skips
     expect(SUITE_TIMEOUT_MS).toBe(300_000)
     // the default itself is a source pin: the shards pass no options, so only the source shows which budget they get
     const src = readFileSync(join(__dirname, 'setup', 'script-suites.ts'), 'utf-8')
-    expect(src).toContain('  timeoutMs: number = SUITE_TIMEOUT_MS,\n): void {')
+    // (the signature gained tmpBase, C2 per-suite TMPDIR; its default is pinned by behaviour in the TMPDIR block below)
+    expect(src).toContain('  timeoutMs: number = SUITE_TIMEOUT_MS,\n  tmpBase: string = tmpdir(),\n): void {')
     expect(src).toContain('timeout: timeoutMs,')
   })
 })
@@ -255,11 +258,11 @@ describe('the one dist/ build before the suites', () => {
       ].join('\n'))
     }
     put('suites/unrelated.test.sh', 'exit 0\n')
-    const unrelatedGreen = () => { runScriptSuite('unrelated.test.sh', { skip: vi.fn() }, suiteDir); return true }
+    const unrelatedGreen = () => { runScriptSuite('unrelated.test.sh', { skip: vi.fn() }, suiteDir, SUITE_TIMEOUT_MS, root); return true }
     const distSuiteRed = (name = 'dist.test.sh') => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        return (() => { try { runScriptSuite(name, { skip: vi.fn() }, suiteDir); return false } catch { return true } })()
+        return (() => { try { runScriptSuite(name, { skip: vi.fn() }, suiteDir, SUITE_TIMEOUT_MS, root); return false } catch { return true } })()
       } finally {
         vi.restoreAllMocks()
       }
@@ -361,5 +364,114 @@ describe('the one dist/ build before the suites', () => {
     expect(writes.length).toBe(1)
     expect(writes[0]).toBeGreaterThan(src.indexOf("    return 'failed'\n  }"))
     expect(src.indexOf("    return 'failed'\n  }")).toBeGreaterThan(0)
+  })
+})
+
+// Every suite runs with its OWN TMPDIR (C2, Kevin 12537/12538). Measured before: 32 suites left 1171 entries in the
+// TMPDIR they were given, and a shared /tmp collected them. Green or a counted skip: that directory, and only that
+// exact path, is removed. Red: it is kept as evidence, and the failure message names it. A neighbour directory in the
+// same base stands for a foreign one (Tom's /tmp/bg-fake-tmux-*): the runner must never touch it.
+describe('runScriptSuite: every suite gets its own TMPDIR, removed when green, kept as evidence when red', () => {
+  const withBase = (body: (dir: string, base: string, neighbour: string) => void): void => {
+    const root = mkdtempSync(join(tmpdir(), 'suite-tmpdir-'))
+    try {
+      const dir = join(root, 'suites')
+      const base = join(root, 'tmp')
+      mkdirSync(dir)
+      mkdirSync(base)
+      const neighbour = mkdtempSync(join(base, 'bg-fake-tmux-'))
+      writeFileSync(join(neighbour, 'calls.log'), 'end kill-session\n')
+      body(dir, base, neighbour)
+      expect(readFileSync(join(neighbour, 'calls.log'), 'utf-8')).toBe('end kill-session\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+  // a suite that records the temp variables it got, then leaves a directory and a file behind, the way the 32 did
+  const leakSh = (dir: string, name: string, tail: string) => writeFileSync(join(dir, name), [
+    `printf '%s\\n' "$TMPDIR" "$TMP" "$TEMP" > '${join(dir, `${name}.seen`)}'`,
+    'mktemp -d >/dev/null', 'mktemp >/dev/null', tail, '',
+  ].join('\n'))
+  const seen = (dir: string, name: string) => readFileSync(join(dir, `${name}.seen`), 'utf-8').trim().split('\n')
+  const ownDir = (base: string, name: string, s: string) => {
+    expect(dirname(s)).toBe(base)
+    expect(s.startsWith(join(base, `script-suite-${name}-`))).toBe(true)
+  }
+
+  it('green: the shell suite saw its own TMPDIR (and TMP, TEMP), and only the neighbour is left in the base', () => {
+    withBase((dir, base, neighbour) => {
+      leakSh(dir, 'leak.test.sh', 'exit 0')
+      runScriptSuite('leak.test.sh', { skip: vi.fn() }, dir, SUITE_TIMEOUT_MS, base)
+      const [t, tmp, temp] = seen(dir, 'leak.test.sh')
+      ownDir(base, 'leak.test.sh', t)
+      expect([tmp, temp]).toEqual([t, t])
+      expect(existsSync(t)).toBe(false)
+      expect(readdirSync(base)).toEqual([neighbour.split('/').pop()])
+    })
+  })
+
+  it('green: a python suite (tempfile) is redirected and cleaned the same way', () => {
+    withBase((dir, base, neighbour) => {
+      writeFileSync(join(dir, 'leak.test.py'), [
+        'import tempfile',
+        `open(${JSON.stringify(join(dir, 'leak.test.py.seen'))}, 'w').write(tempfile.gettempdir() + '\\n')`,
+        'tempfile.mkdtemp()', 'tempfile.mkstemp()', '',
+      ].join('\n'))
+      runScriptSuite('leak.test.py', { skip: vi.fn() }, dir, SUITE_TIMEOUT_MS, base)
+      const [t] = seen(dir, 'leak.test.py')
+      ownDir(base, 'leak.test.py', t)
+      expect(existsSync(t)).toBe(false)
+      expect(readdirSync(base)).toEqual([neighbour.split('/').pop()])
+    })
+  })
+
+  it('the default base is the runner\'s own tmpdir() (what the shards use)', () => {
+    withBase((dir, base, neighbour) => {
+      leakSh(dir, 'default.test.sh', 'exit 0')
+      vi.stubEnv('TMPDIR', base)
+      try {
+        runScriptSuite('default.test.sh', { skip: vi.fn() }, dir)
+      } finally {
+        vi.unstubAllEnvs()
+      }
+      ownDir(base, 'default.test.sh', seen(dir, 'default.test.sh')[0])
+      expect(readdirSync(base)).toEqual([neighbour.split('/').pop()])
+    })
+  })
+
+  it('a counted skip is clean too: its TMPDIR is removed even though ctx.skip() throws', () => {
+    withBase((dir, base, neighbour) => {
+      leakSh(dir, 'skip.test.sh', 'echo "SKIP (control unmet): nothing to measure here" >&2\nexit 77')
+      // a real test context's skip() throws to end the case; the stand-in does the same
+      const ctx = { skip: vi.fn(() => { throw new Error('skipped') }) }
+      expect(() => runScriptSuite('skip.test.sh', ctx, dir, SUITE_TIMEOUT_MS, base)).toThrow('skipped')
+      expect(ctx.skip).toHaveBeenCalledTimes(1)
+      expect(existsSync(seen(dir, 'skip.test.sh')[0])).toBe(false)
+      expect(readdirSync(base)).toEqual([neighbour.split('/').pop()])
+    })
+  })
+
+  it('red (exit 1, a bare 77): the TMPDIR is KEPT with what the suite left, and the failure message names it', () => {
+    withBase((dir, base) => {
+      leakSh(dir, 'red.test.sh', 'exit 1')
+      leakSh(dir, 'bare77.test.sh', 'exit 77')
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        for (const name of ['red.test.sh', 'bare77.test.sh']) {
+          let message = ''
+          try { runScriptSuite(name, { skip: vi.fn() }, dir, SUITE_TIMEOUT_MS, base) } catch (e) { message = (e as Error).message }
+          const [t] = seen(dir, name)
+          ownDir(base, name, t)
+          expect(message).toContain(`TMPDIR kept as evidence: ${t}`)
+          expect(readdirSync(t)).toHaveLength(2)
+        }
+        // a green suite after them removes ITS OWN dir only, never the kept red ones in the same base (Ron 12597, R3)
+        leakSh(dir, 'green-after.test.sh', 'exit 0')
+        runScriptSuite('green-after.test.sh', { skip: vi.fn() }, dir, SUITE_TIMEOUT_MS, base)
+        expect(readdirSync(base).filter((e) => e.startsWith('script-suite-')).length).toBe(2)
+      } finally {
+        vi.restoreAllMocks()
+      }
+    })
   })
 })
