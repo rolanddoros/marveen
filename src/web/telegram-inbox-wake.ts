@@ -71,6 +71,17 @@ const SUB_TELEGRAM_WAKE_NUDGE =
 // Per-agent wake state (module-scoped). `attempts` counts nudges spent on the
 // CURRENT stuck backlog; `inboxMtimeMs` is the mtime we last acted on, used to
 // detect a fresh inbound (mtime advance) and reset the attempt budget.
+//
+// lastWakeAt on a new inbound is clamped to the wall clock, max(now, Date.now()) as at the
+// end of a delivered send (Ron 12422/12571, Kevin 12550/12573). The wall clock, not the
+// tick's `now`: the router passes its tick clock and calls overlap, so a late call can
+// carry a `now` older than the END of a delivered send; clamping to that `now` would pull
+// the next nudge forward, a narrowed form of the double nudge Ron 12296 / Kevin 12380
+// closed. A clock stepped back moves Date.now() back too, so the clamp still releases a
+// future value. Not "a negative now - lastWakeAt counts as expired" at the gates either:
+// that overlap would read as expired and nudge right after a nudge. Residual: the SAME
+// backlog (no new inbound) keeps a future lastWakeAt until the clock catches up; the
+// next new inbound releases it.
 interface SubWakeState {
   lastWakeAt: number
   attempts: number
@@ -195,7 +206,11 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
       // attempt budget so a fresh message always earns a fresh round of nudges.
       let state = _subWakeState.get(name)
       if (!state || state.inboxMtimeMs !== mtimeMs) {
-        state = { lastWakeAt: state?.lastWakeAt ?? 0, attempts: 0, inboxMtimeMs: mtimeMs }
+        // The last wake time carries over (a new inbound right after a nudge still waits one
+        // backoff), but never as a time past the wall clock: a clock stepped forward and back
+        // left a future lastWakeAt that blocked every new inbound until the clock caught up
+        // (Ron 12422, Kevin 12550). Why the wall clock and not `now`: see SubWakeState.
+        state = { lastWakeAt: Math.min(state?.lastWakeAt ?? 0, Math.max(now, Date.now())), attempts: 0, inboxMtimeMs: mtimeMs }
         _subWakeState.set(name, state)
       }
       // Budget + backoff cheap gates (no tmux I/O yet).
