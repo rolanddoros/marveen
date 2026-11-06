@@ -222,10 +222,6 @@ export function parseChannelProvider(raw: unknown): ChannelProviderType | undefi
   return (CHANNEL_PROVIDER_VALUES as readonly string[]).includes(v) ? v as ChannelProviderType : undefined
 }
 
-function readFileOr(path: string, fallback: string): string {
-  try { return readFileSync(path, 'utf-8') } catch { return fallback }
-}
-
 export function parseSkillMdFrontmatter(content: string): { name?: string; description?: string; body: string } {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/)
   if (!fmMatch) return { body: content }

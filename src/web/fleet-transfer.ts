@@ -10,7 +10,7 @@
 import {
   existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync,
 } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join } from 'node:path'
 import { homedir, hostname } from 'node:os'
 import {
   randomBytes, createCipheriv, createDecipheriv, scryptSync,
@@ -49,13 +49,6 @@ export class UserFacingError extends Error {
 // Name validation (used to guard all import-side path joins -- B1)
 // ---------------------------------------------------------------------------
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/
-
-function assertSafeName(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !SAFE_NAME_RE.test(value)) {
-    throw new Error(`Érvénytelen ${field} érték: "${String(value).slice(0, 60)}" -- csak [a-z0-9_-] megengedett.`)
-  }
-  return value
-}
 
 // ---------------------------------------------------------------------------
 // Types

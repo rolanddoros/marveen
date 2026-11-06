@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'

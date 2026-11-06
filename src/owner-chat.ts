@@ -29,7 +29,7 @@
 //    migration, and must never ship in the same release as this.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ALLOWED_CHAT_ID, CHANNEL_CHAT_ID, MAIN_AGENT_ID } from './config.js'
+import { ALLOWED_CHAT_ID, CHANNEL_CHAT_ID } from './config.js'
 import { channelStateDir, type ChannelProviderType } from './channel-provider.js'
 
 /**
