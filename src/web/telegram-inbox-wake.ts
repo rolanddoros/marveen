@@ -217,8 +217,28 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
         maxDebounceMs: SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS,
       })) continue
 
-      sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+      // Awaited: unawaited, the outcome was ignored (a busy or locked pane was
+      // counted as a nudge and logged as "nudged") and a rejection escaped this
+      // try as an unhandled rejection instead of the warn below.
+      // The debounce starts with the send itself, whatever it returns: a busy or
+      // locked pane, and a send that rejects, are not hit again every tick. It is
+      // set HERE, not in the catch below, because that catch also takes failures
+      // of the session checks above, and those must not start a debounce (Kevin
+      // 12202). A send that REJECTS also spends an attempt, so a send that keeps
+      // failing stops at the attempt budget instead of retrying every debounce
+      // forever (Ron 12216, Kevin 12218); a non-'sent' outcome does not.
       state.lastWakeAt = now
+      let outcome: Awaited<ReturnType<typeof sendPromptToSession>>
+      try {
+        outcome = await sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+      } catch (err) {
+        state.attempts += 1
+        throw err
+      }
+      if (outcome !== 'sent') {
+        logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts, outcome }, `telegram-inbox-wake: nudge not sent (${outcome})`)
+        continue
+      }
       state.attempts += 1
       logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')
     } catch (err) {
@@ -230,4 +250,10 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
 // Test-only: reset the per-agent wake state between unit tests.
 export function _resetSubWakeStateForTest(): void {
   _subWakeState.clear()
+}
+
+// Test-only: a copy of one agent's wake state (undefined when it has none).
+export function _peekSubWakeStateForTest(name: string): SubWakeState | undefined {
+  const s = _subWakeState.get(name)
+  return s ? { ...s } : undefined
 }
