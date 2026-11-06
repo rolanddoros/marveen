@@ -42,6 +42,11 @@ const NOW = 1_800_000_000_000
 const INBOX = join(STATE_DIR, 'inbox-pending.jsonl')
 
 beforeEach(() => {
+  // Only Date is faked: the wake reads Date.now() at the end of a delivered send, so the
+  // clock is pinned to the tick time (NOW) unless a test moves it. Timers stay real
+  // (vi.waitFor needs them).
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(NOW)
   agentNames = ['sub1']
   _resetSubWakeStateForTest()
   send.mockReset()
@@ -52,7 +57,7 @@ beforeEach(() => {
   const t = (NOW - 60_000) / 1000
   utimesSync(INBOX, t, t)
 })
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 afterAll(() => { rmSync(STATE_DIR, { recursive: true, force: true }) })
 
 function logs() {
@@ -171,7 +176,7 @@ describe('maybeWakeSubAgentsForTelegram: one wake in flight per agent', () => {
     return { promise, resolve }
   }
 
-  it('a send that takes > 60 s: later ticks do not send while it runs; after it ends the agent is woken again', async () => {
+  it('a send that takes > 60 s: later ticks do not send while it runs; the backoff counts from its END, so the first tick after it does not nudge again', async () => {
     const slow = deferred()
     send.mockReturnValueOnce(slow.promise).mockResolvedValue('sent')
     logs()
@@ -182,12 +187,49 @@ describe('maybeWakeSubAgentsForTelegram: one wake in flight per agent', () => {
     await maybeWakeSubAgentsForTelegram(NOW + 61_000)
     await maybeWakeSubAgentsForTelegram(NOW + 122_000)
     expect(send).toHaveBeenCalledTimes(1)
+    // the send returns 70 s after the tick that started it
+    vi.setSystemTime(NOW + 70_000)
     slow.resolve('sent')
     await first
-    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 1 })
-    // the flag is gone: past the 120 s backoff of attempt 1, the next tick sends
-    await maybeWakeSubAgentsForTelegram(NOW + 183_000)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 70_000, attempts: 1 })
+    // 121 s after the START, but only 51 s after the nudge landed: inside the 120 s backoff of
+    // attempt 1, so no second nudge into the pane that just got one (Ron 12296, Kevin 12380)
+    await maybeWakeSubAgentsForTelegram(NOW + 121_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    // 121 s after the END: the flag is gone and the backoff is over, the next tick sends
+    await maybeWakeSubAgentsForTelegram(NOW + 191_000)
     expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  // Only a DELIVERED nudge moves lastWakeAt to the end of the run (Ron 12422, mutant L2): a busy
+  // pane or a failing send keeps the tick time, so its retry window is not stretched.
+  it("an 'aborted-busy' send that takes 3 s keeps lastWakeAt at the tick (NOW), not the end of the run", async () => {
+    send.mockImplementation(async () => { vi.setSystemTime(NOW + 3_000); return 'aborted-busy' })
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 0 })
+  })
+
+  it('a rejecting send that takes 3 s keeps lastWakeAt at the tick (NOW), not the end of the run', async () => {
+    send.mockImplementation(async () => { vi.setSystemTime(NOW + 3_000); throw new Error('tmux gone') })
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW, attempts: 1 })
+  })
+
+  it('a SHORT delivered send behaves as before, shifted only by its own few seconds', async () => {
+    // a 3 s send: lastWakeAt is the end of the run (NOW + 3 s), so the 120 s backoff of
+    // attempt 1 ends at NOW + 123 s instead of NOW + 120 s
+    send.mockImplementation(async () => { vi.setSystemTime(NOW + 3_000); return 'sent' })
+    logs()
+    await maybeWakeSubAgentsForTelegram(NOW)
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 3_000, attempts: 1 })
+    await maybeWakeSubAgentsForTelegram(NOW + 122_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    await maybeWakeSubAgentsForTelegram(NOW + 123_000)
+    expect(send).toHaveBeenCalledTimes(2)
+    // the tick's own time is the floor: the mock clock (NOW + 3 s) is behind this tick
+    expect(_peekSubWakeStateForTest('sub1')).toMatchObject({ lastWakeAt: NOW + 123_000, attempts: 2 })
   })
 
   it('the flag is cleared when the send rejects, too', async () => {
