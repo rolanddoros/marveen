@@ -513,7 +513,7 @@ export function startWebServer(port = 3420): http.Server {
   // The pane-grep above only sees a channel that SAYS it failed. This one asks
   // Telegram whether anyone is still fetching the agent's updates, which is the
   // only signal a silently deaf poller leaves behind.
-  const channelIntakeInterval = servicesOff ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
+  const channelIntakeInterval = servicesOff ? undefined : startChannelIntakeMonitor()
   if (!servicesOff) logger.info('Channel intake monitor started (5min poll, 100s offset)')
   const teamsCredentialInterval = servicesOff ? undefined : startTeamsCredentialMonitor()
   if (!servicesOff) logger.info('Teams credential monitor started (daily, 5min offset)')

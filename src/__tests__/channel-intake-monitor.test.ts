@@ -10,13 +10,19 @@
 // Inbound silence alone stays a suspicion and must never alert on its own: an
 // agent with nothing to do is legitimately silent for days.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { join } from 'node:path'
 import {
   parseIntakeProbe,
   decideIntakeVerdict,
+  transcriptDirsFor,
   type IntakeProbe,
   type IntakeObservation,
 } from '../web/channel-intake-monitor.js'
+import { MAIN_AGENT_ID } from '../config.js'
+import { agentDir } from '../web/agent-config.js'
+import { mainTranscriptDirs } from '../web/inbound-probe.js'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const SILENCE_MS = 2 * DAY_MS
@@ -208,5 +214,27 @@ describe('decideIntakeVerdict', () => {
     })
     expect(d.verdict).toBe('unknown-inbound')
     expect(d.alert).toBe(false)
+  })
+})
+
+// Where the deafness check looks for the last inbound (#1312, 3032da46): an agent with an isolated
+// CLAUDE_CONFIG_DIR writes its transcript under THAT root, so BOTH candidate roots are scanned. The
+// single-root transcriptDirFor that read only ~/.claude (the blind spot #1312 fixed) had no caller
+// left and is gone, and with it the projectRoot parameter chain (Ron 12169, Kevin 12232/12234).
+describe('transcriptDirsFor: every root a transcript can live under', () => {
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  it('a sub-agent: the shared ~/.claude AND its own .claude-config, under the same encoded cwd', () => {
+    vi.stubEnv('HOME', '/home/probe')
+    const cwd = agentDir('sub1')
+    const enc = encodeClaudeProjectDir(cwd)
+    expect(transcriptDirsFor('sub1')).toEqual([
+      join('/home/probe', '.claude', 'projects', enc),
+      join(cwd, '.claude-config', 'projects', enc),
+    ])
+  })
+
+  it('the main agent: exactly the main roots (shared and isolated), not the sub-agent pair', () => {
+    expect(transcriptDirsFor(MAIN_AGENT_ID)).toEqual(mainTranscriptDirs())
   })
 })
