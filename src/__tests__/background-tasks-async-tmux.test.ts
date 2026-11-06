@@ -79,6 +79,16 @@ const put = (name: string, content: string) => writeFileSync(join(dir, name), co
 const drop = (name: string): void => rmSync(join(dir, name), { force: true })
 const calls = (): string[] => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf-8').split('\n').filter(Boolean) : [])
 const sessions = (): string[] => (existsSync(join(dir, 'sessions')) ? readFileSync(join(dir, 'sessions'), 'utf-8').split('\n').filter(Boolean) : [])
+// The fake calls that started but have not written their end line yet, per subcommand. Only for a
+// case where no call is killed by a route timeout: a killed call never writes its end line.
+const openCalls = (): string[] => {
+  const open = new Map<string, number>()
+  for (const l of calls()) {
+    const [kind, sub] = l.split(' ')
+    open.set(sub, (open.get(sub) ?? 0) + (kind === 'start' ? 1 : -1))
+  }
+  return [...open].filter(([, n]) => n !== 0).map(([sub, n]) => `${sub}:${n}`)
+}
 
 // Worst event-loop delay (ms) while fn runs. monitorEventLoopDelay samples on a
 // libuv timer, so vitest's fake timers do not touch it (measured). A stall that
@@ -370,7 +380,12 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
     await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('timeout'), { timeout: 10_000 })
     expect(db.getBackgroundTask(id)!.output).toBe('half done')
-    await vi.waitFor(() => expect(sessions()).not.toContain(`bg-${id}`), { timeout: 10_000 })
+    // The fake rewrites its session list before its last log line, and a poll tick's capture-pane
+    // can run next to the timeout's capture-pane + kill-session chain: wait until every fake call
+    // has ended, or a child can still be writing into the dir when afterEach removes it.
+    await vi.waitFor(() => expect(calls()).toContain('end kill-session'), { timeout: 10_000 })
+    await vi.waitFor(() => expect(openCalls()).toEqual([]), { timeout: 10_000 })
+    expect(sessions()).not.toContain(`bg-${id}`)
   })
 
   it('startup sweep is awaitable, fails dead tasks as orphaned, keeps live ones, without stalling', async () => {
@@ -420,6 +435,9 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS)
     await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('done'), { timeout: 10_000 })
     expect(db.getBackgroundTask(id)!.output).toBe('slow answer')
+    // The tick marks the task done BEFORE it awaits kill-session: wait for the kill to end.
+    await vi.waitFor(() => expect(calls()).toContain('end kill-session'), { timeout: 10_000 })
+    expect(sessions()).not.toContain(`bg-${id}`)
   }, 30_000)
 
   it('startup sweep: a list-sessions that does not answer in time keeps the task running and polls it', async () => {
@@ -432,6 +450,9 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS)
     await vi.waitFor(() => expect(db.getBackgroundTask('AA000009')!.status).toBe('done'), { timeout: 10_000 })
     expect(db.getBackgroundTask('AA000009')!.output).toBe('swept answer')
+    // The tick marks the task done BEFORE it awaits kill-session: wait for the kill to end.
+    await vi.waitFor(() => expect(calls()).toContain('end kill-session'), { timeout: 10_000 })
+    expect(sessions()).not.toContain('bg-AA000009')
   }, 30_000)
 
   it('no tmux server (list-sessions exits 1) still reads as a dead session, in the poll and in the sweep', async () => {
