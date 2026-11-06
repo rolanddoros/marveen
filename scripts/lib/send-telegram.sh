@@ -29,9 +29,10 @@
 # fails closed: the env gate is looked up next to ${BASH_SOURCE[0]}, which is
 # the link's directory, finds no env_gate.py there, and nothing is sent (C2
 # PR4f, Ron 12030). Unset or blank TELEGRAM_API_BASE (production) is not
-# affected. The link is deliberately not followed: readlink -f is missing on
-# the BSD readlink of older macOS, and a hand-written resolve loop is more code
-# on the token path than this test seam is worth.
+# affected. The link is deliberately not followed: readlink -f is not
+# portable to every system this library supports (not verified here: no macOS
+# on the test host), and a hand-written resolve loop is more code on the token
+# path than this test seam is worth.
 
 # telegram_api_call TOKEN METHOD [curl args...] -- the same contract for ANY
 # Bot API method (setMyCommands, sendPhoto, ...): success only on curl exit 0
@@ -90,6 +91,11 @@ telegram_api_call() {
   # CRLF .env BEFORE they call (or curl already refused it), so this only meets
   # one that is still there. The message names no value: not the token, not
   # the base, not the method (the offending one could be any of them).
+  # [[:cntrl:]] is locale-dependent for C1 (U+0080-U+009F): C0 and DEL are
+  # caught in every locale, C1 only in a UTF-8 one (Ron 12386). Under LC_ALL=C a
+  # C1 character in the TOKEN passes here; it cannot break the quoted config
+  # value, and curl (8.18, measured) sends it percent-encoded, so the call just
+  # carries a broken token. The BASE cannot hold one: the env gate refuses C1.
   case "$token$method$base" in
     *\"*|*\\*|*$'\n'*|*[[:cntrl:]]*)
       echo "telegram_api_call: the token, method or API base contains a quote, backslash or control character (not shown) -- refusing; nothing was sent." >&2

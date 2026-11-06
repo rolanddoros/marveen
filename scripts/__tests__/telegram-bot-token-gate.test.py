@@ -144,16 +144,23 @@ def main():
     CTRL_REFUSAL = 'TELEGRAM_API_BASE contains a control character (not shown); nothing was sent.'
     for value in ('http://127.0.0.1\n:8081', 'http://127.0.0.1:80\r81', 'http://127.0.0.1:80\t81', 'http://127.0.0.1:8081\n',
                   '\nhttp://127.0.0.1:8081', 'http://127.0.0.1:8081\r\n', 'http://127.0.0.1:8081\x00',
-                  'http://127.0.0.1:8081\x1b', 'http://127.0.0.1:8081\x7f', 'http://127.0.0.1:8081\x85', 'https://api.telegram.org\r'):
+                  'http://127.0.0.1:8081\x1b', 'http://127.0.0.1:8081\x7f', 'http://127.0.0.1:8081\x85', 'https://api.telegram.org\r',
+                  # the range ends (Ron 12386): the last C0, the first and the last C1
+                  'http://127.0.0.1:8081\x1f', 'http://127.0.0.1:8081\x80', 'http://127.0.0.1:8081\x9f'):
         base, refused = tab(value)
         check('refused, a control character in the raw value: %r' % value, base is None and refused == CTRL_REFUSAL,
               (base, refused))
     # control: a value of whitespace only is still "unset" (the bash side's blank rule, case *[![:space:]]*), and
     # surrounding SPACES are still trimmed (normalise_base): only a control character inside a real value is refused
     for value, want in (('\t', 'https://api.telegram.org'), (' \n ', 'https://api.telegram.org'),
-                        ('  http://127.0.0.1:8081/  ', 'http://127.0.0.1:8081')):
+                        ('  http://127.0.0.1:8081/  ', 'http://127.0.0.1:8081'),
+                        # just outside the ranges: a space (0x20) is trimmed, U+00A0 is not Cc (it is refused later as
+                        # not an origin, not as a control character)
+                        ('http://127.0.0.1:8081 ', 'http://127.0.0.1:8081')):
         base, refused = tab(value)
         check('allowed (control): %r -> %s' % (value, want), base == want and refused is None, (base, refused))
+    base, refused = tab('http://127.0.0.1:8081\xa0')
+    check('U+00A0 (just past C1) is not taken for a control character', refused != CTRL_REFUSAL, (base, refused))
     # the bash senders' entry gives the same answer: exit 2, nothing on stdout, the same value-free line on stderr
     r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'scripts', 'lib', 'env_gate.py'), '--telegram-base'],
                        capture_output=True, text=True, timeout=30,

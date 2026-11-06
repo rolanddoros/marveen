@@ -221,6 +221,18 @@ def main():
                       token.strip() not in out and method.strip() not in out, repr(out))
                 if os.path.exists(gcfg):
                     os.remove(gcfg)
+            # C1 (U+0085) in the token: [[:cntrl:]] is locale-dependent for C1 (Ron 12386, documented in the header):
+            # caught under C.UTF-8, passes the guard under C (curl then sends it percent-encoded). Pinned both ways, so
+            # a change of either behaviour is seen.
+            rc, out = call(lib, 'TOKX42\u0085', 'sendMessage', gpath, {'LC_ALL': locale})
+            if locale == 'C.UTF-8':
+                check('guard, LC_ALL=C.UTF-8: a C1 character (U+0085) in the token -> exit 1, curl NOT run',
+                      rc == 1 and GUARD_REFUSAL in out and not os.path.exists(gcfg), (rc, repr(out)))
+            else:
+                check('guard, LC_ALL=C: a C1 character (U+0085) in the token passes the guard (documented), curl runs',
+                      rc == 0 and os.path.exists(gcfg), (rc, repr(out)))
+            if os.path.exists(gcfg):
+                os.remove(gcfg)
             rc, out = call(lib, 'token', 'sendMessage', gpath, {'LC_ALL': locale})
             cfg = open(gcfg).read() if os.path.exists(gcfg) else ''
             check('guard control, LC_ALL=%s: a clean token and method reach curl' % locale,
