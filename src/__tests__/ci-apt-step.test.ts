@@ -12,14 +12,24 @@
 // limit would stop the whole run late instead of naming the step that hung.
 //
 // Line-based, like ci-workflow-pins.test.ts: the workflows are small and hand-written, and a YAML parser would add a
-// dependency only for this. So the reader is strict about the forms it accepts, and everything else FAILS (Ron 12365):
+// dependency only for this. So the reader is strict about the forms it accepts (Ron 12365, 12421):
 //   - a step must be a block mapping (`- name: ...`); a flow-style step (`- {name: ..., run: ...}`) is an error;
-//   - run must be a plain one-line scalar, or a literal (|) or folded (>) block; a quoted scalar is an error (its
-//     escapes, like a literal \n, would hide a second command from this reader);
-//   - a folded block is read as YAML folds it (lines joined by spaces), and a backslash at a line end joins the next
-//     line, as the shell does, so `apt-get \` + `install ...` is one call;
+//   - run must be a plain one-line scalar or a literal block (|, |-, |+), the form test.yml uses. A quoted scalar is an
+//     error (its escapes, like a literal \n, would hide a second command), and so is a folded block (>, >-, >+): how
+//     YAML folds it (more-indented lines and blank lines keep their line break) is not modelled, so it is not accepted;
+//   - a literal block ends at the first non-blank line at or left of the step's keys; a blank line inside it stays a
+//     line break;
+//   - a backslash at a line end joins the IMMEDIATELY next line, and only if that line is not blank, as the shell does:
+//     `apt-get \` + `install ...` is one call, `update \` + a blank line + `apt-get install ...` is two;
 //   - every non-comment line of a workflow that names apt must sit in a run block this reader parsed (the count of such
 //     lines in the raw text and in the parsed runs must match).
+// What it does NOT model, so a form built on these can still slip past; they are documented limits, not open rounds
+// (Kevin 12430):
+//   - YAML: anchors, aliases and merge keys (&, *, <<), several documents in one file (---), tags (!!str), quoted or
+//     complex keys ("run":, ? run), tabs, and a block line indented between the key and the block's content;
+//   - shell: quoting (a backslash or # inside quotes), an escaped backslash at a line end (\\), a comment after a
+//     command on the same line, a heredoc body, and any indirect call (a variable, an alias, a function, eval,
+//     sh -c, a script file); commands are split only at a line break, &&, || and ;.
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -55,7 +65,9 @@ function parseWorkflow(file: string, src: string): Parsed {
     const flush = () => { if (cur) steps.push(parseStep(file, cur.start, cur.body, errors)) }
     for (let j = i + 1; j < lines.length; j++) {
       const l = lines[j]
-      if (isBlank(l)) continue
+      // blank and comment lines never end a step, but they stay in its body: a blank line inside a run block is a
+      // line break the shell sees (Ron 12421, F28)
+      if (isBlank(l)) { if (cur) cur.body.push(l); continue }
       const ind = indentOf(l)
       if (ind <= listIndent) break
       if (l.trimStart().startsWith('- ') && (dash === -1 || ind === dash)) {
@@ -82,11 +94,18 @@ function parseStep(file: string, line: number, body: string[], errors: string[])
   const runAt = body.findIndex((l) => indentOf(l) === keyIndent && l.trimStart().startsWith('run:'))
   if (runAt !== -1) {
     const inline = value(body[runAt])!
-    if (/^[|>][-+]?$/.test(inline)) {
-      runLines = body.slice(runAt + 1).filter((l) => indentOf(l) > keyIndent)
-      const text = runLines.map((l) => l.trim())
-      // folded (>): YAML joins the lines with spaces; literal (|): they stay lines
-      run = inline.startsWith('>') ? text.join(' ') : text.join('\n')
+    // the block: every line after run: up to the first non-blank line at or left of the keys
+    const block: string[] = []
+    for (const l of body.slice(runAt + 1)) {
+      if (l.trim() !== '' && indentOf(l) <= keyIndent) break
+      block.push(l)
+    }
+    if (/^\|[-+]?$/.test(inline)) {
+      runLines = block
+      run = joinContinuations(block.map((l) => l.trimStart()))
+    } else if (/^>[-+]?$/.test(inline)) {
+      errors.push(`${file}:${line}: a folded run block (${inline}) this reader does not parse; only | is supported`)
+      runLines = block
     } else if (/^['"]/.test(inline)) {
       errors.push(`${file}:${line}: a quoted run scalar this reader does not parse`)
       runLines = [body[runAt]]
@@ -102,14 +121,27 @@ function parseStep(file: string, line: number, body: string[], errors: string[])
     file, line,
     name: name === null ? null : unquote(name),
     timeout: t === null ? null : Number(t),
-    // a backslash at a line end joins the next line, as the shell does
-    run: run.replace(/\\\n\s*/g, ' '),
+    run,
     runLines,
   }
 }
 
-// One command per line, split at && ; || (enough for these hand-written steps).
-const commands = (run: string) => run.split(/\n|&&|\|\||;/).map((c) => c.trim()).filter((c) => c !== '')
+// A backslash at a line end joins the immediately next line, as the shell does; when that line is blank, the join adds
+// nothing and the command ends there, so the line after the blank is a command of its own.
+function joinContinuations(lines: string[]): string {
+  const out: string[] = []
+  let joining = false
+  for (const l of lines) {
+    if (joining) out[out.length - 1] += ' ' + l.replace(/\\$/, '')
+    else out.push(l.replace(/\\$/, ''))
+    joining = l.endsWith('\\')
+  }
+  return out.join('\n')
+}
+
+// One command per line, split at && ; || (enough for these hand-written steps); a comment line is not a command.
+const commands = (run: string) => run.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n')
+  .split(/\n|&&|\|\||;/).map((c) => c.trim()).filter((c) => c !== '')
 const aptLine = (l: string) => !l.trim().startsWith('#') && APT_CALL.test(l)
 
 // Every rule of this file against one workflow text: the list of what is wrong (empty = fine).
@@ -179,13 +211,17 @@ describe('CI apt step: a hard time limit, retries, only ffmpeg, no cache (Johnny
     expect(violations('good.yml', wf(...GOOD))).toEqual([])
   })
 
-  // the joins are real, not only a stricter match: a call split over lines with its flags on both is ONE good call
-  it('control: a backslash-continued call and a folded call, flags split over the lines, give no violation', () => {
+  // the join is real, not only a stricter match: a call split over lines with its flags on both is ONE good call
+  it('control: a backslash-continued call, flags split over the lines, gives no violation', () => {
     const F = APT_FLAGS
     expect(violations('cont.yml', wf('      - name: x', '        timeout-minutes: 8', '        run: |',
       `          sudo apt-get ${F[0]} \\`, `            ${F[1]} install -y --no-install-recommends ffmpeg`))).toEqual([])
-    expect(violations('fold.yml', wf('      - name: x', '        timeout-minutes: 8', '        run: >',
-      `          sudo apt-get ${F[0]}`, `          ${F[1]} install -y --no-install-recommends ffmpeg`))).toEqual([])
+  })
+
+  // a blank line inside a literal block is kept and does not end the block (Ron 12421); a comment line is no command
+  it('control: two good calls with a blank line and a comment line naming apt between them give no violation', () => {
+    expect(violations('blank.yml', wf(...GOOD.slice(0, 4), '', '          # apt-get takes the flags above', GOOD[4])))
+      .toEqual([])
   })
 
   it.for<{ name: string; src: string }>([
@@ -207,6 +243,25 @@ describe('CI apt step: a hard time limit, retries, only ffmpeg, no cache (Johnny
       src: wf('      - name: x', '        timeout-minutes: 8', '        run: |', '          sudo apt-get') },
     { name: 'a flow-style step even without apt (a form this reader does not parse)',
       src: wf('      - {uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262}') },
+    // Ron 12421: forms that hid a flagless second call behind the two controls above (Kevin 12430)
+    { name: 'F12: a folded block whose second call is MORE indented (YAML keeps that line break)',
+      src: wf('      - name: x', '        timeout-minutes: 8', '        run: >',
+        '          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update',
+        '            sudo apt-get install -y ffmpeg') },
+    { name: 'F27: a blank line inside a folded block (YAML keeps it as a line break)',
+      src: wf('      - name: x', '        timeout-minutes: 8', '        run: >',
+        '          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update', '',
+        '          sudo apt-get install -y ffmpeg') },
+    { name: 'a folded block (run: >-), even one that splits a single good call over two lines',
+      src: wf('      - name: x', '        timeout-minutes: 8', '        run: >-',
+        '          sudo apt-get -o Acquire::Retries=3', '          -o Acquire::http::Timeout=30 install -y --no-install-recommends ffmpeg') },
+    { name: 'F28: a backslash, then a blank line, then a call (the backslash joins nothing, the call stands alone)',
+      src: wf('      - name: x', '        timeout-minutes: 8', '        run: |',
+        '          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \\', '',
+        '          sudo apt-get install -y ffmpeg') },
+    { name: 'a backslash on the last run line, with the flags in a later key of the step (the run block ends at it)',
+      src: wf('      - name: x', '        timeout-minutes: 8', '        run: |', '          sudo apt-get install -y ffmpeg \\',
+        '        env:', '          FLAGS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30') },
     { name: 'an apt call outside any run block (a script input of an action)',
       src: wf('      - name: x', `        uses: actions/github-script@${'0'.repeat(40)}`, '        with:',
         '          script: |', "            exec('sudo apt-get install -y ffmpeg')") },
