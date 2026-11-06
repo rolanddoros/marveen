@@ -53,11 +53,18 @@ export function suitesForShard(shard: number): string[] {
 // Runs one suite. The case function gets the test context: ctx.skip() makes the outcome a SKIPPED test
 // that the reporter counts and shows. An early `return` from an `it` is counted as a pass, which is the
 // silent skip this branch exists to prevent (pinned by script-tests-runner-skip.test.ts).
-export function runScriptSuite(name: string, ctx: { skip: (note?: string) => void }): void {
+// dir and timeoutMs are for the runner's own tests only (C2 B2-5b): a throwaway suite, a short timeout, to prove
+// that a failing or a hanging suite turns its case red. The shards pass neither.
+export function runScriptSuite(
+  name: string,
+  ctx: { skip: (note?: string) => void },
+  dir: string = SCRIPT_TESTS_DIR,
+  timeoutMs: number = SUITE_TIMEOUT_MS,
+): void {
   const runner = name.endsWith('.py') ? 'python3' : 'bash'
-  const res = spawnSync(runner, [join(SCRIPT_TESTS_DIR, name)], {
+  const res = spawnSync(runner, [join(dir, name)], {
     encoding: 'utf-8',
-    timeout: SUITE_TIMEOUT_MS,
+    timeout: timeoutMs,
     cwd: ROOT,
   })
   if (suiteOutcome(res.status) === 'skip') {
