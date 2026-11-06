@@ -231,12 +231,6 @@ function readTelegramToken(agentName: string): string | null {
   }
 }
 
-/** Transcript dir Claude Code uses for a cwd under the shared root (encoder: src/claude-project-dir.ts). */
-export function transcriptDirFor(agentName: string, projectRoot: string): string {
-  const cwd = agentName === MAIN_AGENT_ID ? projectRoot : agentDir(agentName)
-  return join(process.env['HOME'] ?? homedir(), '.claude', 'projects', encodeClaudeProjectDir(cwd))
-}
-
 // Same CONFIG-DIR BLIND SPOT the keepalive watchdog hit (see mainTranscriptDirs
 // in inbound-probe.ts): an agent running with an isolated CLAUDE_CONFIG_DIR
 // writes its transcript under THAT root, not the shared ~/.claude, so reading
@@ -244,7 +238,7 @@ export function transcriptDirFor(agentName: string, projectRoot: string): string
 // Both the main agent (<PROJECT_ROOT>/.channels-config) and every sub-agent
 // (<agentDir>/.claude-config) can be isolated, so probe each candidate root and
 // let the newest ingestion win.
-export function transcriptDirsFor(agentName: string, _projectRoot: string): string[] {
+export function transcriptDirsFor(agentName: string): string[] {
   if (agentName === MAIN_AGENT_ID) return mainTranscriptDirs()
   const cwd = agentDir(agentName)
   const encoded = encodeClaudeProjectDir(cwd)
@@ -272,13 +266,13 @@ async function probeIntake(token: string): Promise<IntakeProbe> {
   }
 }
 
-async function checkAgentIntake(agentName: string, projectRoot: string): Promise<void> {
+async function checkAgentIntake(agentName: string): Promise<void> {
   const token = readTelegramToken(agentName)
   if (!token) return
 
   const probe = await probeIntake(token)
   const now = Date.now()
-  const lastInboundAt = readLastIngestionTimestampAcross(transcriptDirsFor(agentName, projectRoot))
+  const lastInboundAt = readLastIngestionTimestampAcross(transcriptDirsFor(agentName))
   const decision = decideIntakeVerdict({
     probe,
     prev: lastObservation.get(agentName) ?? null,
@@ -324,7 +318,7 @@ async function checkAgentIntake(agentName: string, projectRoot: string): Promise
   )
 }
 
-export function startChannelIntakeMonitor(projectRoot: string): NodeJS.Timeout {
+export function startChannelIntakeMonitor(): NodeJS.Timeout {
   async function check(): Promise<void> {
     const names = [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
     for (const name of names) {
@@ -334,7 +328,7 @@ export function startChannelIntakeMonitor(projectRoot: string): NodeJS.Timeout {
         continue
       }
       try {
-        await checkAgentIntake(name, projectRoot)
+        await checkAgentIntake(name)
       } catch (err) {
         logger.debug({ err, agent: name }, 'channel-intake-monitor: check error')
       }
