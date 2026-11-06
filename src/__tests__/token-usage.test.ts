@@ -114,7 +114,12 @@ describe('pruneTokenUsage', () => {
   }
 
   beforeEach(() => {
-    getDb().exec("DELETE FROM token_usage WHERE agent = 'test-prune'")
+    // The whole table, not only test-prune: the prune deletes EVERY row past the window, and
+    // the query seed (2024 timestamps) is past it, so a seed left by a describe that ran
+    // earlier (any order, e.g. --sequence.shuffle) would be counted here. The DB is the
+    // in-memory one from the top-level beforeAll; the query describes re-seed in their own
+    // beforeAll.
+    getDb().exec('DELETE FROM token_usage')
   })
 
   it('deletes rows older than the retention window (default 90 days), keeps recent ones', () => {
@@ -140,40 +145,31 @@ describe('pruneTokenUsage', () => {
   })
 })
 
-describe('collectTokenUsage', () => {
-  // We can't easily mock homedir() for the module-level PROJECTS_DIR const,
-  // so we test the public query functions with manually inserted data.
-  // The parsing logic is tested via direct JSONL fixture parsing below.
-
-  it('parseJsonlFile handles valid lines, skips invalid JSON and non-assistant types', async () => {
-    // Dynamically import to get access to the module
-    await import('../web/token-usage.js')
-
-    // We test via collectTokenUsage indirectly; but more importantly
-    // let's verify query functions work with known data.
-    const db = getDb()
-
-    // Insert known test data directly
-    const insert = db.prepare(`
-      INSERT OR IGNORE INTO token_usage
-      (agent, session_id, timestamp, input_tokens, output_tokens,
-       cache_read_tokens, cache_creation_tokens, content_preview, tool_name)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-
-    const baseTs = 1716200000 // 2024-05-20 ~10:00 UTC
-
-    insert.run('test-main', 'sess-q1', baseTs, 1000, 200, 500, 100, 'test preview 1', null)
-    insert.run('test-main', 'sess-q1', baseTs + 60, 2000, 400, 0, 0, 'test preview 2', null)
-    insert.run('test-main', 'sess-q1', baseTs + 120, 800, 150, 0, 0, null, 'Read')
-    insert.run('test-samu', 'sess-q2', baseTs + 3600, 3000, 600, 1000, 200, 'samu work', 'Bash')
-    insert.run('test-samu', 'sess-q2', baseTs + 3660, 1500, 300, 0, 0, 'more samu', null)
-
-    expect(true).toBe(true)
-  })
-})
+// The rows the query describes below (getTokenSummary, getTokenTimeline, getTokenDetails,
+// correlateWithKanban) assert against. Each of them seeds them in its own beforeAll, so a
+// describe run alone (-t) or in any order sees the same data. INSERT OR IGNORE: the table's
+// unique key (see the deduplication case) makes a second seed a no-op.
+// (This used to be an `it` named "parseJsonlFile handles valid lines..." that parsed nothing,
+// asserted expect(true).toBe(true), and only worked because it ran first.)
+const QUERY_BASE_TS = 1716200000 // 2024-05-20 ~10:00 UTC
+function seedQueryFixture(): void {
+  const insert = getDb().prepare(`
+    INSERT OR IGNORE INTO token_usage
+    (agent, session_id, timestamp, input_tokens, output_tokens,
+     cache_read_tokens, cache_creation_tokens, content_preview, tool_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const baseTs = QUERY_BASE_TS
+  insert.run('test-main', 'sess-q1', baseTs, 1000, 200, 500, 100, 'test preview 1', null)
+  insert.run('test-main', 'sess-q1', baseTs + 60, 2000, 400, 0, 0, 'test preview 2', null)
+  insert.run('test-main', 'sess-q1', baseTs + 120, 800, 150, 0, 0, null, 'Read')
+  insert.run('test-samu', 'sess-q2', baseTs + 3600, 3000, 600, 1000, 200, 'samu work', 'Bash')
+  insert.run('test-samu', 'sess-q2', baseTs + 3660, 1500, 300, 0, 0, 'more samu', null)
+}
 
 describe('getTokenSummary', () => {
+  beforeAll(seedQueryFixture)
+
   const baseTs = 1716200000
 
   it('returns per-agent summaries with correct aggregations', async () => {
@@ -211,6 +207,8 @@ describe('getTokenSummary', () => {
 })
 
 describe('getTokenTimeline', () => {
+  beforeAll(seedQueryFixture)
+
   const baseTs = 1716200000
 
   it('buckets data by specified interval', async () => {
@@ -246,6 +244,8 @@ describe('getTokenTimeline', () => {
 })
 
 describe('getTokenDetails', () => {
+  beforeAll(seedQueryFixture)
+
   const baseTs = 1716200000
 
   it('returns details ordered by timestamp DESC', async () => {
@@ -336,6 +336,8 @@ describe('deduplication', () => {
 })
 
 describe('correlateWithKanban', () => {
+  beforeAll(seedQueryFixture)
+
   it('links token_usage rows to kanban cards by agent and time range', async () => {
     const db = getDb()
     const baseTs = 1716200000

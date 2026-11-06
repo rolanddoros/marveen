@@ -1,15 +1,18 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Pin the install zone: APP_TZ otherwise follows the host zone, which need not be Budapest,
+// and the pinned-clock cases below are Budapest dates (same pin as date-range.test.ts).
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  APP_TZ: 'Europe/Budapest',
+}))
+
 import { parseDateExpression } from '../web/routes/recall.js'
 
-
-vi.mock('../web/routes/recall.js', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('../web/routes/recall.js')>()
-  return mod
-})
-
-// We can't easily mock todayBudapest inside the module, so we test the parser
-// with inputs that are absolute or relative. For relative tests we accept that
-// results shift with the real date and verify structural correctness instead.
+// The structural cases below run on the real clock. The exact values of the relative
+// keywords are pinned in the "pinned clock" describe at the end, through the same default
+// clock path the recall route uses (no nowSec argument); date-range.test.ts pins the
+// parser itself with an explicit nowSec.
 
 describe('parseDateExpression', () => {
   describe('ISO dates', () => {
@@ -207,5 +210,28 @@ describe('parseDateExpression', () => {
     it('returns null for partial date', () => {
       expect(parseDateExpression('2026-05')).toBeNull()
     })
+  })
+})
+
+// The recall route calls parseDateExpression(expr) with no clock argument, so "today" comes
+// from the real clock in the install zone. Only Date is faked here; it is restored after
+// each case.
+describe('parseDateExpression with a pinned clock (the default clock path the recall route uses)', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('relative keywords give exact dates on Tuesday 2026-05-19, 12:00 in Budapest', () => {
+    vi.setSystemTime(new Date('2026-05-19T10:00:00Z'))
+    expect(parseDateExpression('ma')).toEqual({ from: '2026-05-19', to: '2026-05-19' })
+    expect(parseDateExpression('tegnap')).toEqual({ from: '2026-05-18', to: '2026-05-18' })
+    expect(parseDateExpression('3 napja')).toEqual({ from: '2026-05-16', to: '2026-05-16' })
+    expect(parseDateExpression('múlt héten')).toEqual({ from: '2026-05-11', to: '2026-05-17' })
+    expect(parseDateExpression('ebben a hónapban')).toEqual({ from: '2026-05-01', to: '2026-05-19' })
+  })
+
+  it('midnight: 22:30Z on 2026-05-19 is already 2026-05-20 in Budapest, so "ma" is the 20th', () => {
+    vi.setSystemTime(new Date('2026-05-19T22:30:00Z'))
+    expect(parseDateExpression('ma')).toEqual({ from: '2026-05-20', to: '2026-05-20' })
+    expect(parseDateExpression('tegnap')).toEqual({ from: '2026-05-19', to: '2026-05-19' })
   })
 })

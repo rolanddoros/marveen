@@ -10,6 +10,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { importsValueBinding } from './setup/source-imports.js'
 import { fileURLToPath } from 'node:url'
+import { injectEgressGate, ensureEgressGate } from '../web/agent-scaffold.js'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
@@ -270,12 +271,15 @@ describe('loadRuntimeAllowlist', () => {
 describe('injectEgressGate (source-level checks)', () => {
   const scaffoldSrc = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf8')
 
+  // The exports are checked on the imported bindings, not by a source grep: a grep for
+  // "export function X(" goes red on an equivalent `export { X }` and stays green on a
+  // binding that is not a function (Ron 12280).
   it('injectEgressGate is exported from agent-scaffold.ts', () => {
-    expect(scaffoldSrc).toContain('export function injectEgressGate(')
+    expect(typeof injectEgressGate).toBe('function')
   })
 
   it('ensureEgressGate is exported from agent-scaffold.ts', () => {
-    expect(scaffoldSrc).toContain('export function ensureEgressGate(')
+    expect(typeof ensureEgressGate).toBe('function')
   })
 
   it('egress-gate hook script is referenced with the WebFetch matcher', () => {
