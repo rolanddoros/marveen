@@ -32,6 +32,7 @@ unverified=true, so a run that could not verify its cache never stores one.
 import gzip
 import hashlib
 import os
+import shutil
 import sys
 import urllib.parse
 
@@ -117,6 +118,28 @@ def write_output(name, value):
             f.write(f'{name}={value}\n')
 
 
+def drop(path):
+    # whatever sits under a .deb name goes: a symlink (never followed), a file, or a directory (Ron 12607).
+    # If even that fails, the entry would reach apt unverified, so prune stops here with exit 1.
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    except OSError as e:
+        die(f'cannot remove {path} ({e.strerror}): it would reach apt unverified')
+
+
+def matches(path, key, index):
+    # a regular file whose bytes are the ones the signed index names; anything that cannot be read is NOT a match
+    if os.path.islink(path) or not os.path.isfile(path) or key is None:
+        return False
+    try:
+        return sha256_of(path) in index.get(key, set())
+    except OSError:
+        return False
+
+
 def cmd_prune(lists_dir, archives_dir):
     debs = sorted(n for n in os.listdir(archives_dir) if n.endswith('.deb'))
     if not debs:
@@ -127,7 +150,7 @@ def cmd_prune(lists_dir, archives_dir):
     if not index:
         # fail-closed: nothing that cannot be checked is kept; apt downloads it all, as on a miss
         for name in debs:
-            os.remove(os.path.join(archives_dir, name))
+            drop(os.path.join(archives_dir, name))
         print(f'::warning title=ffmpeg .deb cache not verified::no readable Packages index in {lists_dir} '
               f'({files} file(s)); all {len(debs)} cached .deb removed, apt downloads them')
         write_output('unverified', 'true')
@@ -135,13 +158,10 @@ def cmd_prune(lists_dir, archives_dir):
     kept, removed = [], []
     for name in debs:
         path = os.path.join(archives_dir, name)
-        k = cached_key(name)
-        ok = (not os.path.islink(path) and os.path.isfile(path) and k is not None
-              and sha256_of(path) in index.get(k, set()))
-        if ok:
+        if matches(path, cached_key(name), index):
             kept.append(name)
         else:
-            os.remove(path)
+            drop(path)
             removed.append(name)
     print(f'deb-cache-verify: {len(kept)} cached .deb match the signed index, {len(removed)} removed')
     for name in removed:

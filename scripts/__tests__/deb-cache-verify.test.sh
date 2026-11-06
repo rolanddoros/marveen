@@ -13,7 +13,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VERIFY="$HERE/../deb-cache-verify.py"
-FAILS=0; N=0
+FAILS=0; N=0; SKIPPED=()
+unmet() { SKIPPED+=("$1"); echo "SKIP  $1  -- control unmet: $2"; }
 ok() { N=$((N+1)); if [ "$2" = "0" ]; then echo "PASS  $1"; else echo "FAIL  $1${3:+  -- $3}"; FAILS=$((FAILS+1)); fi; }
 
 for t in apt-get dpkg-deb python3 sha256sum; do
@@ -138,6 +139,46 @@ GITHUB_OUTPUT="$T/gh-out.txt" python3 "$VERIFY" prune "$ARCH_DIR" "$T/nolists" >
 ok "(5) an empty archive dir: exit 0, nothing to check, unverified=false" \
   "$([ $rc = 0 ] && grep -q 'nothing to check' "$T/p5.log" && [ "$(cat "$T/gh-out.txt")" = "unverified=false" ]; echo $?)"
 
+# --- (7) a DIRECTORY under a .deb name (Ron 12607): removed like any bad entry, exit 0, no traceback ----------------
+fill
+mkdir -p "$ARCH_DIR/x_1_amd64.deb/inner"; echo junk > "$ARCH_DIR/x_1_amd64.deb/inner/f"
+mkdir -p "$T/outside"; echo keep > "$T/outside/f"; ln -s "$T/outside" "$ARCH_DIR/y_1_amd64.deb"
+python3 "$VERIFY" prune "$ARCH_DIR" "$LISTS" > "$T/p7.log" 2>&1; rc=$?
+ok "(7) a directory named x_1_amd64.deb: removed and counted, exit 0, no traceback" \
+  "$([ $rc = 0 ] && [ ! -e "$ARCH_DIR/x_1_amd64.deb" ] && grep -q 'removed: x_1_amd64.deb' "$T/p7.log" && grep -q ', 2 removed' "$T/p7.log" \
+     && ! grep -q Traceback "$T/p7.log" && [ -f "$ARCH_DIR/$A" ]; echo $?)" "rc=$rc $(cat "$T/p7.log")"
+ok "(7) a symlink to a directory under a .deb name: the LINK is removed, what it points to is untouched" \
+  "$([ ! -L "$ARCH_DIR/y_1_amd64.deb" ] && grep -q 'removed: y_1_amd64.deb' "$T/p7.log" && [ "$(cat "$T/outside/f")" = keep ]; echo $?)"
+fill
+mkdir -p "$ARCH_DIR/x_1_amd64.deb"
+python3 "$VERIFY" prune "$ARCH_DIR" "$T/nolists" > "$T/p7b.log" 2>&1; rc=$?
+ok "(7) and on the no-index path too: the directory goes with the files, exit 0" \
+  "$([ $rc = 0 ] && [ -z "$(ls -A "$ARCH_DIR" | grep '\.deb$')" ] && ! grep -q Traceback "$T/p7b.log"; echo $?)" "rc=$rc $(cat "$T/p7b.log")"
+
+# --- (8) an unreadable .deb (Ron 12607): not checkable = not kept; removed, counted, exit 0 ----------------------
+fill
+chmod 000 "$ARCH_DIR/$B"
+if [ -r "$ARCH_DIR/$B" ]; then
+  unmet "(8) unreadable .deb" "chmod 000 left it readable (running as root)"
+else
+  python3 "$VERIFY" prune "$ARCH_DIR" "$LISTS" > "$T/p8.log" 2>&1; rc=$?
+  ok "(8) an unreadable $B: removed and counted, exit 0, no traceback" \
+    "$([ $rc = 0 ] && [ ! -e "$ARCH_DIR/$B" ] && grep -q "removed: $B" "$T/p8.log" && ! grep -q Traceback "$T/p8.log"; echo $?)" "rc=$rc $(cat "$T/p8.log")"
+fi
+chmod 644 "$ARCH_DIR/$B" 2>/dev/null
+
+# --- (9) an entry prune cannot remove: exit 1, never a silent pass (it would reach apt unverified) ---------------
+fill; corrupt "$ARCH_DIR/$A"
+chmod 555 "$ARCH_DIR"
+if [ -w "$ARCH_DIR" ]; then
+  unmet "(9) unremovable entry" "chmod 555 left the archive dir writable (running as root)"
+else
+  python3 "$VERIFY" prune "$ARCH_DIR" "$LISTS" > "$T/p9.log" 2>&1; rc=$?
+  ok "(9) the corrupted $A cannot be removed (read-only dir): exit 1, named, no traceback" \
+    "$([ $rc = 1 ] && grep -q "cannot remove .*$A.*would reach apt unverified" "$T/p9.log" && ! grep -q Traceback "$T/p9.log"; echo $?)" "rc=$rc $(cat "$T/p9.log")"
+fi
+chmod 755 "$ARCH_DIR"
+
 # --- (6) key: from apt's own --print-uris of an EMPTY archive dir ------------------------------------------------
 rm -f "$ARCH_DIR"/*.deb
 "${APT[@]}" install --print-uris -qq probe-a probe-b probe-c > "$T/uris.txt" 2>"$T/uris.err"
@@ -158,5 +199,10 @@ python3 "$VERIFY" key "$T/empty.txt" probe-c > /dev/null 2>&1; rc=$?
 ok "(6) an empty uris file: the key fails" "$([ $rc = 1 ]; echo $?)"
 
 echo
-echo "$((N - FAILS))/$N passed"
-[ "$FAILS" -eq 0 ]
+echo "$((N - FAILS))/$N passed, ${#SKIPPED[@]} case(s) skipped"
+[ "$FAILS" -eq 0 ] || exit 1
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+  echo "SKIP (control unmet): ${#SKIPPED[@]} case(s) could not be measured here (chmod does not deny root): ${SKIPPED[*]}"
+  exit 77
+fi
+exit 0
