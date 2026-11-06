@@ -24,6 +24,14 @@
 #
 # Bash 3.2 compatible (macOS system bash). Source it, do not execute it:
 #   . "$(dirname "$0")/lib/send-telegram.sh"
+#
+# Source it by its real path. Through a SYMLINK, with TELEGRAM_API_BASE set, it
+# fails closed: the env gate is looked up next to ${BASH_SOURCE[0]}, which is
+# the link's directory, finds no env_gate.py there, and nothing is sent (C2
+# PR4f, Ron 12030). Unset or blank TELEGRAM_API_BASE (production) is not
+# affected. The link is deliberately not followed: readlink -f is missing on
+# the BSD readlink of older macOS, and a hand-written resolve loop is more code
+# on the token path than this test seam is worth.
 
 # telegram_api_call TOKEN METHOD [curl args...] -- the same contract for ANY
 # Bot API method (setMyCommands, sendPhoto, ...): success only on curl exit 0
@@ -75,11 +83,16 @@ telegram_api_call() {
   # /proc/<pid>/cmdline). Same trick as lib/curl-tok.sh: a curl config line on
   # stdin (-K -), written by the printf builtin, so no other process carries it
   # either. The URL is a QUOTED config value: a quote, backslash or newline in
-  # the token, the method or the base would break out of it -- refuse, because
-  # such a call could not deliver anything anyway.
+  # the token, the method or the base would break out of it, and any other
+  # control character (CR, TAB, ...) makes curl reject the URL (exit 3) -- refuse
+  # them all, because such a call could not deliver anything anyway (C2 PR4f:
+  # CR and TAB used to pass this line). The callers strip a trailing CR of a
+  # CRLF .env BEFORE they call (or curl already refused it), so this only meets
+  # one that is still there. The message names no value: not the token, not
+  # the base, not the method (the offending one could be any of them).
   case "$token$method$base" in
-    *\"*|*\\*|*$'\n'*)
-      echo "telegram_api_call(${method}): the token, method or API base contains a quote, backslash or newline -- refusing (nothing would be delivered)" >&2
+    *\"*|*\\*|*$'\n'*|*[[:cntrl:]]*)
+      echo "telegram_api_call: the token, method or API base contains a quote, backslash or control character (not shown) -- refusing; nothing was sent." >&2
       return 1
       ;;
   esac

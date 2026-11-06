@@ -7,7 +7,11 @@ uptime-monitor.py sends through it. Before PR4e it used TELEGRAM_API_BASE as giv
   - set: `python3 -I <its own lib dir>/env_gate.py --telegram-base` decides, the same telegram_api_base() rule as the
     python senders (https://api.telegram.org or loopback only); the URL is built from the base the gate RETURNS;
   - a refusal, no python3, no env_gate.py next to the file, or a gate that answers no URL: return 1, nothing sent;
-  - the gate is the file next to send-telegram.sh, never one found through the environment or the working directory.
+  - the gate is the file next to send-telegram.sh, never one found through the environment or the working directory;
+  - C2 PR4f (Ron 12030 S10): a control character in the base is refused by the gate (the allowed loopback stub gets
+    nothing); the guard on the quoted curl config value refuses a quote, backslash or ANY control character in the
+    token, the method or the base, with a message that names none of them, curl not run (pinned in the C and C.UTF-8
+    locales); sourced through a symlink with the base set, the lib fails closed (documented in its header).
 
 "Nothing sent" is measured on a REACHABLE stub (127.0.0.2), so a refusal is told apart from an unreachable host; the
 allowed loopback stub (127.0.0.1) receiving the same call is the control. The unset case cannot reach the real Bot
@@ -83,7 +87,7 @@ def tool_dir(names, extra=None):
     return d
 
 
-def run(lib, base, path=None, cwd=None, env_extra=None):
+def run(lib, base, path=None, cwd=None, env_extra=None, script=None):
     env = {k: v for k, v in os.environ.items() if k != 'TELEGRAM_API_BASE'}
     if base is not None:
         env['TELEGRAM_API_BASE'] = base
@@ -92,9 +96,26 @@ def run(lib, base, path=None, cwd=None, env_extra=None):
     env.update(env_extra or {})
     bash = shutil.which('bash')
     r = subprocess.run([bash, '-c', '. "$1" && send_telegram_message "$2" 1 szia', '_',
-                        os.path.join(lib, 'send-telegram.sh'), TOKEN],
+                        script or os.path.join(lib, 'send-telegram.sh'), TOKEN],
                        capture_output=True, text=True, timeout=60, env=env, cwd=cwd, stdin=subprocess.DEVNULL)
     return r.returncode, r.stdout + r.stderr
+
+
+def call(lib, token, method, path, env_extra=None):
+    """telegram_api_call TOKEN METHOD, TELEGRAM_API_BASE unset (the guard protects the token and the method, which
+    the env gate never sees)."""
+    env = {k: v for k, v in os.environ.items() if k != 'TELEGRAM_API_BASE'}
+    env['PATH'] = path
+    env.update(env_extra or {})
+    r = subprocess.run([shutil.which('bash'), '-c', '. "$1" && telegram_api_call "$2" "$3"', '_',
+                        os.path.join(lib, 'send-telegram.sh'), token, method],
+                       capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+    return r.returncode, r.stdout + r.stderr
+
+
+GUARD_REFUSAL = ('telegram_api_call: the token, method or API base contains a quote, backslash or control character '
+                 '(not shown) -- refusing; nothing was sent.')
+CTRL_REFUSAL = 'TELEGRAM_API_BASE contains a control character (not shown); nothing was sent.'
 
 
 def main():
@@ -157,6 +178,70 @@ def main():
         check('an allow-everything env_gate.py in cwd / PYTHONPATH changes nothing: 127.0.0.2 still refused',
               rc == 1 and not other_reqs, (rc, out, other_reqs))
         del other_reqs[:]
+
+        # --- C2 PR4f (Ron 12030 S10): a control character in the base -------------------------------------------
+        # urlsplit drops tab, CR and LF, so 'http://127.0.0.1<LF>:<port>' used to pass the gate as the allowed
+        # loopback stub, LF and all, and only this file's guard caught the LF (CR and TAB reached curl's config line).
+        # Measured on the ALLOWED, reachable stub: it must receive nothing.
+        host_port = local_api[len('http://'):]
+        for name, base in [
+            ('LF after the host', 'http://127.0.0.1\n:' + host_port.split(':')[1]),
+            ('CR inside the port', local_api[:-1] + '\r' + local_api[-1:]),
+            ('TAB inside the port', local_api[:-1] + '\t' + local_api[-1:]),
+            ('a trailing LF', local_api + '\n'),
+        ]:
+            rc, out = run(lib, base)
+            check('control character in the base, refused by the gate, exit 1, nothing sent: %s' % name,
+                  rc == 1 and CTRL_REFUSAL in out and not local_reqs, (rc, out, local_reqs))
+            check('  ...no token, no base and no control character in the output',
+                  TOKEN not in out and host_port not in out and not any(c in out.rstrip('\n') for c in '\r\t'), repr(out))
+            del local_reqs[:]
+
+        # --- the guard (the quoted curl config value): pinned with a recording curl -------------------------------
+        # base unset: the gate does not run, so only the guard stands between these values and curl's config line
+        grec = tempfile.mkdtemp(prefix='send-telegram-guard-')
+        guard_curl = ('#!/bin/sh\ncat > "%s/config"\nprintf \'{"ok":true}\'\n' % grec)
+        gpath = tool_dir(['dirname', 'cat'], {'curl': guard_curl})
+        gcfg = os.path.join(grec, 'config')
+        for locale in ('C', 'C.UTF-8'):
+            for name, token, method in [
+                ('a quote in the token', 'tok"en', 'sendMessage'),
+                ('a backslash in the token', 'tok\\en', 'sendMessage'),
+                ('an LF in the token', 'tok\nen', 'sendMessage'),
+                ('a CR in the token', 'tok\ren', 'sendMessage'),
+                ('a trailing CR in the token (an unstripped CRLF .env)', 'TOKX42\r', 'sendMessage'),
+                ('a TAB in the token', 'tok\ten', 'sendMessage'),
+                ('an ESC in the token', 'tok\x1ben', 'sendMessage'),
+                ('a CR in the method', 'TOKX42', 'sendMessage\r'),
+            ]:
+                rc, out = call(lib, token, method, gpath, {'LC_ALL': locale})
+                check('guard, LC_ALL=%s: %s -> exit 1, curl NOT run, the value-free refusal' % (locale, name),
+                      rc == 1 and GUARD_REFUSAL in out and not os.path.exists(gcfg), (rc, repr(out)))
+                check('  ...the output names neither the token nor the method',
+                      token.strip() not in out and method.strip() not in out, repr(out))
+                if os.path.exists(gcfg):
+                    os.remove(gcfg)
+            rc, out = call(lib, 'token', 'sendMessage', gpath, {'LC_ALL': locale})
+            cfg = open(gcfg).read() if os.path.exists(gcfg) else ''
+            check('guard control, LC_ALL=%s: a clean token and method reach curl' % locale,
+                  rc == 0 and cfg.strip() == 'url = "https://api.telegram.org/bottoken/sendMessage"', (rc, out, cfg))
+            if os.path.exists(gcfg):
+                os.remove(gcfg)
+
+        # --- sourced through a symlink: fail closed with a base set (documented in the header, Ron 12030) ---------
+        link_dir = tempfile.mkdtemp(prefix='send-telegram-link-')
+        link = os.path.join(link_dir, 'send-telegram.sh')
+        os.symlink(os.path.join(lib, 'send-telegram.sh'), link)
+        rc, out = run(lib, local_api, script=link)
+        check('sourced through a symlink, base set: exit 1, "cannot run", nothing sent (the link is not followed)',
+              rc == 1 and 'cannot run' in out and not local_reqs, (rc, out, local_reqs))
+        del local_reqs[:]
+        lrec = tempfile.mkdtemp(prefix='send-telegram-link-rec-')
+        lpath = tool_dir(['dirname', 'cat'], {'curl': '#!/bin/sh\ncat > "%s/config"\nprintf \'{"ok":true}\'\n' % lrec})
+        rc, out = run(lib, None, path=lpath, script=link)
+        lcfg = open(os.path.join(lrec, 'config')).read() if os.path.exists(os.path.join(lrec, 'config')) else ''
+        check('sourced through a symlink, base unset (production): the real Bot API, as before (control)',
+              rc == 0 and lcfg.strip() == 'url = "https://api.telegram.org%s"' % want, (rc, out, lcfg))
 
         # --- unset or blank: the real Bot API, and python3 is not needed -----------------------------------------
         rec = tempfile.mkdtemp(prefix='send-telegram-rec-')
