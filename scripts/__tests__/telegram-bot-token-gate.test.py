@@ -10,7 +10,9 @@ TELEGRAM_API_BASE is plain environment, so before PR4d whoever could set it rece
     telegram_progress_watchdog) asks the gate BEFORE it reads the token: with a refused base the token file is not
     even opened (pinned with a writerless FIFO as the .env: opened, the call would hang), and a REACHABLE stub on
     127.0.0.2 receives nothing; with a loopback base the same calls reach the 127.0.0.1 stub (control);
-  - env_gate.py missing next to a sender: nothing is sent (fail closed).
+  - env_gate.py missing next to a sender: nothing is sent (fail closed);
+  - a control character anywhere in the raw value (LF, CR, TAB, NUL, DEL, C1, a trailing newline) is refused before
+    urlsplit sees it, and the refusal names no value (C2 PR4f, Ron 12030 S10).
 
 Everything runs from a sandbox copy of scripts/hooks + scripts/lib/env_gate.py against local stubs.
 
@@ -135,6 +137,29 @@ def main():
         check('refused: %r' % value, base is None and refused and refused.endswith('nothing was sent.')
               and (why is None or why in refused), (base, refused))
         check('  ...the refusal does not show the secret part', secret not in (refused or ''), refused)
+
+    # C2 PR4f (Ron 12030 S10): a control character ANYWHERE in the raw value is refused, before urlsplit, which drops
+    # tab, CR and LF silently ('http://127.0.0.1\n:8081' used to come back as an allowed base, the LF still in it).
+    # The refusal names no value: the character would reach stderr and the logs as it is.
+    CTRL_REFUSAL = 'TELEGRAM_API_BASE contains a control character (not shown); nothing was sent.'
+    for value in ('http://127.0.0.1\n:8081', 'http://127.0.0.1:80\r81', 'http://127.0.0.1:80\t81', 'http://127.0.0.1:8081\n',
+                  '\nhttp://127.0.0.1:8081', 'http://127.0.0.1:8081\r\n', 'http://127.0.0.1:8081\x00',
+                  'http://127.0.0.1:8081\x1b', 'http://127.0.0.1:8081\x7f', 'http://127.0.0.1:8081\x85', 'https://api.telegram.org\r'):
+        base, refused = tab(value)
+        check('refused, a control character in the raw value: %r' % value, base is None and refused == CTRL_REFUSAL,
+              (base, refused))
+    # control: a value of whitespace only is still "unset" (the bash side's blank rule, case *[![:space:]]*), and
+    # surrounding SPACES are still trimmed (normalise_base): only a control character inside a real value is refused
+    for value, want in (('\t', 'https://api.telegram.org'), (' \n ', 'https://api.telegram.org'),
+                        ('  http://127.0.0.1:8081/  ', 'http://127.0.0.1:8081')):
+        base, refused = tab(value)
+        check('allowed (control): %r -> %s' % (value, want), base == want and refused is None, (base, refused))
+    # the bash senders' entry gives the same answer: exit 2, nothing on stdout, the same value-free line on stderr
+    r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'scripts', 'lib', 'env_gate.py'), '--telegram-base'],
+                       capture_output=True, text=True, timeout=30,
+                       env={'PATH': os.environ.get('PATH', ''), 'TELEGRAM_API_BASE': 'http://127.0.0.1:80\r81'})
+    check('--telegram-base with a CR in the base: exit 2, no stdout, the value-free refusal on stderr',
+          r.returncode == 2 and r.stdout == '' and r.stderr.strip() == CTRL_REFUSAL, (r.returncode, r.stdout, r.stderr))
 
     # U1 (Ron 11906): an '@' OUTSIDE the netloc. The cases above with u:pw/x@host stop at "not a valid URL" (the
     # password parses as a bad port), so they never reach shown()'s second branch; these parse, and do.
