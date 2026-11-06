@@ -106,11 +106,11 @@ afterAll(() => {
 describe('pruneTokenUsage', () => {
   const NOW = Math.floor(Date.now() / 1000)
   const DAY = 86400
-  function insertRow(sessionId: string, ageDays: number) {
+  function insertRow(sessionId: string, ageDays: number, agent = 'test-prune') {
     getDb().prepare(
       `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-       VALUES ('test-prune', ?, ?, 1, 1, 0, 0)`,
-    ).run(sessionId, NOW - ageDays * DAY)
+       VALUES (?, ?, ?, 1, 1, 0, 0)`,
+    ).run(agent, sessionId, NOW - ageDays * DAY)
   }
 
   beforeEach(() => {
@@ -127,6 +127,8 @@ describe('pruneTokenUsage', () => {
     insertRow('sess-old-2', 91)    // just past 90d
     insertRow('sess-recent-1', 89) // just inside 90d
     insertRow('sess-recent-2', 1)  // recent
+    // The prune has no agent scope: an in-window row of another agent must survive it too.
+    insertRow('sess-other-recent', 1, 'test-other')
 
     const removed = pruneTokenUsage()
     expect(removed).toBe(2)
@@ -135,6 +137,11 @@ describe('pruneTokenUsage', () => {
       .prepare("SELECT session_id FROM token_usage WHERE agent = 'test-prune' ORDER BY session_id")
       .all() as Array<{ session_id: string }>
     expect(remaining.map((r) => r.session_id)).toEqual(['sess-recent-1', 'sess-recent-2'])
+
+    const other = getDb()
+      .prepare("SELECT session_id FROM token_usage WHERE agent = 'test-other'")
+      .all() as Array<{ session_id: string }>
+    expect(other.map((r) => r.session_id)).toEqual(['sess-other-recent'])
   })
 
   it('is a no-op when nothing is older than the window', () => {
@@ -425,7 +432,9 @@ describe('tryHandleTokenUsage route handler', () => {
     }
 
     return {
-      ctx: { req: {} as any, res: res as any, path, method, url },
+      // headers: jsonMaybeGzip reads accept-encoding once the body passes 1024 bytes, which a
+      // summary does when rows from other describes are still in the table (shuffle order).
+      ctx: { req: { headers: {} } as any, res: res as any, path, method, url },
       getResponse: () => ({ status: responseStatus, body: responseBody ? JSON.parse(responseBody) : null }),
     }
   }
