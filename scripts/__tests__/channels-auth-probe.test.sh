@@ -31,7 +31,9 @@ NODE_BIN="$(command -v node)"
 # Trusted only next to the test setup's stamp (C2 B2-5b, Ron 12358): a FAILED build emits this file anyway (tsc), so
 # after another suite's failed fallback build the file alone would let this suite go green on code that does not
 # compile. The stamp is written only by src/__tests__/setup/build-dist-once.ts after a build that succeeded; without it
-# this suite builds, and a failed build is its FAIL. (Run alone, outside vitest, it therefore always builds.)
+# this suite builds, and a failed build is its FAIL. Run alone, outside vitest, it builds only when no stamp is there
+# (fresh checkout, or after a failed setup build); a stamp left by an earlier vitest run is trusted as it stands, src
+# changes since then are NOT rechecked here, only by the setup.
 if [ ! -f "$INSTALL_DIR/dist/.test-build-ok" ] || [ ! -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then
   echo "dist/web/reauth-detect.js not built by the test setup -- building now (npm run build)..." >&2
   if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then
