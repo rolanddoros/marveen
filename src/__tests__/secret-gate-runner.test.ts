@@ -27,8 +27,8 @@ const SECRET_LINE = `const k = '${'AKIA'}${'ABCDEFGHIJKLMNOP'}'`
 
 interface Run { status: number; out: string }
 
-function runGate(cwd: string, args: string[]): Run {
-  const r = spawnSync(TSX, [RUNNER, ...args], { cwd, encoding: 'utf-8' })
+function runGate(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Run {
+  const r = spawnSync(TSX, [RUNNER, ...args], { cwd, encoding: 'utf-8', env })
   return { status: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
 }
 
@@ -192,5 +192,72 @@ describe('secret-gate runner: git objects are the source of truth', () => {
       expect(r.status).not.toBe(0)
       expect(r.out).toContain('EMPTY')
     } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+})
+
+// A path the diff lists but the lookup does not return is NOT SCANNED, and the line says
+// which lookup missed it (the head tree of the range, or the index). In a normal repository
+// that state does not occur, so a `git` wrapper forces it: it runs the real git and drops
+// ONE path's record from the ls-tree / ls-files -s answer. The wrapper reaches only the
+// spawned gate, through its own env (process.env is not touched), and lives in a tmp dir
+// that the finally removes.
+describe('secret-gate runner: an unresolved path names the lookup that missed it', () => {
+  const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).trim()
+
+  /** A bin dir with a `git` that hides `drop` from the `sub` lookup (ls-tree or ls-files). */
+  function hidingGit(sub: 'ls-tree' | 'ls-files', drop: string): string {
+    const bin = mkdtempSync(join(tmpdir(), 'secret-gate-hiding-git-'))
+    writeFileSync(join(bin, 'git'), [
+      `#!${process.execPath}`,
+      `const { spawnSync } = require('node:child_process')`,
+      `const args = process.argv.slice(2)`,
+      `const r = spawnSync(${JSON.stringify(REAL_GIT)}, args, { stdio: ['inherit', 'pipe', 'inherit'], maxBuffer: 256 * 1024 * 1024 })`,
+      `let out = r.stdout`,
+      `if (args[0] === ${JSON.stringify(sub)}) {`,
+      `  out = Buffer.from(out.toString('latin1').split('\\0').filter((rec) => !rec.endsWith('\\t' + ${JSON.stringify(drop)})).join('\\0'), 'latin1')`,
+      `}`,
+      `process.stdout.write(out)`,
+      `process.exitCode = r.status ?? 1`,
+      '',
+    ].join('\n'), { mode: 0o755 })
+    return bin
+  }
+  const withBin = (bin: string): NodeJS.ProcessEnv => ({ ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` })
+
+  it('--range: the path is NOT SCANNED (exit 1) and the line says it is not in the head tree of the range', () => {
+    const root = newRepo()
+    const bin = hidingGit('ls-tree', 'hidden.ts')
+    try {
+      const base = git(root, ['rev-parse', 'HEAD']).trim()
+      writeFileSync(join(root, 'hidden.ts'), 'export const ok = 1\n')
+      writeFileSync(join(root, 'seen.ts'), 'export const ok = 2\n')
+      const head = commit(root, 'two clean files')
+      const r = runGate(root, ['--range', `${base}..${head}`], withBin(bin))
+      expect(r.status).toBe(1)
+      expect(r.out).toContain('NOT SCANNED, therefore NOT CLEARED (1):')
+      expect(r.out).toContain(`  hidden.ts  git could not resolve this path to a blob (not present in the head tree of ${base}..${head}) -- the gate could not read this file`)
+      expect(r.out).not.toContain('seen.ts  git could not resolve')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(bin, { recursive: true, force: true })
+    }
+  })
+
+  it('--staged: the path is NOT SCANNED (exit 1) and the line says it is not in the index', () => {
+    const root = newRepo()
+    const bin = hidingGit('ls-files', 'hidden.ts')
+    try {
+      writeFileSync(join(root, 'hidden.ts'), 'export const ok = 1\n')
+      writeFileSync(join(root, 'seen.ts'), 'export const ok = 2\n')
+      git(root, ['add', 'hidden.ts', 'seen.ts'])
+      const r = runGate(root, ['--staged'], withBin(bin))
+      expect(r.status).toBe(1)
+      expect(r.out).toContain('NOT SCANNED, therefore NOT CLEARED (1):')
+      expect(r.out).toContain('  hidden.ts  git could not resolve this path to a blob (staged for commit but not present in the index) -- the gate could not read this file')
+      expect(r.out).not.toContain('seen.ts  git could not resolve')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(bin, { recursive: true, force: true })
+    }
   })
 })
