@@ -1,9 +1,10 @@
 // C1 (deterministic CLAUDE.md builder): the typed input of one render.
 //
-// One AgentDocContext is built per render and passed to every section. In this
-// PR (C1 PR 7a) nothing builds it from the live install: the renderer is a pure
-// function of the context and is tested with fixture contexts. The live builder
-// (.env, store/autonomy-config.json, the settings file just written) is PR 10.
+// One AgentDocContext is built per render and passed to every section. The
+// renderer is a pure function of the context and is tested with fixture
+// contexts; the live builder (.env, store/autonomy-config.json, the agent's
+// settings layers) is live-context.ts (C1 PR 10a), which names every value it
+// could not read from a real source.
 //
 // Design: store/fork-audit/phase-c/C1-C2-design.md section 2.1. Deviations,
 // agreed with Kevin (msg 12679):
