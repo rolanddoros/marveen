@@ -42,7 +42,7 @@ const SECRET_PATTERNS: Array<{ re: RegExp; hasGroup: boolean }> = [
 /** Replace potential secret values with [REDACTED]. Mirrors _redact(). */
 export function redact(text: string): string {
   for (const { re, hasGroup } of SECRET_PATTERNS) {
-    text = text.replace(re, (match, g1) => (hasGroup && typeof g1 === 'string' ? g1 : '') + '[REDACTED]')
+    text = text.replace(re, (_match, g1) => (hasGroup && typeof g1 === 'string' ? g1 : '') + '[REDACTED]')
   }
   return text
 }

@@ -173,8 +173,6 @@ function buildReason(
   contextTokens: number,
   opusKeyHits: number,
   haikuKeyHits: number,
-  opusSignalHits: number,
-  haikuSignalHits: number,
   signals: AgentSignals | undefined,
   changeAdvised: boolean,
   contextOverride: boolean,
@@ -368,7 +366,7 @@ export function suggestForAgent(
       agent: agentName,
       currentModel,
       suggestedModel,
-      reason: buildReason(currentModel, suggestedModel, contextTokens, 0, 0, 0, 0, s, changeAdvised, true),
+      reason: buildReason(currentModel, suggestedModel, contextTokens, 0, 0, s, changeAdvised, true),
       changeAdvised,
     }
   }
@@ -401,7 +399,7 @@ export function suggestForAgent(
     suggestedModel,
     reason: buildReason(
       currentModel, suggestedModel, contextTokens,
-      opusKeyHits, haikuKeyHits, opusSignalHits, haikuSignalHits,
+      opusKeyHits, haikuKeyHits,
       s, changeAdvised, false,
     ),
     changeAdvised,

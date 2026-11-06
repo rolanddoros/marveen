@@ -13,7 +13,7 @@ import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
-import { readFileOr, readJsonObjectForWrite } from '../agent-config.js'
+import { readJsonObjectForWrite } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, writeScheduledTask, markDefaultTaskRemoved, readScheduledTask,

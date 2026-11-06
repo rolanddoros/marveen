@@ -34,7 +34,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { agentDir, listAgentNames } from './agent-config.js'
 import { isAgentRunning } from './agent-process.js'
-import { readLastIngestionTimestamp, readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
+import { readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
 import { sendOwnerActionAlert } from './routine-alert.js'
 
 const MINUTE_MS = 60 * 1000
@@ -244,7 +244,7 @@ export function transcriptDirFor(agentName: string, projectRoot: string): string
 // Both the main agent (<PROJECT_ROOT>/.channels-config) and every sub-agent
 // (<agentDir>/.claude-config) can be isolated, so probe each candidate root and
 // let the newest ingestion win.
-export function transcriptDirsFor(agentName: string, projectRoot: string): string[] {
+export function transcriptDirsFor(agentName: string, _projectRoot: string): string[] {
   if (agentName === MAIN_AGENT_ID) return mainTranscriptDirs()
   const cwd = agentDir(agentName)
   const encoded = encodeClaudeProjectDir(cwd)

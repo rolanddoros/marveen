@@ -82,7 +82,7 @@ import {
   describeVerdict,
   type RegistryVerdict,
 } from './schedule-registry.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig, agentDir, readAgentWorksourceChannel, readAgentSenderRoleGatePolicy } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost, readAgentRemoteConfig, agentDir, readAgentWorksourceChannel, readAgentSenderRoleGatePolicy } from './agent-config.js'
 import { enqueueWorksourceItem, worksourceItemStage, worksourcePendingHead, type WorksourceItemStage } from './worksource-queue.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'

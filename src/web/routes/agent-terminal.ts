@@ -116,7 +116,7 @@ async function runLoginSteps(session: string, steps: LoginStep[]): Promise<void>
 }
 
 export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method, url } = ctx
+  const { res, path, method } = ctx
 
   // --- terminal-input master toggle (owner-gated opt-in) ---------------
   // GET returns the current state (dashboard-token gate). POST {enabled:boolean}
