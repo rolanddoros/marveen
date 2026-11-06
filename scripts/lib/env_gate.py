@@ -126,6 +126,14 @@ def check_env(root, environ=None):
 TELEGRAM_DEFAULT_BASE = 'https://api.telegram.org'
 
 
+def has_control_char(raw):
+    """True when the RAW value holds a control character (Unicode Cc: U+0000-U+001F, U+007F-U+009F), wherever it is,
+    a trailing newline included. Checked BEFORE normalise_base(), because urlsplit() silently drops tab, CR and LF
+    (C2 PR4f, Ron 12030 S10): 'http://127.0.0.1\n:8081' parsed as a clean loopback origin, and the base handed back
+    still held the LF, which the curl config line of send-telegram.sh then carried (CR and TAB unguarded)."""
+    return any(ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f for c in raw)
+
+
 def telegram_api_base(environ=None):
     """(base, None) for the Bot API base the bot token may be sent to, or (None, refusal) -- the refusal is one line
     ending in "nothing was sent.", and it never shows user information. Call it BEFORE the bot token is read."""
@@ -133,6 +141,9 @@ def telegram_api_base(environ=None):
     raw = env.get('TELEGRAM_API_BASE')
     if raw is None or not raw.strip():
         return TELEGRAM_DEFAULT_BASE, None
+    # The refusal does not show the value: a control character would reach stderr and the logs as it is.
+    if has_control_char(raw):
+        return None, 'TELEGRAM_API_BASE contains a control character (not shown); nothing was sent.'
     b = normalise_base(raw)
     u = parse_base(b)
     name = shown('TELEGRAM_API_BASE', b)

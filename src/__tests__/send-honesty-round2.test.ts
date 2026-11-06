@@ -99,8 +99,10 @@ describe('telegram_api_call: the token never reaches curl argv', () => {
       `#!/bin/bash\n. "$(dirname "$0")/lib/send-telegram.sh"\ntelegram_api_call 'bad"token' sendMessage\n`)
     const r = run('driver.sh', {}, bin)
     expect(r.status).toBe(1)
-    expect(r.stderr).toContain('the token, method or API base contains a quote, backslash or newline -- refusing (nothing would be delivered)')
-    expect(r.stderr).toContain('telegram_api_call(sendMessage)')
+    expect(r.stderr).toContain('the token, method or API base contains a quote, backslash or control character (not shown) -- refusing; nothing was sent.')
+    // value-free (C2 PR4f): neither the token nor the method is named, the offending value could be either
+    expect(r.stderr).not.toContain('bad"token')
+    expect(r.stderr).not.toContain('sendMessage')
     expect(existsSync(join(stage, 'curl-argv.log'))).toBe(false) // the stub was NOT called
     expect(existsSync(join(stage, 'curl-stdin.log'))).toBe(false)
   })
