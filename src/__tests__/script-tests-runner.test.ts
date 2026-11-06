@@ -167,6 +167,8 @@ describe('runScriptSuite: a suite case is red unless the suite exits 0 (or skips
         const t0 = Date.now()
         // the digest names the budget the suite ran with, not the shards' 300 s
         expect(() => runScriptSuite('slow.test.sh', { skip: vi.fn() }, dir, 500, dir)).toThrow(/slow\.test\.sh timed out after 0\.5 s/)
+        // a timeout is red: its TMPDIR is kept as evidence, not removed with the green ones (Ron 12597, R1)
+        expect(readdirSync(dir).filter((e) => e.startsWith('script-suite-slow.test.sh-'))).toHaveLength(1)
         expect(Date.now() - t0).toBeLessThan(4000)
       } finally {
         vi.restoreAllMocks()
@@ -463,6 +465,10 @@ describe('runScriptSuite: every suite gets its own TMPDIR, removed when green, k
           expect(message).toContain(`TMPDIR kept as evidence: ${t}`)
           expect(readdirSync(t)).toHaveLength(2)
         }
+        // a green suite after them removes ITS OWN dir only, never the kept red ones in the same base (Ron 12597, R3)
+        leakSh(dir, 'green-after.test.sh', 'exit 0')
+        runScriptSuite('green-after.test.sh', { skip: vi.fn() }, dir, SUITE_TIMEOUT_MS, base)
+        expect(readdirSync(base).filter((e) => e.startsWith('script-suite-')).length).toBe(2)
       } finally {
         vi.restoreAllMocks()
       }

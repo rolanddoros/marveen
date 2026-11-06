@@ -61,6 +61,15 @@ describe('failureDigest: what a failed suite puts into its failure message', () 
 
   // A 4-byte character with a 0-3 byte shift in front of it: at least three of the four cuts land inside
   // a character, so the trailing replacement-character trim is exercised, not just a lucky boundary.
+  // the kept-TMPDIR line sits right after the head line, so the 3 KB cut never drops it (Ron 12597, R2)
+  it('a digest cut at 3 KB still names the kept TMPDIR', () => {
+    const stderr = [...[1, 2, 3, 4, 5].map(ts), ...Array.from({ length: 20 }, (_, i) => `${i} ${'n'.repeat(257)}`)].join('\n')
+    const d = failureDigest('cut.test.sh', { status: 1, stdout: '', stderr }, 300_000, '/kept/dir')
+    expect(Buffer.byteLength(d)).toBeLessThanOrEqual(DIGEST_MAX_BYTES)
+    expect(d).toContain('cut at 3 KB')
+    expect(d).toContain('TMPDIR kept as evidence: /kept/dir')
+  })
+
   it('a cut inside a 4-byte character leaves no replacement character, at every offset', () => {
     for (const shift of [0, 1, 2, 3]) {
       const d = failureDigest('emoji.test.sh', { status: 1, stdout: '', stderr: 'x'.repeat(shift) + '\u{1F600}'.repeat(1000) })
