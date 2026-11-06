@@ -113,8 +113,6 @@ function snapshot(ids: number[]) {
   mockGetPendingMessages.mockReturnValue(pendingRows(ids))
 }
 
-const deliveredIds = () => mockSendPrompt.mock.calls.map((_c, i) => mockMarkDelivered.mock.calls[i]?.[0])
-
 describe('message router: the row is re-read before it is delivered', () => {
   beforeEach(() => {
     vi.clearAllMocks()

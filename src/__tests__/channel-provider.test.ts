@@ -5,7 +5,6 @@ import {
   getChannelToken,
   getChannelChatId,
   channelStateDir,
-  type ChannelProviderType,
 } from '../channel-provider.js'
 
 describe('getProviderType', () => {

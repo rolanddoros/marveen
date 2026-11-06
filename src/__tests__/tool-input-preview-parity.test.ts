@@ -6,7 +6,7 @@
 // actually diverge).
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { toolInputPreview } from '../web/tool-input-preview.js'
 

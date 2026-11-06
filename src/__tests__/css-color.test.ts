@@ -22,7 +22,7 @@ describe('normalizeCssColor (shared vectors)', () => {
   })
   it('knows the full CSS named-colour table (147 names + transparent)', () => {
     expect(Object.keys(CSS_NAMED_COLORS)).toHaveLength(149)
-    for (const [name, hex] of Object.entries(CSS_NAMED_COLORS)) expect(hex).toMatch(/^#[0-9a-f]{6}(00)?$/)
+    for (const hex of Object.values(CSS_NAMED_COLORS)) expect(hex).toMatch(/^#[0-9a-f]{6}(00)?$/)
     expect(normalizeCssColor('constructor')).toBeNull()
     expect(normalizeCssColor('__proto__')).toBeNull()
   })

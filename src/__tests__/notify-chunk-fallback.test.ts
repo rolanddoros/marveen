@@ -79,7 +79,7 @@ describe('sendToChat: a failed chunk falls back to ITSELF, as plain text', () =>
     // summary (#1655). Neither carries the text, and neither carries the error
     // words (NOTIFYSENDLOG930: a provider error can quote the rejected text).
     expect(mockWarn).toHaveBeenCalledTimes(2)
-    const [meta, msg] = mockWarn.mock.calls[0]
+    const [meta] = mockWarn.mock.calls[0]
     expect(meta).toMatchObject({ chunk: 2, chunks: 3, firstStatus: null, retryStatus: null })
     expect(meta).not.toHaveProperty('err')
     for (const call of mockWarn.mock.calls) expect(JSON.stringify(call)).not.toContain('network down')

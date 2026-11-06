@@ -18,7 +18,6 @@ import {
 const TMP = mkdtempSync(join(tmpdir(), 'auth-sessions-test-'))
 const DB_PATH = join(TMP, 'test.db')
 
-const DAY = 24 * 60 * 60 * 1000
 
 function makeUser(name: string) {
   return createDashboardUser(name, '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')

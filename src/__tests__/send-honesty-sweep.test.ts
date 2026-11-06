@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync, readFileSync, cpSync } from 'node:fs'
-import { tmpdir, platform } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 // NOTIFYVAKSWEEP826 round 1: the sweep measured 13 Telegram/dashboard senders

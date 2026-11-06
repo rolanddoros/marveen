@@ -140,8 +140,6 @@ vi.mock('../db.js', async () => {
   return { createAgentMessage: (...a: unknown[]) => h.createAgentMessage(...a) }
 })
 
-const INITIAL_DELAY_MS = 270_000
-const INTERVAL_MS = 300_000
 const T0 = 1_790_000_000_000
 
 let timers: NodeJS.Timeout[] = []

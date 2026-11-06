@@ -23,12 +23,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { readConfiguredMainModel, readExtraChannelPluginIds } from '../web/channel-monitor.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
 
 let root: string
 

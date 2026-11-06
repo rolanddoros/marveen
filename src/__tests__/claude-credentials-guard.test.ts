@@ -1,7 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 
 // The guard reads HOME (~/.claude) and STORE_DIR at module-eval time via
 // config/os, so we drive it through a temp HOME + a controllable env flag and

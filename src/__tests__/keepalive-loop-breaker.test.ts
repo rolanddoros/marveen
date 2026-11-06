@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 import {
   decideKeepaliveLoop, releaseKeepaliveLoop, keepaliveProducerAdvanced, keepaliveProducerRemedy, keepaliveHoldReason,
-  KEEPALIVE_LOOP_INITIAL, KEEPALIVE_USELESS_RESPAWN_LIMIT, type KeepaliveLoopState,
+  KEEPALIVE_LOOP_INITIAL, type KeepaliveLoopState,
 } from '../web/channel-monitor.js'
 
 // KEEPALIVELOOP923. 2026-09-23: the keepalive producer hung, the file stayed
