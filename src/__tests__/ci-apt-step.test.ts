@@ -8,6 +8,9 @@
 //   - the install takes only ffmpeg, with --no-install-recommends;
 //   - NO cache and NO third-party action (no new dependency, no outside code in CI). That last one is a decision,
 //     not an accident: a later "speed it up with a cache action" is a change to that decision, not a fix.
+//     And it was changed, by decision, for THIS case only (C2, Johnny 12569 option 1, Kevin 12570): the .deb files
+//     come through actions/cache/restore + actions/cache/save, under six conditions, pinned in the "the .deb cache"
+//     cases below and in ci-workflow-pins.test.ts. No other cache, apt or ffmpeg action is allowed.
 // The time limit must be on the STEP: a job-level timeout-minutes does not count, on purpose (Ron 12365, F8). A job
 // limit would stop the whole run late instead of naming the step that hung.
 //
@@ -38,6 +41,10 @@ const ROOT = join(__dirname, '..', '..')
 const WF_DIR = join(ROOT, '.github', 'workflows')
 const WORKFLOWS = readdirSync(WF_DIR).filter((f) => /\.ya?ml$/.test(f)).sort()
 const STEP_NAME = "Install ffmpeg for the resize hook's tests"
+const KEY_STEP = 'Resolve the ffmpeg .deb set and its cache key'
+const RESTORE_STEP = 'Restore the ffmpeg .deb cache'
+const SAVE_STEP = 'Save the ffmpeg .deb cache (a push to main only)'
+const DEB_DIR = '"$HOME/ffmpeg-debs"'
 const MAX_MINUTES = 8
 const APT_FLAGS = ['-o Acquire::Retries=3', '-o Acquire::http::Timeout=30']
 const APT_CALL = /\bapt(-get)?\b/
@@ -182,20 +189,72 @@ describe('CI apt step: a hard time limit, retries, only ffmpeg, no cache (Johnny
     expect(ALL.find((s) => s.name === STEP_NAME)!.timeout).toBe(MAX_MINUTES)
   })
 
-  it('the ffmpeg step: one update, then one install of ffmpeg alone, -y --no-install-recommends', () => {
-    const cmds = commands(ALL.find((s) => s.name === STEP_NAME)!.run)
-    const words = (c: string) => c.replace(/-o\s+\S+/g, '').split(/\s+/).filter((w) => w !== '' && w !== 'sudo' && w !== 'apt-get')
-    expect(cmds.map(words)).toEqual([
+  const words = (c: string) => c.replace(/-o\s+\S+/g, '').split(/\s+/).filter((w) => w !== '' && w !== 'sudo' && w !== 'apt-get')
+  const aptCmds = (name: string) => commands(ALL.find((s) => s.name === name)!.run).filter((c) => APT_CALL.test(c))
+
+  it('the key step: one update, then the --print-uris of ffmpeg alone, -y --no-install-recommends', () => {
+    expect(aptCmds(KEY_STEP).map(words)).toEqual([
       ['update'],
-      ['install', '-y', '--no-install-recommends', 'ffmpeg'],
+      ['install', '--print-uris', '-qq', '-y', '--no-install-recommends', 'ffmpeg', '>', '"$RUNNER_TEMP/ffmpeg-uris.txt"'],
     ])
   })
 
-  it('no cache action, no apt action, no ffmpeg setup action in any workflow (no new dependency, Johnny 12210)', () => {
+  it('the ffmpeg step: prune the cached .deb files FIRST, then one install of ffmpeg alone (Johnny 12569 (5))', () => {
+    const cmds = commands(ALL.find((s) => s.name === STEP_NAME)!.run)
+    expect(cmds[0]).toBe(`python3 scripts/deb-cache-verify.py prune ${DEB_DIR}`)
+    expect(cmds.slice(1).map(words)).toEqual([['install', '-y', '--no-install-recommends', 'ffmpeg']])
+  })
+
+  it('the print-uris and the install read and write the one cached dir', () => {
+    for (const c of [...aptCmds(KEY_STEP).slice(1), ...aptCmds(STEP_NAME)]) expect(c).toContain(`-o Dir::Cache::Archives=${DEB_DIR} `)
+    // the install keeps its downloads, whatever an image's apt.conf says: a deleted .deb is a cache that never fills
+    expect(aptCmds(STEP_NAME)[0]).toContain('-o APT::Keep-Downloaded-Packages=true ')
+  })
+
+  it('no cache action but the two .deb cache steps, no apt action, no ffmpeg setup action (Johnny 12210, 12569 (1))', () => {
     const uses = WORKFLOWS.flatMap((f) => TEXT[f].split('\n')
-      .filter((l) => /^\s*(-\s+)?['"]?uses['"]?\s*:/.test(l)).map((l) => `${f}: ${l.trim()}`))
+      .filter((l) => /^\s*(-\s+)?['"]?uses['"]?\s*:/.test(l)).map((l) => `${f}: ${l.trim().replace(/^-\s+/, '')}`))
     expect(uses.length).toBeGreaterThan(0)
-    expect(uses.filter((u) => /cache|apt|ffmpeg/i.test(u.split('uses')[1]))).toEqual([])
+    expect(uses.filter((u) => /cache|apt|ffmpeg/i.test(u.split('uses')[1]))).toEqual([
+      'test.yml: uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0',
+      'test.yml: uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0',
+    ])
+  })
+
+  // The raw lines of one step of test.yml, from its `- name:` to the next step: the cache steps have no run block, so
+  // the reader above does not see their `with:`.
+  const stepLines = (name: string): string[] => {
+    const lines = TEXT['test.yml'].split('\n')
+    const at = lines.findIndex((l) => l.trim() === `- name: ${name}`)
+    expect(at, name).toBeGreaterThan(-1)
+    const ind = indentOf(lines[at])
+    const end = lines.findIndex((l, i) => i > at && l.trim() !== '' && indentOf(l) <= ind)
+    return lines.slice(at, end === -1 ? undefined : end).map((l) => l.trim())
+  }
+
+  it('the .deb cache: only ~/ffmpeg-debs/*.deb, under the key step\'s key, restored before and saved after the install (3)', () => {
+    for (const name of [RESTORE_STEP, SAVE_STEP]) {
+      const body = stepLines(name)
+      expect(body.filter((l) => /^path:/.test(l)), name).toEqual(['path: ~/ffmpeg-debs/*.deb'])
+      expect(body.filter((l) => /^key:/.test(l)), name).toEqual(['key: ${{ steps.ffmpeg-key.outputs.key }}'])
+      // one path line, no path list: a `path: |` block could add more than the .deb files
+      expect(body.some((l) => /^path:\s*[|>]/.test(l)), name).toBe(false)
+      expect(body.some((l) => /^restore-keys:/.test(l)), name).toBe(false)
+    }
+    const order = [KEY_STEP, RESTORE_STEP, STEP_NAME, SAVE_STEP].map((n) => TEXT['test.yml'].indexOf(`- name: ${n}\n`))
+    expect(order.every((at, i) => at > -1 && (i === 0 || at > order[i - 1])), String(order)).toBe(true)
+    expect(stepLines(KEY_STEP)).toContain('id: ffmpeg-key')
+    expect(stepLines(RESTORE_STEP)).toContain('id: ffmpeg-debs')
+    // the save reads the prune's unverified output by this id (ci-workflow-pins.test.ts pins the condition)
+    expect(stepLines(STEP_NAME)).toContain('id: ffmpeg-install')
+  })
+
+  it('the .deb cache key holds the runner image, the ffmpeg version and the .deb set hash, and fails empty (4)', () => {
+    const run = ALL.find((s) => s.name === KEY_STEP)!.run
+    // the image variables must be set, or the step fails before any key is written
+    expect(run.split('\n')[0]).toBe(': "${ImageOS:?}" "${ImageVersion:?}"')
+    expect(run).toContain('set_key="$(python3 scripts/deb-cache-verify.py key "$RUNNER_TEMP/ffmpeg-uris.txt" ffmpeg)"')
+    expect(run).toContain('echo "key=ffmpeg-debs-$ImageOS-$ImageVersion-$set_key" >> "$GITHUB_OUTPUT"')
   })
 
   // Fixtures: each must give at least one violation. F1-F8 are Ron's forms (12365) that the first version let through.

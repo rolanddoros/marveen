@@ -31,7 +31,19 @@ const usesLines = (f: string) =>
 const RELEASES: Record<string, { sha: string; version: string }> = {
   'actions/checkout': { sha: '11d5960a326750d5838078e36cf38b85af677262', version: 'v4.4.0' },
   'actions/setup-node': { sha: '49933ea5288caeca8642d1e84afbd3f7d6820020', version: 'v4.4.0' },
+  // C2 (Johnny 12569 (1)): GitHub API repos/actions/cache/releases/latest = v6.1.0 (published 2026-06-26), and
+  // git/ref/tags/v6.1.0 = commit 55cc8345..., read by Dennis on 2026-11-06. restore and save are two actions of the
+  // one repo, so they share the release.
+  'actions/cache/restore': { sha: '55cc8345863c7cc4c66a329aec7e433d2d1c52a9', version: 'v6.1.0' },
+  'actions/cache/save': { sha: '55cc8345863c7cc4c66a329aec7e433d2d1c52a9', version: 'v6.1.0' },
 }
+
+// The one condition under which the .deb cache is written (C2, Johnny 12569 (2), (6)): a push to main, never a PR
+// branch. A pull_request run's github.ref is refs/pull/<n>/merge and its event is pull_request, so both halves are
+// needed; the cache-hit half only skips a save of what was just restored. The last half (Kevin 12587): the install
+// step's prune said unverified=false. It is `== 'false'`, not `!= 'true'`: a missing output (prune never ran) must
+// not count as verified, so a run that could not verify its cache never saves one.
+const SAVE_IF = "if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ffmpeg-debs.outputs.cache-hit != 'true' && steps.ffmpeg-install.outputs.unverified == 'false'"
 
 const PINNED = /^\s*(-\s+)?uses:\s+[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$/
 
@@ -61,6 +73,30 @@ describe('CI workflows: pinned actions, one Node version source (C2 B2-5)', () =
     }
     expect(wrong).toEqual([])
     expect([...used].sort()).toEqual(Object.keys(RELEASES).sort())
+  })
+
+  it('every cache save step runs only on a push to main (Johnny 12569 (2), (6))', () => {
+    let saves = 0
+    for (const f of WORKFLOWS) {
+      const lines = text(f).split('\n')
+      lines.forEach((line, i) => {
+        if (!/uses:\s+actions\/cache(\/save)?@/.test(line)) return
+        // the step around this uses: line, up to its `- ` and down to the next step
+        const ind = line.search(/\S/)
+        let start = i
+        while (start > 0 && !/^\s*-\s/.test(lines[start])) start--
+        const stepInd = lines[start].search(/\S/)
+        const body = [lines[start].replace(/^(\s*)-\s/, '$1  ')]
+        for (let j = start + 1; j < lines.length && (lines[j].trim() === '' || lines[j].search(/\S/) > stepInd); j++) body.push(lines[j])
+        const ifs = body.map((l) => l.trim()).filter((l) => /^if\s*:/.test(l))
+        saves++
+        // actions/cache (restore AND save in one) is not allowed at all: its post step saves from any branch
+        expect(/actions\/cache@/.test(line), `${f}:${i + 1}: actions/cache saves in its post step; use restore + save`).toBe(false)
+        expect(ifs, `${f}:${i + 1}`).toEqual([SAVE_IF])
+        expect(ind).toBeGreaterThan(stepInd)
+      })
+    }
+    expect(saves).toBe(1)
   })
 
   it('one action is pinned to one SHA everywhere (no two releases of the same action side by side)', () => {
