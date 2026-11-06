@@ -163,7 +163,8 @@ describe('runScriptSuite: a suite case is red unless the suite exits 0 (or skips
       vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
         const t0 = Date.now()
-        expect(() => runScriptSuite('slow.test.sh', { skip: vi.fn() }, dir, 500)).toThrow()
+        // the digest names the budget the suite ran with, not the shards' 300 s
+        expect(() => runScriptSuite('slow.test.sh', { skip: vi.fn() }, dir, 500)).toThrow(/slow\.test\.sh timed out after 0\.5 s/)
         expect(Date.now() - t0).toBeLessThan(4000)
       } finally {
         vi.restoreAllMocks()
