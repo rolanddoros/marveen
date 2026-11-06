@@ -109,10 +109,16 @@ describe('a fresh skill seed ships the skill subdirs (SEEDSKILLSUB1018)', () => 
   })
 })
 
+// sched_pre_verify_once and register_refreshed_schedule are the scheduled-task registry steps:
+// update.sh calls both as plain statements and never reads their status (1346, 1414, 1432 at
+// 580c4866), so a no-op takes the very branch the old missing function (127) took, without the
+// "command not found" lines. They are covered for real by seed-refresh-untouched-only and
+// schedule-registry-shell-paths. Declared FIRST, so slicing the real one later overrides it.
+const REGISTRY_NOOPS = 'sched_pre_verify_once() { :; }\nregister_refreshed_schedule() { :; }'
 // Sliced per call, so a missing helper fails the refresh tests, not the file.
 const funcs = () => ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file', 'refresh_untouched_seeds', 'run_seed_refresh']
   .map((n) => sliceShellFn(UPDATE, n))
-  .join('\n')
+  .reduce((acc, fn) => `${acc}\n${fn}`, REGISTRY_NOOPS)
 
 function git(dir: string, args: string[]): void {
   execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' })

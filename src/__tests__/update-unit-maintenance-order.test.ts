@@ -87,16 +87,83 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   })
 })
 
-describe('the maintenance itself, executed for real', () => {
-  const body = [
-    sliceShellFn(UPDATE, 'repair_morning_timer'),
-    sliceShellFn(UPDATE, 'migrate_channels_restart'),
+// Only the two oldest repairs run for real here. Every other repair the wrapper calls is
+// executed by its own hermetic suite, which slices it out of update.sh the same way:
+//   install_keepalive_probe_timer      scripts/__tests__/keepalive-probe-install.test.sh, update-timer-start.test.sh
+//   install_keepalive_probe_launchd    scripts/__tests__/keepalive-probe-install.test.sh, src/__tests__/helper-launchd-labels.test.ts
+//   install_stuck_modal_guard_launchd  scripts/__tests__/stuck-modal-guard-install.test.sh, src/__tests__/helper-launchd-labels.test.ts
+//   install_main_inbox_observer_unit   scripts/__tests__/main-inbox-observer-install.test.sh, update-timer-start.test.sh
+//   strip_legacy_notifier_telegram_env scripts/__tests__/notifier-unit-telegram-env.test.sh
+//   park_morning_timer                 scripts/__tests__/morning-timer-park.test.sh
+//   scrub_rc_secrets                   src/__tests__/update-rc-secret-scrub.test.ts
+// (A broken install_keepalive_probe_timer fails keepalive-probe-install.test.sh 9 times, measured
+// 2026-11-06, Kevin 12191.) Here they are RECORDING stubs: the probe then proves the wrapper calls
+// each of them, in order, with the unit dir, instead of 127-ing past them; and since the wrapper
+// returns 0 whatever a repair does, "exit 0" alone proves nothing -- the case below that fails one
+// repair is what gives it a meaning.
+/** The repairs run_unit_maintenance calls, in its own order, read from update.sh. */
+const WRAPPER_CALLS = sliceShellFn(UPDATE, 'run_unit_maintenance').split('\n').slice(1)
+  .map((l) => l.match(/^\s+([a-z_]+)(?: "\$@")?$/)?.[1]).filter((n): n is string => !!n)
+const REAL = ['repair_morning_timer', 'migrate_channels_restart']
+
+describe('the morning-timer and channels repairs, executed for real; the other repairs recorded', () => {
+  const stubs = (failing?: string) => WRAPPER_CALLS.filter((n) => !REAL.includes(n))
+    .map((n) => n === failing
+      ? `${n}() { echo "CALL ${n} $*"; echo "${n} failed" >&2; return 1; }`
+      : `${n}() { echo "CALL ${n} $*"; }`)
+    .join('\n')
+  // stubs FIRST: a repair sliced for real later in the body overrides its stub
+  const body = (failing?: string) => [
+    stubs(failing),
+    ...REAL.map((n) => sliceShellFn(UPDATE, n)),
     sliceShellFn(UPDATE, 'run_unit_maintenance'),
   ].join('\n')
 
-  function run(dir: string) {
-    return runScript(`${body}\nrun_unit_maintenance "${dir}"`)
+  function run(dir: string, failing?: string) {
+    return runScript(`${body(failing)}\nrun_unit_maintenance "${dir}"`)
   }
+  const calls = (out: string) => out.split('\n').filter((l) => l.startsWith('CALL ')).map((l) => l.trimEnd())
+
+  it('the wrapper list is the one this file knows: the two real repairs and the seven recorded ones', () => {
+    expect(WRAPPER_CALLS).toEqual([
+      'repair_morning_timer', 'migrate_channels_restart', 'install_keepalive_probe_timer',
+      'install_keepalive_probe_launchd', 'install_stuck_modal_guard_launchd', 'install_main_inbox_observer_unit',
+      'strip_legacy_notifier_telegram_env', 'park_morning_timer', 'scrub_rc_secrets',
+    ])
+  })
+
+  it('calls every recorded repair once, in the wrapper order, with the unit dir (scrub_rc_secrets without it)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      const r = run(dir)
+      expect(r.code).toBe(0)
+      expect(calls(r.out)).toEqual([
+        `CALL install_keepalive_probe_timer ${dir}`,
+        `CALL install_keepalive_probe_launchd ${dir}`,
+        `CALL install_stuck_modal_guard_launchd ${dir}`,
+        `CALL install_main_inbox_observer_unit ${dir}`,
+        `CALL strip_legacy_notifier_telegram_env ${dir}`,
+        `CALL park_morning_timer ${dir}`,
+        'CALL scrub_rc_secrets',
+      ])
+      expect(r.out).not.toContain('command not found')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a failing repair does not stop the rest: the later repairs still run and the wrapper returns 0', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      writeFileSync(join(dir, 'marveen-channels.service'), OLD_CHANNELS_UNIT)
+      const r = run(dir, 'install_keepalive_probe_timer')
+      expect(r.code).toBe(0)
+      expect(calls(r.out).map((l) => l.split(' ')[1])).toEqual(WRAPPER_CALLS.filter((n) => !REAL.includes(n)))
+      expect(readFileSync(join(dir, 'marveen-channels.service'), 'utf-8')).toMatch(/^Restart=always$/m)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   it('repairs BOTH unit kinds in one pass', () => {
     const dir = mkdtempSync(join(tmpdir(), 'units-'))
