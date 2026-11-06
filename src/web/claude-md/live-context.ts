@@ -63,6 +63,7 @@ import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { parseEnvContent } from '../../env-parse.js'
+import { isAgentName } from './agent-name.js'
 import type { AgentDocContext, AgentRole, AutonomyLevel } from './context.js'
 import { hooksFromSettings } from './hooks-from-settings.js'
 
@@ -101,8 +102,6 @@ const DEFAULT_OWNER_NAME = 'Owner'
 const DEFAULT_BOT_NAME = 'Marveen'
 const HEARTBEAT_AGENT_ID = 'heartbeat'
 const HIDDEN_AGENT_SENTINEL = '.hidden-from-dashboard'
-// A directory name under agents/: no separator, no dot-only name.
-const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 function readText(path: string): string | null {
   try {
@@ -258,7 +257,7 @@ function effectiveDontAsk(layers: SettingsLayer[]): boolean | undefined {
 
 export function buildLiveContext(root: string, name: string, opts: LiveContextOptions = {}): LiveContext {
   if (!root.startsWith('/')) throw new LiveContextError(`root must be an absolute path: ${root}`)
-  if (!AGENT_NAME_RE.test(name)) throw new LiveContextError(`not an agent name: ${JSON.stringify(name)}`)
+  if (!isAgentName(name)) throw new LiveContextError(`not an agent name: ${JSON.stringify(name)}`)
   const assumptions: string[] = []
   const envText = readText(join(root, '.env'))
   const env = envText === null ? {} : parseEnvContent(envText)

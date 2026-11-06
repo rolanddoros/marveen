@@ -96,7 +96,7 @@ describe('role and input checks', () => {
   })
 
   it('a name with a separator or a dot-only name, and a relative root, throw', () => {
-    for (const bad of ['../kevin', 'a/b', '.', '..', '', '.hidden', 'a\nb']) {
+    for (const bad of ['../kevin', 'a/b', '.', '..', '', '.hidden', 'a\nb', 'Kevin', 'a.b', 'a_b', '-a']) {
       expect(() => build(bad), JSON.stringify(bad)).toThrow(/not an agent name/)
     }
     expect(() => buildLiveContext('relative/root', 'marveen', OV)).toThrow(/absolute path/)
@@ -505,14 +505,40 @@ describe('import tree', () => {
     return { files: files.sort(), builtins: [...builtins].sort() }
   }
 
-  it('reaches exactly four source files, none of the forbidden ones, and only fs, os and path', () => {
+  it('reaches exactly five source files, none of the forbidden ones, and only fs, os and path', () => {
     const { files, builtins } = tree('web/claude-md/live-context.ts')
-    expect(files).toEqual(['env-parse.ts', 'web/claude-md/context.ts', 'web/claude-md/hooks-from-settings.ts', 'web/claude-md/live-context.ts'])
+    expect(files).toEqual(['env-parse.ts', 'web/claude-md/agent-name.ts', 'web/claude-md/context.ts', 'web/claude-md/hooks-from-settings.ts', 'web/claude-md/live-context.ts'])
     for (const f of FORBIDDEN) expect(files).not.toContain(f)
     expect(builtins).toEqual(['node:fs', 'node:os', 'node:path'])
   })
 
-  it('no file in the tree names a writing fs call', () => {
+  // Ron S2: a name regex alone misses `import { writeFileSync as w }` and `fsx['writeFile' + 'Sync']`. So the
+  // tree may import from node:fs only these read-only names, each by its own name (no alias, no namespace or
+  // default import), and may not reach a module another way (require, dynamic import, process, globalThis).
+  const FS_ALLOWED = ['accessSync', 'constants', 'existsSync', 'lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'statSync']
+
+  it('node:fs is imported only by an exact allowlist of read-only names, never aliased or as a namespace', () => {
+    const seen = new Set<string>()
+    for (const f of tree('web/claude-md/live-context.ts').files) {
+      const text = readFileSync(join(SRC_ROOT, f), 'utf-8')
+      expect(text, `${f}: process or globalThis reaches modules around the import list`).not.toMatch(/\b(?:process|globalThis)\b/)
+      for (const m of text.matchAll(/^\s*import\s+([^'"]*?)\s+from\s+['"](node:fs(?:\/[a-z]+)?|fs(?:\/[a-z]+)?)['"]/gm)) {
+        expect(m[2], `${f}: ${m[2]}`).toBe('node:fs')
+        const clause = m[1].trim()
+        const named = /^\{([^}]*)\}$/.exec(clause)
+        expect(named, `${f}: only a named import of node:fs (no default, no namespace): ${clause}`).not.toBeNull()
+        for (const part of named![1].split(',').map((x) => x.trim()).filter(Boolean)) {
+          expect(part, `${f}: no alias in a node:fs import`).toMatch(/^[A-Za-z]+$/)
+          expect(FS_ALLOWED, `${f}: ${part}`).toContain(part)
+          seen.add(part)
+        }
+      }
+      expect(text, `${f}: export-from node:fs`).not.toMatch(/^\s*export\b[^'"]*from\s+['"](?:node:)?fs/m)
+    }
+    expect([...seen].sort()).toEqual(FS_ALLOWED)
+  })
+
+  it('no file in the tree names a writing fs call (the cheap second net)', () => {
     for (const f of tree('web/claude-md/live-context.ts').files) {
       const text = readFileSync(join(SRC_ROOT, f), 'utf-8')
       expect(text, f).not.toMatch(/\b(?:writeFile|appendFile|mkdir|rm|rmdir|unlink|rename|copyFile|symlink|chmod|chown|truncate|open|utimes|cp)(?:Sync)?\s*\(/)
