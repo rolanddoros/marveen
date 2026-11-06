@@ -11,11 +11,15 @@
 //     1. After a removed block, one blank line is dropped when the line before
 //        the block is blank too (or the block opens the file): that is the
 //        separator the legacy writers inserted, and without this rule every
-//        removal would leave a pile of empty lines behind.
+//        removal would leave a pile of empty lines behind. "Blank" means empty
+//        or whitespace-only, so a whitespace-only line can be the one dropped.
 //     2. Before the region: a missing final line break is added, and one blank
 //        separator line when the owner zone does not already end with one.
-//   Both additions use LF. Everything else (CRLF line endings, a BOM,
-//   Hungarian text, trailing spaces) stays as it was.
+//   Both additions use LF. Everything else (CRLF line endings, Hungarian
+//   text, trailing spaces) stays as it was.
+// - A leading BOM (U+FEFF) is file-level: it is set aside before the scan, so
+//   a marker on the first line is still recognised, and put back at the start
+//   of the output, even when everything after it was generated.
 // - The region itself always uses LF (render.ts wrapRegion).
 //
 // Markers are recognised only as whole lines (exact match; a trailing CR of a
@@ -55,6 +59,7 @@ export interface ComposeResult {
 }
 
 const V2_PAIR: MarkerPair = { id: 'v2', begin: REGION_BEGIN, end: REGION_END }
+const BOM = String.fromCharCode(0xfeff)
 
 interface Line {
   raw: string // with its own line ending, if any
@@ -126,7 +131,8 @@ export function composeClaudeMd(
   let dropNextBlank = false
   let v2Seen = 0
 
-  const lines = splitLines(fileText)
+  const bom = fileText.startsWith(BOM) ? BOM : ''
+  const lines = splitLines(fileText.slice(bom.length))
   for (let i = 0; i < lines.length; i++) {
     const { content } = lines[i]
     const n = i + 1
@@ -185,5 +191,6 @@ export function composeClaudeMd(
     if (!isBlank(last)) owner += '\n'
     text = owner + region
   }
+  text = bom + text
   return { text, changed: text !== fileText, removed }
 }

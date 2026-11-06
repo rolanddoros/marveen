@@ -114,6 +114,11 @@ describe('legacy blocks', () => {
     expect(composeClaudeMd(`A\n\n${block(ROSTER)}\nC\n`, REGION).text).toBe(`A\n\nC\n\n${REGION}`)
   })
 
+  it('exactly ONE blank line goes: two blank lines after a removed block leave one', () => {
+    expect(composeClaudeMd(`A\n\n${block(ROSTER)}\n\nC\n`, REGION).text).toBe(`A\n\n\nC\n\n${REGION}`)
+    expect(composeClaudeMd(`A\n\n${block(ROSTER)}   \n\t\nC\n`, REGION).text).toBe(`A\n\n\t\nC\n\n${REGION}`)
+  })
+
   it('a block that opens the file takes its following blank line too', () => {
     expect(composeClaudeMd(`${block(ROSTER)}\nA\n`, REGION).text).toBe(`A\n\n${REGION}`)
   })
@@ -228,6 +233,35 @@ describe('line endings', () => {
   it('a CRLF v2 region (hand-edited) is still recognised and replaced', () => {
     const text = `A\r\n\r\n${REGION.replace(/\n/g, '\r\n')}`
     expect(composeClaudeMd(text, REGION2).text).toBe(`A\r\n\r\n${REGION2}`)
+  })
+})
+
+describe('a leading BOM', () => {
+  const BOM = String.fromCharCode(0xfeff)
+
+  it('is kept in front of an owner zone, byte for byte', () => {
+    const text = `${BOM}# Agent\n`
+    const r = composeClaudeMd(text, REGION)
+    expect(r.text).toBe(`${BOM}# Agent\n\n${REGION}`)
+    idempotent(text)
+  })
+
+  it('does not hide a marker on the first line: the block is removed and the BOM stays', () => {
+    const text = `${BOM}${block(ROSTER)}\nOwner.\n`
+    const r = composeClaudeMd(text, REGION)
+    expect(r.removed).toEqual(['fleet-roster'])
+    expect(r.text).toBe(`${BOM}Owner.\n\n${REGION}`)
+    idempotent(text)
+  })
+
+  it('is kept when the whole file was generated', () => {
+    expect(composeClaudeMd(`${BOM}${REGION2}`, REGION).text).toBe(`${BOM}${REGION}`)
+    expect(composeClaudeMd(BOM, REGION).text).toBe(`${BOM}${REGION}`)
+  })
+
+  it('only a leading BOM is file-level: one later in the text is ordinary owner text', () => {
+    const text = `A\n${BOM}${ROSTER.end}\n`
+    expect(composeClaudeMd(text, REGION).text).toBe(`${text}\n${REGION}`)
   })
 })
 

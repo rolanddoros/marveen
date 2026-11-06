@@ -47,6 +47,26 @@ describe('positive: wired as a command under the right event', () => {
   it('a quoted project dir before the path ("$CLAUDE_PROJECT_DIR"/scripts/hooks/...)', () => {
     expect(commandRunsScript(`python3 "$CLAUDE_PROJECT_DIR"/scripts/hooks/${SHELL}`, SHELL)).toBe(true)
   })
+
+  it('the interpreter in command position: start, after &&, ;, |, (, a -c quote, then/else, exec, timeout', () => {
+    for (const c of [
+      `python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `/srv/fleet/.venv/bin/python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `cd /srv/fleet && python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `true; python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `cat /dev/null | python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `(python3 /srv/fleet/scripts/hooks/${SHELL})`,
+      `bash -c 'python3 /srv/fleet/scripts/hooks/${SHELL}'`,
+      `if true; then python3 /srv/fleet/scripts/hooks/${SHELL}; fi`,
+      `exec python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `timeout 8 python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `timeout -k 1 8 python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `timeout --signal=KILL 2.5s python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `python3 /scripts/hooks/${SHELL}`,
+    ]) {
+      expect(commandRunsScript(c, SHELL), c).toBe(true)
+    }
+  })
 })
 
 describe('matcher must cover Bash (PreToolUse guards)', () => {
@@ -55,7 +75,7 @@ describe('matcher must cover Bash (PreToolUse guards)', () => {
   })
 
   it('a list without Bash, any regex, a case variant or a non-string does not', () => {
-    for (const m of ['Write', 'Read|Edit', '.*', 'Ba.*', 'Bash.*', '^Bash$', '(Bash)', 'bash', 'Bash ', 'Bash|.*', 'Bash|Ba.*', 42, null, ['Bash']]) {
+    for (const m of ['Write', 'Read|Edit', '.*', 'Ba.*', 'Bash.*', '^Bash$', '(Bash)', 'bash', 'Bash ', 'Bash|.*', 'Bash|Ba.*', 'BashOutput', 'BashOutput|Edit', 'Bashx|Write', 42, null, ['Bash']]) {
       expect(matcherCoversBash(m), JSON.stringify(m)).toBe(false)
     }
   })
@@ -102,6 +122,25 @@ describe('negative: the script name outside a command that runs it', () => {
       `python3 /srv/fleet/hooks/${SHELL}`,
       `true # python3 /srv/fleet/scripts/hooks/${SHELL}`,
       `#python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `true # ; python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `true #&& exec python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `echo python3 /srv/fleet/scripts/hooks/${SHELL}`,
+      `printf '%s' node "/srv/fleet/scripts/hooks/${SHELL}"`,
+      `true && echo node "/srv/fleet/scripts/hooks/${SHELL}"`,
+      `logger -t hook python3 /srv/fleet/scripts/hooks/${SHELL}`,
+    ]) {
+      expect(commandRunsScript(c, SHELL), c).toBe(false)
+      expect(ptu(entry(c, 'Bash')), c).toBe(false)
+    }
+  })
+
+  it('a relative path (resolves against the hook cwd) is not wired', () => {
+    for (const c of [
+      `python3 ./scripts/hooks/${SHELL}`,
+      `python3 scripts/hooks/${SHELL}`,
+      `python3 "./scripts/hooks/${SHELL}"`,
+      `exec python3 ../fleet/scripts/hooks/${SHELL}`,
+      `bash -c '[ -f ./scripts/hooks/${SHELL} ] && exec python3 ./scripts/hooks/${SHELL}; exit 0'`,
     ]) {
       expect(commandRunsScript(c, SHELL), c).toBe(false)
       expect(ptu(entry(c, 'Bash')), c).toBe(false)

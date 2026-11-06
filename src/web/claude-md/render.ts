@@ -7,6 +7,9 @@
 // The renderer has no logic on purpose: `{{key}}` is the only syntax, there is
 // no {{#if}}. Whether a section or a line appears is decided in TypeScript (the
 // registry), so the template text stays reviewable as text.
+//
+// TAB (U+0009) is banned with the C0 class, in values AND in every rendered
+// line, so a template indents with spaces, inside code blocks too.
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -41,9 +44,12 @@ const VALUE_CHECKS: readonly { label: string; re: RegExp }[] = [
   { label: 'a C0 control character or DEL', re: /[\u0000-\u0009\u000B\u000C\u000E-\u001F\u007F]/ },
   { label: 'a C1 control character (U+0080-U+009F)', re: /[\u0080-\u009F]/ },
   { label: 'a Unicode line or paragraph separator (U+2028/U+2029)', re: /[\u2028\u2029]/ },
+  // Unicode Cf (format) is the whole invisible family: the bidi controls (U+202A-U+202E, U+2066-U+2069,
+  // U+200E/U+200F, U+061C), the zero-width ones (U+200B-U+200D, U+2060), U+FEFF and U+00AD (Ron, 7a J5).
+  // U+034F (combining grapheme joiner) is invisible too but Mn, not Cf, so it is named on its own.
   {
-    label: 'a bidi control (U+202A-U+202E, U+2066-U+2069, U+200E/U+200F, U+061C)',
-    re: /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/,
+    label: 'an invisible format character (Unicode Cf: bidi, zero-width, U+FEFF, U+00AD) or U+034F',
+    re: /[\p{Cf}\u034F]/u,
   },
   { label: 'an HTML comment marker ("<!--" or "-->")', re: /<!--|-->/ },
 ]

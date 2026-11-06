@@ -19,13 +19,24 @@
 //     as not covering);
 //   - in a hooks[] entry of type "command" whose command runs the script: an
 //     interpreter (node, python3, python, bash, sh; bare, path-qualified or
-//     quoted) directly followed by a path ending in /scripts/hooks/<script>,
-//     outside a "#" comment;
+//     quoted) in COMMAND POSITION (the start of the text; after &&, ||, ;, |,
+//     &, (, {, a `-c '` quote, or then/else/do; optionally behind `exec` and a
+//     `timeout [options] <duration>` prefix), directly followed by an ABSOLUTE
+//     or variable-rooted path ending in /scripts/hooks/<script> (it starts with
+//     "/" or "$", optionally quoted; a relative ./scripts/hooks path resolves
+//     against the hook's cwd and reads as false), outside a "#" comment;
 // and no layer sets "disableAllHooks" to anything but false.
-// Shell text is not parsed beyond that. A command built to defeat the check can
-// pass it; these entries are written by our own scaffold, and the check is
-// there against stale, mis-placed or disabled wiring, not against the
-// settings' author.
+// So "echo python3 /x/scripts/hooks/<script>" reads false: python3 is an echo
+// argument there, not a command.
+// Shell text is not parsed beyond that. Known to read TRUE although nothing
+// runs: a separator or keyword inside a quoted argument
+// (`echo "a; python3 /x/scripts/hooks/<script>"`, `echo do python3 ...`). And
+// known to read FALSE although the script runs (fail-closed, only a longer
+// region): interpreter flags (python3 -I), `nice`/`env`/`uv run` prefixes, a
+// script run directly by its shebang. These entries are written by our own
+// scaffold; the check is there against stale, mis-placed or disabled wiring,
+// not against the settings' author. "Wired" is not "present": whether the
+// script file exists and is executable is PR 10's check (Ron, 7a J4).
 
 import { HOOK_IDS, type HookId } from './context.js'
 
@@ -63,10 +74,15 @@ export function commandRunsScript(command: unknown, script: string): boolean {
   if (typeof command !== 'string') return false
   // Drop a shell comment: from the first "#" that starts a word.
   const code = command.replace(/(^|\s)#[\s\S]*$/, '$1')
+  // Where a command word can start, and what may stand between that and the interpreter.
+  const start = String.raw`(?:^|&&|\|\||[;|&({]|-c\s+['"]|\b(?:then|else|do)\b)`
+  const duration = String.raw`\d+(?:\.\d+)?[smhd]?`
+  const prefix = String.raw`(?:\s*exec\b)?(?:\s*timeout(?:\s+-{1,2}[A-Za-z][\w-]*(?:=\S+|\s+${duration})?)*\s+${duration})?`
   const interp = String.raw`(?:"[^"\s]*\/)?(?:[^"'\s]*\/)?(?:node|python3|python|bash|sh)"?`
-  // "/root/x/scripts/hooks/s", "$CLAUDE_PROJECT_DIR/scripts/hooks/s", "$CLAUDE_PROJECT_DIR"/scripts/hooks/s
-  const path = String.raw`[^\s;&|]*\/scripts\/hooks\/${escapeRe(script)}["']?`
-  const re = new RegExp(String.raw`(?:^|[\s;&|(])${interp}\s+${path}(?=$|[\s;&|)])`)
+  // "/root/x/scripts/hooks/s", "$CLAUDE_PROJECT_DIR/scripts/hooks/s", "$CLAUDE_PROJECT_DIR"/scripts/hooks/s;
+  // never "./scripts/hooks/s" or "scripts/hooks/s"
+  const path = String.raw`["']?(?=[\/$])[^\s;&|]*\/scripts\/hooks\/${escapeRe(script)}["']?`
+  const re = new RegExp(String.raw`${start}${prefix}\s*${interp}\s+${path}(?=$|[\s;&|)])`)
   return re.test(code)
 }
 

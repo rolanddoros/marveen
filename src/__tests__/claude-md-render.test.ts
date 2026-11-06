@@ -81,12 +81,20 @@ describe('checkValue: one test per forbidden class', () => {
     ['C1 U+009B (CSI)', `a${cp(0x9b)}b`, /C1 control/],
     ['U+2028', `a${cp(0x2028)}b`, /line or paragraph separator/],
     ['U+2029', `a${cp(0x2029)}b`, /line or paragraph separator/],
-    ['bidi U+202A', `a${cp(0x202a)}b`, /bidi control/],
-    ['bidi U+202E', `a${cp(0x202e)}b`, /bidi control/],
-    ['bidi U+2066', `a${cp(0x2066)}b`, /bidi control/],
-    ['bidi U+2069', `a${cp(0x2069)}b`, /bidi control/],
-    ['bidi U+200F', `a${cp(0x200f)}b`, /bidi control/],
-    ['bidi U+061C', `a${cp(0x061c)}b`, /bidi control/],
+    ['Cf bidi U+202A', `a${cp(0x202a)}b`, /invisible format character/],
+    ['Cf bidi U+202E', `a${cp(0x202e)}b`, /invisible format character/],
+    ['Cf bidi U+2066', `a${cp(0x2066)}b`, /invisible format character/],
+    ['Cf bidi U+2069', `a${cp(0x2069)}b`, /invisible format character/],
+    ['Cf bidi U+200F', `a${cp(0x200f)}b`, /invisible format character/],
+    ['Cf bidi U+061C', `a${cp(0x061c)}b`, /invisible format character/],
+    ['Cf zero-width space U+200B', `a${cp(0x200b)}b`, /invisible format character/],
+    ['Cf ZWNJ U+200C', `a${cp(0x200c)}b`, /invisible format character/],
+    ['Cf ZWJ U+200D', `a${cp(0x200d)}b`, /invisible format character/],
+    ['Cf word joiner U+2060', `a${cp(0x2060)}b`, /invisible format character/],
+    ['Cf BOM U+FEFF', `a${cp(0xfeff)}b`, /invisible format character/],
+    ['Cf soft hyphen U+00AD', `a${cp(0x00ad)}b`, /invisible format character/],
+    ['Cf tag U+E0041', `a${cp(0xe0041)}b`, /invisible format character/],
+    ['Mn grapheme joiner U+034F', `a${cp(0x034f)}b`, /invisible format character/],
     ['comment open', 'a<!--b', /HTML comment marker/],
     ['comment close', 'a-->b', /HTML comment marker/],
   ]
@@ -97,8 +105,8 @@ describe('checkValue: one test per forbidden class', () => {
     })
   }
 
-  it('the class boundaries are exact: U+00A0, U+2027, U+202F and U+2065 pass', () => {
-    for (const n of [0xa0, 0x2027, 0x202f, 0x2065]) {
+  it('the class boundaries are exact: U+00A0, U+00AC, U+034E, U+0350, U+2027, U+202F, U+205F and combining accents pass', () => {
+    for (const n of [0xa0, 0xac, 0x34e, 0x350, 0x2027, 0x202f, 0x205f, 0x301]) {
       expect(checkValue('k', `a${cp(n)}b`)).toBe(`a${cp(n)}b`)
     }
   })
@@ -133,7 +141,7 @@ describe('wrapRegion and checkBody', () => {
   it('rejects a body with CR, a comment marker or an invisible control (last gate)', () => {
     expect(() => wrapRegion('a\r\nb')).toThrow(/line break/)
     expect(() => wrapRegion(`ok\n${REGION_END}`)).toThrow(/HTML comment marker/)
-    expect(() => checkBody(`a${cp(0x202e)}b`)).toThrow(/bidi control/)
+    expect(() => checkBody(`a${cp(0x202e)}b`)).toThrow(/invisible format character/)
   })
 })
 
