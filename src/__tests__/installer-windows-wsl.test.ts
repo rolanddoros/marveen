@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 
 // Installer defects hit by a real Windows + WSL2 install (2026-08-21), each one
 // pinned here so it cannot come back unnoticed.

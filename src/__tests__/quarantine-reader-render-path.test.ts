@@ -16,7 +16,7 @@
 // These tests pin the target path and the watcher's re-render decision.
 
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { homedir } from 'node:os'

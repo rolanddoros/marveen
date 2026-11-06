@@ -824,7 +824,7 @@ describe('writeBufferFully', () => {
     const buf = Buffer.from('12345')
     const sequence = [2, 1, 2] // simulate three short writes summing to 5
     let call = 0
-    writeBufferFully((_b, off, len) => {
+    writeBufferFully((_b, _off, len) => {
       const n = Math.min(sequence[call++], len)
       chunks.push(n)
       return n

@@ -1,8 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { parseDateExpression } from '../web/routes/recall.js'
 
-// Pin "today" to 2026-05-19 (Tuesday) in the install zone for deterministic tests
-const FAKE_TODAY = '2026-05-19'
 
 vi.mock('../web/routes/recall.js', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../web/routes/recall.js')>()

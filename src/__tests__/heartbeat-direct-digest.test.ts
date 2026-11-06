@@ -240,7 +240,7 @@ describe('(A)+(B) a direct send that did not land is caught by the guard (Marvee
   it('send fails -> no digest row -> the guard reports that slot; send works -> the guard stays silent', async () => {
     initDatabase(':memory:')
     const slot = Date.now() - HEARTBEAT_DIGEST_GRACE_MS - 60_000
-    const real = (sendWorks: boolean): GapGuardDeps => ({
+    const real = (): GapGuardDeps => ({
       prevOccurrence: (_s, fromMs, toMs) => (slot > fromMs && slot <= toMs ? slot : null),
       digestSince: (agent, sinceMs) => hasHeartbeatDigestSince(agent, MAIN_AGENT_ID, sinceMs - 1000),
       noteExists: (m) => hasAgentMessageStartingWith('system', MAIN_AGENT_ID, m),
@@ -251,11 +251,11 @@ describe('(A)+(B) a direct send that did not land is caught by the guard (Marvee
 
     const failing = fakeDeps({ send: () => { throw new Error('db locked') } })
     await sendHeartbeatDigestDirect('hourly-heartbeat', 'heartbeat', failing.deps)
-    expect(checkHeartbeatDigestGaps(task, Date.now(), real(false))).toHaveLength(1)
+    expect(checkHeartbeatDigestGaps(task, Date.now(), real())).toHaveLength(1)
 
     initDatabase(':memory:')
     const working = fakeDeps({ send: (from, to, content) => { createAgentMessage(from, to, content) }, mainAgentId: MAIN_AGENT_ID })
     await sendHeartbeatDigestDirect('hourly-heartbeat', 'heartbeat', working.deps)
-    expect(checkHeartbeatDigestGaps(task, Date.now(), real(true))).toEqual([])
+    expect(checkHeartbeatDigestGaps(task, Date.now(), real())).toEqual([])
   })
 })

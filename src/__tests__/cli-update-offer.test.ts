@@ -171,7 +171,7 @@ describe('startCliUpdate (background job, one at a time, verified by the real pr
   it('refuses a non-version target, an unknown method, and a second concurrent run', async () => {
     expect(startCliUpdate('latest', 'npm')).toMatchObject({ ok: false })
     expect(startCliUpdate('2.1.280', 'unknown')).toMatchObject({ ok: false })
-    const slow = ((cmd: string, args: string[]) => { const c = new FakeChild(); setTimeout(() => c.emit('exit', 0), 300); return c }) as unknown as typeof import('node:child_process').spawn
+    const slow = ((_cmd: string, _args: string[]) => { const c = new FakeChild(); setTimeout(() => c.emit('exit', 0), 300); return c }) as unknown as typeof import('node:child_process').spawn
     expect(startCliUpdate('2.1.280', 'npm', { spawnImpl: slow, probe: async () => ({ ok: true, exitCode: 1, signal: null, durationMs: 1 }), measure: async () => ({ version: '2.1.280' }), resolveBin: () => '/x/claude', dirsNotWritable: async () => false })).toEqual({ ok: true })
     expect(startCliUpdate('2.1.280', 'npm', { spawnImpl: slow })).toMatchObject({ ok: false, error: expect.stringContaining('already running') })
     await waitDone(() => readCliUpdateResult()?.status !== 'running')

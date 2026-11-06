@@ -22,7 +22,6 @@ beforeEach(() => {
   initDatabase(':memory:')
 })
 
-const DAY = 86400
 const HOUR = 3600
 const NOW = 2_000_000_000
 

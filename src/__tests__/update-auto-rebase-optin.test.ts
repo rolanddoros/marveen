@@ -67,14 +67,6 @@ echo "REACHED_END"
   return { code, out, log }
 }
 
-// `rev-list` answers BEHIND=2 (so the branch is diverged); everything else is recorded.
-const GIT_BASE = `#!/bin/bash
-echo "git $*" >> "$STUB_CALLS"
-case "$1 $2" in
-  "rev-list --count") echo 2; exit 0 ;;
-esac
-`
-
 function gitStub(extra: string): string {
   return `#!/bin/bash
 STUB_CALLS="\${STUB_CALLS:-/dev/null}"

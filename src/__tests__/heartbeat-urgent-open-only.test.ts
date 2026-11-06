@@ -112,7 +112,6 @@ describe('there is ONE definition, and both consumers read it', () => {
   const DB_SRC = readFileSync(join(ROOT, 'src', 'db.ts'), 'utf-8')
   const HEARTBEAT_SRC = readFileSync(join(ROOT, 'src', 'heartbeat.ts'), 'utf-8')
   const ROUTE_SRC = readFileSync(join(ROOT, 'src', 'web', 'routes', 'kanban.ts'), 'utf-8')
-  const SCAFFOLD_SRC = readFileSync(join(ROOT, 'src', 'web', 'heartbeat-agent-scaffold.ts'), 'utf-8')
 
   it('the built-in heartbeat does not run its own kanban SQL', () => {
     expect(HEARTBEAT_SRC).toContain('getHeartbeatKanbanSummary')

@@ -13,7 +13,6 @@ import { logger } from '../logger.js'
 import {
   isTeamsServiceUrl,
   readTeamsServiceUrl,
-  getTeamsBotToken,
   sendTeamsMessage,
   clearTeamsTokenCache,
   TeamsConfigError,

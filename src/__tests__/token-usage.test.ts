@@ -147,7 +147,7 @@ describe('collectTokenUsage', () => {
 
   it('parseJsonlFile handles valid lines, skips invalid JSON and non-assistant types', async () => {
     // Dynamically import to get access to the module
-    const mod = await import('../web/token-usage.js')
+    await import('../web/token-usage.js')
 
     // We test via collectTokenUsage indirectly; but more importantly
     // let's verify query functions work with known data.

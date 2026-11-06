@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { statSync, existsSync, chmodSync } from 'node:fs'
+import { statSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   initDatabase,

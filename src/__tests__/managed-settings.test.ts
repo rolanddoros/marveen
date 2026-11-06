@@ -4,10 +4,7 @@ import { execSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
-  isManagedSettingsReady,
   getManagedSettingsSudoCommand,
-  setAgentEnabledPlugins,
-  resetAgentEnabledPlugins,
 } from '../web/routes/agents.js'
 
 const SLACK_ENTRY = { plugin: 'slack-channel', marketplace: 'marveen-marketplace' }

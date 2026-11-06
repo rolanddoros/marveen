@@ -378,7 +378,7 @@ describe('repo refusal: tracked symlinks and a resolved tree leaving the repo', 
   it('install: npm resolves first (--package-lock-only, scripts off, .npmrc aside), then installs', async () => {
     cloneFiles.value = { 'package.json': DEFAULT_PKG, '.npmrc': 'git=./pwn.sh\n' }
     const seen: string[] = []
-    lockOnlyMock.mockImplementationOnce((f, a, opts) => {
+    lockOnlyMock.mockImplementationOnce((_f, _a, opts) => {
       seen.push(`lock npmrc=${existsSync(join(opts.cwd, '.npmrc'))}`)
       writeFileSync(join(opts.cwd, 'package-lock.json'), OK)
       return ''

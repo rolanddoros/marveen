@@ -115,7 +115,7 @@ describe('bridgeEnroll', () => {
   })
 
   it('re-pairing the same installId replaces BOTH the ssh line and the device key', async () => {
-    const { line, installId } = makeKeyLine()
+    const { line } = makeKeyLine()
     const first = await bridgeEnroll({ keyLine: line, name: 'Phone' }, testDeps())
     const second = await bridgeEnroll({ keyLine: line, name: 'Phone (repaired)' }, testDeps())
 
@@ -324,7 +324,7 @@ describe('DELETE /api/auth/device-keys/:id for a paired key', () => {
   })
 
   it('drops the authorized_keys line together with the key', async () => {
-    const { line, installId } = makeKeyLine()
+    const { line } = makeKeyLine()
     const outcome = await bridgeEnroll({ keyLine: line, name: 'Pair' }, testDeps())
     process.env.MARVEEN_SSH_DIR = sshDir
     const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${outcome.deviceKeyId}`, { auth: { kind: 'token' } })

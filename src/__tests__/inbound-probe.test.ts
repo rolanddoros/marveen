@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmdirSync, rmSync, symlinkSync, utimesSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, utimesSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { backscanStart, shouldTriggerDeafnessRespawn, nextPendingProbe, inboundRecordText, scanIngestion, scanIngestionAcross, countTranscriptWritersSince, decideProbeTick, deafnessRespawnHold, recordDeafnessRespawn, INITIAL_PROBE_TICK_STATE, type ProbeTickState, PROBE_PING_PREFIX, isProbePing, runInboundProbeTick, defaultProbeTickDeps, type ProbeLoopState, type ProbeTickDeps, readLastIngestionTimestamp, readLastIngestionTimestampAcross, mainTranscriptDirs, mainConfigRoots, TRANSCRIPT_DIR } from '../web/inbound-probe.js'

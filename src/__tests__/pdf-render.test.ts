@@ -3,7 +3,7 @@
 // listening server must not reach it with the lockdown flags, and the same page without them must
 // (the control that shows the test can fail).
 import { describe, it, expect, vi, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, symlinkSync, readFileSync, renameSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, symlinkSync, renameSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

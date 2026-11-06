@@ -168,7 +168,7 @@ describe('migrate.sh: every import call', () => {
     writeFileSync(join(src, 'MEMORY.md'), '# Memory\n\nOne thing worth keeping, long enough to be a chunk of its own here.\n')
     return { r, src }
   }
-  const answer = (path: string) => (s: Seen) => s.url === '/api/memories/import' ? '{"ok":true,"imported":1,"stats":{"warm":1}}' : '{"id":1}'
+  const answer = (_path: string) => (s: Seen) => s.url === '/api/memories/import' ? '{"ok":true,"imported":1,"stats":{"warm":1}}' : '{"id":1}'
   // xterm, not dumb: migrate.sh's `clear` fails under TERM=dumb and set -e ends the script there (as it is today).
   const env = { TERM: 'xterm' }
 

@@ -13,10 +13,6 @@ import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
-  injectEgressGate,
-  ensureEgressGate,
-} from '../web/agent-scaffold.js'
-import {
   generateFetchNonce,
   wrapUntrustedFetch,
   wrapUntrusted,
