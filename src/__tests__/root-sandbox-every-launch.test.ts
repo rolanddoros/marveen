@@ -75,8 +75,12 @@ describe('every other launch path carries the guard before claude', () => {
   // The shell scripts build the pane command in a double-quoted string, so the
   // escaping is what decides whether the PANE evaluates the uid. Expand each
   // assignment in bash and compare with the TS constant, character for character.
+  // watchdog.sh's CMD calls two of its own helpers inside $( ); they are not what this case
+  // measures, so they get stand-ins instead of a "command not found" on stderr. The guard text
+  // the case does measure is not produced by either of them.
+  const HELPER_STANDINS = `sh_single_quote() { printf '%s' "$1"; }\nagent_sandbox_flag() { :; }`
   const expand = (line: string, varName: string) =>
-    execFileSync('bash', ['-c', `${line.trim().replace(/^local /, '')}\nprintf '%s' "$${varName}"`], { encoding: 'utf-8' })
+    execFileSync('bash', ['-c', `${HELPER_STANDINS}\n${line.trim().replace(/^local /, '')}\nprintf '%s' "$${varName}"`], { encoding: 'utf-8' })
   const lineOf = (rel: string, re: RegExp) => {
     const l = read(rel).split('\n').find((x) => re.test(x))
     expect(l, `${rel}: ${re}`).toBeDefined()

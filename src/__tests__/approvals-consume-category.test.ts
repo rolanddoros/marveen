@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync, readdirSync, renameSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -310,6 +310,9 @@ describe('cross-process double consume', () => {
   afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
   const RELEASE_MS = 1000
   const CHILDREN = 6
+  // Own deadline on the ready wait (Ron 12140, ~20 s): well inside the 60 s test timeout, so a child
+  // that never gets ready fails here, by name, instead of as a bare test timeout.
+  const READY_DEADLINE_MS = 20_000
 
   const script = join(dir, 'child.ts')
   writeFileSync(script, [
@@ -332,19 +335,22 @@ describe('cross-process double consume', () => {
   ].join('\n'))
 
   type Child = { code: number | null; out: string; err: string }
-  function runChild(args: string[], onClose: () => void): Promise<Child> {
-    return new Promise((resolve) => {
-      const p = spawn(process.execPath, ['--import', 'tsx', script, ...args], { cwd: ROOT, env: { ...process.env, LOG_LEVEL: 'silent' } })
+  type Running = { proc: ChildProcess; done: Promise<Child> }
+  function runChild(args: string[], onClose: () => void): Running {
+    const proc = spawn(process.execPath, ['--import', 'tsx', script, ...args], { cwd: ROOT, env: { ...process.env, LOG_LEVEL: 'silent' } })
+    const done = new Promise<Child>((resolve) => {
       let out = ''
       let err = ''
-      p.stdout.on('data', (d) => { out += d })
-      p.stderr.on('data', (d) => { err += d })
-      p.on('close', (code) => { onClose(); resolve({ code, out, err }) })
+      proc.stdout!.on('data', (d) => { out += d })
+      proc.stderr!.on('data', (d) => { err += d })
+      proc.on('close', (code) => { onClose(); resolve({ code, out, err }) })
     })
+    return { proc, done }
   }
+  const pidsSeen: number[] = []
 
   /** Six children on one approval; `slow` makes one of them boot `slowMs` later than the rest. */
-  async function race(name: string, slow?: { who: string; ms: number }) {
+  async function race(name: string, slow?: { who: string; ms: number }, readyDeadlineMs = READY_DEADLINE_MS) {
     const dbPath = join(dir, `${name}.db`)
     const syncDir = join(dir, `${name}-sync`)
     mkdirSync(syncDir)
@@ -353,14 +359,29 @@ describe('cross-process double consume', () => {
     let closed = 0
     const running = Array.from({ length: CHILDREN }, (_, i) =>
       runChild([dbPath, syncDir, `proc-${i}`, slow?.who ?? '', String(slow?.ms ?? 0)], () => { closed++ }))
-    // All six at the barrier first; a child that dies before it gets there ends the wait.
-    while (readdirSync(syncDir).filter(f => f.startsWith('ready-')).length < CHILDREN && closed === 0) {
-      await new Promise(r => setTimeout(r, 20))
+    pidsSeen.push(...running.map((r) => r.proc.pid!))
+    let results: Child[]
+    try {
+      // All six at the barrier first; a child that dies before it gets there ends the wait.
+      const readyBy = Date.now() + readyDeadlineMs
+      const ready = () => readdirSync(syncDir).filter(f => f.startsWith('ready-'))
+      while (ready().length < CHILDREN && closed === 0) {
+        if (Date.now() > readyBy) {
+          const missing = Array.from({ length: CHILDREN }, (_, i) => `proc-${i}`).filter((w) => !ready().includes(`ready-${w}`))
+          throw new Error(`race ${name}: not ready after ${readyDeadlineMs} ms: ${missing.join(', ')}`)
+        }
+        await new Promise(r => setTimeout(r, 20))
+      }
+      const startAt = Date.now() + RELEASE_MS
+      writeFileSync(join(syncDir, 'go.tmp'), String(startAt))
+      renameSync(join(syncDir, 'go.tmp'), join(syncDir, 'go'))
+      results = await Promise.all(running.map((r) => r.done))
+    } finally {
+      // A failed wait must not leave children behind (they would sit out their own 55 s give-up).
+      const alive = running.filter((r) => r.proc.exitCode === null && r.proc.signalCode === null)
+      for (const r of alive) r.proc.kill('SIGKILL')
+      await Promise.all(alive.map((r) => r.done))
     }
-    const startAt = Date.now() + RELEASE_MS
-    writeFileSync(join(syncDir, 'go.tmp'), String(startAt))
-    renameSync(join(syncDir, 'go.tmp'), join(syncDir, 'go'))
-    const results = await Promise.all(running)
     const parsed = results.map((r) => {
       // The child's stderr goes in as one JSON-escaped line. Raw, its own "    at ..." lines
       // read as frames of this error, and vitest then parses the tsx frame's file for a source
@@ -388,5 +409,20 @@ describe('cross-process double consume', () => {
   // leaves that child late; this one must still race all six.
   it('a child that boots 3 s late still races: the release waits for all six to be ready', async () => {
     await race('race-slow', { who: 'proc-2', ms: 3000 })
+  }, 60_000)
+
+  // The wait's own deadline, and the cleanup behind it: a child stuck before its ready file fails
+  // the race by name, and no child of this race outlives it. The deadline here must sit ABOVE a
+  // loaded tsx boot (Ron 12237 measured the healthy five at 2.4-4.5 s under load; with 2 s this
+  // case failed alone, green only after the earlier races had warmed the boot) and below the stuck
+  // child's 30 s nap and the 60 s test timeout. The message must NAME proc-4; whether a slow
+  // healthy child is named too is not what this case is about.
+  it('a child that never gets ready fails the race by name, and every child is gone afterwards', async () => {
+    const before = pidsSeen.length
+    await expect(race('race-stuck', { who: 'proc-4', ms: 30_000 }, 12_000)).rejects.toThrow(/race race-stuck: not ready after 12000 ms: .*\bproc-4\b/)
+    const mine = pidsSeen.slice(before)
+    expect(mine).toHaveLength(CHILDREN)
+    const alive = mine.filter((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
+    expect(alive).toEqual([])
   }, 60_000)
 })
