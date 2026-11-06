@@ -51,10 +51,12 @@ export function missingDistMarkers(root: string = ROOT): string[] {
 }
 
 // What `npm run build` compiles the dist suites' code from: every file under src/ (tsconfig include src/**/*,
-// resolveJsonModule) EXCEPT src/__tests__, and the two files that steer it. Path and content, in a fixed order, so
-// the same tree gives the same answer everywhere. src/__tests__ is left out on purpose: the dist suites never load
-// dist/__tests__, and tests and mutants are edited all the time; with them in, every test edit would cost a full build.
+// resolveJsonModule) EXCEPT src/__tests__, and the files that steer it. Path and content, in a fixed order, so the
+// same tree gives the same answer everywhere. src/__tests__ is left out exactly as the build leaves it out
+// (tsconfig.build.json, B2-2b): tests and mutants are edited all the time, and they cost no build.
 export const FINGERPRINT_SKIP = join('src', '__tests__')
+// Every tsconfig the build script names (`tsc -p <file>`) must be here; script-tests-runner.test.ts checks that.
+export const FINGERPRINT_FILES = ['tsconfig.json', 'tsconfig.build.json', 'package.json']
 
 export function sourceFingerprint(root: string): string {
   const h = createHash('sha256')
@@ -69,7 +71,7 @@ export function sourceFingerprint(root: string): string {
     }
   }
   if (existsSync(join(root, 'src'))) walk(join(root, 'src'))
-  for (const f of ['tsconfig.json', 'package.json']) if (existsSync(join(root, f))) add(join(root, f))
+  for (const f of FINGERPRINT_FILES) if (existsSync(join(root, f))) add(join(root, f))
   return h.digest('hex')
 }
 

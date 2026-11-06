@@ -37,7 +37,7 @@ import { dirname, join } from 'node:path'
 import {
   ROOT, SCRIPT_TESTS_DIR, SHARD_COUNT, SUITE_TIMEOUT_MS, discoverScriptSuites, nameHash, runScriptSuite, shardOf, suitesForShard,
 } from './setup/script-suites.js'
-import { DIST_MARKERS, STAMP, ensureDist, missingDistMarkers } from './setup/build-dist-once.js'
+import { DIST_MARKERS, FINGERPRINT_FILES, STAMP, ensureDist, missingDistMarkers } from './setup/build-dist-once.js'
 import { spawnSync } from 'node:child_process'
 
 const SUITES = discoverScriptSuites()
@@ -277,6 +277,9 @@ describe('the one dist/ build before the suites', () => {
       // a test file is not part of the fingerprint: editing one costs no build
       put('src/__tests__/x.test.ts', 'export const t = 1\n')
       expect(ensureDist(root, build, warn)).toBe('present')
+      // a change to a file that steers the build is a source change
+      put('tsconfig.build.json', '{ "extends": "./tsconfig.json" }\n')
+      expect(ensureDist(root, build, warn)).toBe('built')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -304,6 +307,15 @@ describe('the one dist/ build before the suites', () => {
     // no other suite builds dist/ on demand (a fifth one would need a marker here)
     const builders = SUITES.filter((f) => /npm', 'run', 'build'\]|cd "\$INSTALL_DIR" && npm run build/.test(readFileSync(join(SCRIPT_TESTS_DIR, f), 'utf-8')))
     expect([...builders].sort()).toEqual(DIST_SUITES.map((d) => d.suite).sort())
+  })
+
+  // B2-2b moved the build onto tsconfig.build.json: a tsconfig the build reads but the fingerprint does not would let
+  // a dist/ built under the old settings stay trusted.
+  it('every tsconfig the build script names is part of the fingerprint', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as { scripts: Record<string, string> }
+    const named = [...pkg.scripts.build.matchAll(/\btsc\b(?:\s+-p\s+(\S+))?/g)].map((m) => m[1] ?? 'tsconfig.json')
+    expect(named.length).toBeGreaterThan(0)
+    for (const f of named) expect(FINGERPRINT_FILES, f).toContain(f)
   })
 
   // The fallback builds may run in parallel on the failure branch (Kevin 12101): harmless only because none of them can
