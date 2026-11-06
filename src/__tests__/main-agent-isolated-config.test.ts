@@ -57,30 +57,20 @@ afterAll(() => {
 })
 
 describe('ensureMainAgentIsolatedConfigDir', () => {
-  it('linux + setting on + fleet token present + ~/.claude present -> isolated dir', () => {
-    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+  it('setting on + fleet token present + ~/.claude present -> isolated dir (any platform: there is no platform gate since #686)', () => {
+    const dir = ensureMainAgentIsolatedConfigDir()
     expect(dir).toBe(join(PROJECT, '.channels-config'))
     expect(existsSync(dir!)).toBe(true)
   })
 
-  it('linux + setting off (default) -> null (zero behavior change for existing installs)', () => {
+  it('setting off (default) -> null (zero behavior change for existing installs)', () => {
     SETTING = '0'
-    expect(ensureMainAgentIsolatedConfigDir(undefined, 'linux')).toBeNull()
+    expect(ensureMainAgentIsolatedConfigDir()).toBeNull()
   })
 
-  it('linux + setting on + no fleet token -> null (hasFleetOauthToken gate still applies)', () => {
+  it('setting on + no fleet token -> null (hasFleetOauthToken gate still applies)', () => {
     rmSync(TOKEN_PATH, { force: true })
-    expect(ensureMainAgentIsolatedConfigDir(undefined, 'linux')).toBeNull()
-  })
-
-  it('darwin + setting on + fleet token present -> isolated dir (unchanged, no regression)', () => {
-    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'darwin')
-    expect(dir).toBe(join(PROJECT, '.channels-config'))
-  })
-
-  it('darwin + setting off (default) -> null (unchanged, no regression)', () => {
-    SETTING = '0'
-    expect(ensureMainAgentIsolatedConfigDir(undefined, 'darwin')).toBeNull()
+    expect(ensureMainAgentIsolatedConfigDir()).toBeNull()
   })
 
   // The settings.json rewrite runs on EVERY main-agent start. It used to be a
@@ -90,7 +80,7 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
   // `statusLine` was lost that way three times (2026-07-28, 07-30, 08-03),
   // each time taking context monitoring blind mid-work with no error anywhere.
   it('keeps isolated-only settings keys the shared file never mentions', () => {
-    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const dir = ensureMainAgentIsolatedConfigDir()!
     const own = join(dir, 'settings.json')
     writeFileSync(own, JSON.stringify({
       statusLine: { type: 'command', command: 'ctx.sh' },
@@ -98,7 +88,7 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     }, null, 2) + '\n')
 
     // Second start: the shared file still says nothing about statusLine.
-    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+    ensureMainAgentIsolatedConfigDir()
 
     const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
     expect(after.statusLine).toEqual({ type: 'command', command: 'ctx.sh' })
@@ -113,13 +103,13 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
   // provisioner, not inferred from the merge code, so the guarantee the egress
   // change rests on is executed rather than believed.
   it('keeps a permissions block the shared file never mentions (Bash egress deny target)', () => {
-    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const dir = ensureMainAgentIsolatedConfigDir()!
     const own = join(dir, 'settings.json')
     writeFileSync(own, JSON.stringify({
       permissions: { deny: ['Bash(curl *https://*)', 'Bash(wget *)'] },
     }, null, 2) + '\n')
 
-    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+    ensureMainAgentIsolatedConfigDir()
 
     const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
     expect((after.permissions as { deny: string[] }).deny).toEqual(['Bash(curl *https://*)', 'Bash(wget *)'])
@@ -127,11 +117,11 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
 
   it('lets the shared file win for every key it DOES define', () => {
     writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ model: 'shared-model' }))
-    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const dir = ensureMainAgentIsolatedConfigDir()!
     const own = join(dir, 'settings.json')
     writeFileSync(own, JSON.stringify({ model: 'stale-model', statusLine: 'keep-me' }, null, 2) + '\n')
 
-    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+    ensureMainAgentIsolatedConfigDir()
 
     const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
     expect(after.model).toBe('shared-model')   // shared wins on conflict

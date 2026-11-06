@@ -529,7 +529,6 @@ export function ensureIsolatedChannelConfigDir(
 //   - returns null (caller keeps the shared root) whenever not applicable.
 export function ensureMainAgentIsolatedConfigDir(
   provider?: string,
-  _platform: NodeJS.Platform = process.platform,
 ): string | null {
   let enabled = false
   try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
