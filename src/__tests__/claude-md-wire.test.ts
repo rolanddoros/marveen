@@ -378,3 +378,75 @@ describe('Ron S1: hooks without a real source stop the write by themselves', () 
     expect(read(KEVIN)).toBe(before)
   })
 })
+
+// C1 PR 10b E: before it, a flag turned off after a v2 write left the region, and the legacy sequence appended its
+// blocks next to it. Now the region is stripped first (after a backup of the v2 file); a strip that cannot be done
+// leaves the file and skips the legacy sequence.
+describe('E: the flag off (or refused) on a file that still has its region: the region goes, then the legacy sequence runs', () => {
+  const LATER = new Date('2026-11-07T10:00:00Z')
+  const v2Kevin = () => {
+    flagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    expect(count(read(KEVIN), REGION_BEGIN)).toBe(1)
+    return read(KEVIN)
+  }
+  const unflagKevin = () => put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' } }))
+
+  it('a sub: false (legacy runs), the region and its separator gone, the owner text kept, the v2 file backed up', () => {
+    const v2 = v2Kevin()
+    unflagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => LATER }))).toBe(false)
+    expect(read(KEVIN)).toBe('# Kevin\n')
+    expect(backups()).toEqual(['20261106-234300', '20261107-110000'])
+    expect(read(join(ROOT, 'store', 'claude-md-backup', '20261107-110000', 'kevin', 'CLAUDE.md'))).toBe(v2)
+  })
+
+  it('a second flag-off start changes nothing anywhere (no write, no new backup)', () => {
+    v2Kevin()
+    unflagKevin()
+    applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => LATER }))
+    const snap = snapshot()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date('2026-11-08T10:00:00Z') }))).toBe(false)
+    expect(snapshot()).toEqual(snap)
+  })
+
+  it('the main agent: the same, under the main id', () => {
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
+    expect(applyMainClaudeMdV2(deps())).toBe(true)
+    const v2 = read(join(ROOT, 'CLAUDE.md'))
+    put('.env', 'MAIN_AGENT_ID=boss\n')
+    expect(applyMainClaudeMdV2(deps({ now: () => LATER }))).toBe(false)
+    expect(read(join(ROOT, 'CLAUDE.md'))).toBe('# Boss\n\nOwner text with $& and $1, ékezet.\n')
+    expect(read(join(ROOT, 'store', 'claude-md-backup', '20261107-110000', 'boss', 'CLAUDE.md'))).toBe(v2)
+  })
+
+  it('refused while the file has its region (federation enabled later): the region goes too, legacy runs', () => {
+    v2Kevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => LATER, federationEnabled: () => true }))).toBe(false)
+    expect(read(KEVIN)).toBe('# Kevin\n')
+  })
+
+  it('the strip cannot be done (a broken file): true (no legacy blocks next to the region), the file unchanged, no backup', () => {
+    const v2 = v2Kevin()
+    put('agents/kevin/CLAUDE.md', `${v2}<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->\nnever closed\n`)
+    const broken = read(KEVIN)
+    unflagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => LATER }))).toBe(true)
+    expect(read(KEVIN)).toBe(broken)
+    expect(backups()).toEqual(['20261106-234300'])
+  })
+
+  it('the backup fails: true, the file unchanged', () => {
+    const v2 = v2Kevin()
+    unflagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date(Number.NaN) }))).toBe(true)
+    expect(read(KEVIN)).toBe(v2)
+  })
+
+  it('the marker line only inside a code fence is owner text: false, the whole root byte-identical', () => {
+    put('agents/kevin/CLAUDE.md', `# Kevin\n\n\`\`\`\n${REGION_BEGIN}\nquoted\n${REGION_END}\n\`\`\`\n`)
+    const before = snapshot()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(false)
+    expect(snapshot()).toEqual(before)
+  })
+})

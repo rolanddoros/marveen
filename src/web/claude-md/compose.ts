@@ -199,6 +199,45 @@ export function scanClaudeMd(fileText: string, legacyMarkers: readonly MarkerPai
   return { bom, lines: scanned }
 }
 
+// C1 PR 10b E, the rollback's strip: the v2 region (its BEGIN, body and END
+// lines) goes, nothing else. Owner lines and legacy generated blocks stay byte
+// for byte, the BOM and the line endings too. The separator composeClaudeMd
+// put next to the region goes with it: the blank line right before BEGIN when
+// the region ends the file (compose appends it there), or the blank right
+// after END when the region opened after a blank (compose's own rule for a
+// removed block). So stripV2Region(composeClaudeMd(t, region).text).text === t
+// for a t without generated blocks that ends in a non-blank line and an LF
+// (an owner whose file ended in a blank line loses that one line).
+// The same scan as composeClaudeMd: a broken file throws the same ComposeError,
+// and a marker line inside a code fence is owner text, not a region.
+export function stripV2Region(fileText: string, legacyMarkers: readonly MarkerPair[] = LEGACY_MARKERS): { text: string; changed: boolean } {
+  const { bom, lines } = scanClaudeMd(fileText, legacyMarkers)
+  const out: ScannedLine[] = []
+  let found = false
+  let openedAfterBlank = false
+  let dropNextBlank = false
+  for (const line of lines) {
+    if (line.kind !== 'owner' && line.block === V2_PAIR.id) {
+      if (line.kind === 'begin') {
+        found = true
+        openedAfterBlank = out.length === 0 || isBlank(out[out.length - 1].content)
+      }
+      if (line.kind === 'end') dropNextBlank = openedAfterBlank
+      continue
+    }
+    if (dropNextBlank) {
+      dropNextBlank = false
+      if (line.kind === 'owner' && isBlank(line.content)) continue
+    }
+    out.push(line)
+  }
+  if (!found) return { text: fileText, changed: false }
+  // The region ended the file: the separator is the blank before it.
+  if (dropNextBlank && out.length > 0 && isBlank(out[out.length - 1].content)) out.pop()
+  const text = (bom ? BOM : '') + out.map((l) => l.raw).join('')
+  return { text, changed: text !== fileText }
+}
+
 export function composeClaudeMd(
   fileText: string,
   region: string,

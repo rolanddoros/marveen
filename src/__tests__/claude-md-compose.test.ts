@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ComposeError, checkRegion, composeClaudeMd, scanClaudeMd } from '../web/claude-md/compose.js'
+import { ComposeError, checkRegion, composeClaudeMd, scanClaudeMd, stripV2Region } from '../web/claude-md/compose.js'
 import { REGION_BEGIN, REGION_END, wrapRegion } from '../web/claude-md/render.js'
 import { FEDERATION_MARKERS, LEGACY_MARKERS, type MarkerPair } from '../web/claude-md/legacy-markers.js'
 
@@ -342,5 +342,56 @@ describe('ComposeError.line and scanClaudeMd (C1 PR 8)', () => {
   it('a previous v2 region is a block with id v2', () => {
     const r = scanClaudeMd(`A\n\n${REGION}`)
     expect(r.lines.filter((l) => l.kind !== 'owner').map((l) => l.block)).toEqual(Array(REGION.split('\n').length - 1).fill('v2'))
+  })
+})
+
+// C1 PR 10b E: the rollback's strip. Only the v2 region and its separator go; everything else stays byte for byte.
+describe('stripV2Region (C1 PR 10b E, the rollback)', () => {
+  it('undoes composeClaudeMd for an owner-only file that ends in a non-blank line', () => {
+    for (const owner of ['', '# Agent\n\nOwner text, ékezet, $& and $1.\n', 'one line\n', '# A\r\nCRLF owner\r\n', OWNER_HU]) {
+      const composed = composeClaudeMd(owner, REGION).text
+      expect(composed, JSON.stringify(owner.slice(0, 20))).toContain(REGION_BEGIN)
+      expect(stripV2Region(composed), JSON.stringify(owner.slice(0, 20))).toEqual({ text: owner, changed: owner !== composed })
+    }
+  })
+
+  it('keeps a BOM, and a file that was only the region becomes empty (or the BOM alone)', () => {
+    expect(stripV2Region(REGION)).toEqual({ text: '', changed: true })
+    expect(stripV2Region(`\ufeff${REGION}`)).toEqual({ text: '\ufeff', changed: true })
+    expect(stripV2Region(`\ufeff# A\n\n${REGION}`).text).toBe('\ufeff# A\n')
+  })
+
+  it('legacy blocks and owner text around the region stay byte for byte (the legacy writers own those)', () => {
+    const before = `# Agent\n\n${block(ROSTER)}\nmiddle\n\n`
+    const after = `after the region\n${block(EVIDENCE, 'evidence body')}`
+    const r = stripV2Region(`${before}${REGION}\n${after}`)
+    // opened after a blank line: the blank after END is the separator and goes with the region
+    expect(r).toEqual({ text: `${before}${after}`, changed: true })
+    expect(count(r.text, ROSTER.begin)).toBe(1)
+    expect(count(r.text, EVIDENCE.begin)).toBe(1)
+    expect(r.text).not.toContain(REGION_BEGIN)
+    expect(r.text).not.toContain(REGION_END)
+  })
+
+  it('a region that did not open after a blank line takes no owner line with it', () => {
+    expect(stripV2Region(`text\n${REGION}\nnext\n`).text).toBe('text\n\nnext\n')
+    expect(stripV2Region(`text\n${REGION}`).text).toBe('text\n')
+  })
+
+  it('a legacy block right after END keeps its place; only a blank line is ever dropped', () => {
+    expect(stripV2Region(`a\n\n${REGION}${block(ROSTER)}`).text).toBe(`a\n\n${block(ROSTER)}`)
+  })
+
+  it('no region, or the marker line only inside a code fence: unchanged, the same string', () => {
+    const plain = `# A\n\n${block(ROSTER)}`
+    expect(stripV2Region(plain)).toEqual({ text: plain, changed: false })
+    const fenced = `# A\n\n\`\`\`\n${REGION_BEGIN}\nnot a region\n${REGION_END}\n\`\`\`\n`
+    expect(stripV2Region(fenced)).toEqual({ text: fenced, changed: false })
+  })
+
+  it('a broken file throws the ComposeError composeClaudeMd would throw; nothing is returned', () => {
+    expect(() => stripV2Region(`${REGION}\n${REGION2}`)).toThrow(ComposeError)
+    expect(() => stripV2Region(`# A\n${REGION_BEGIN}\nnever closed\n`)).toThrow(ComposeError)
+    expect(() => stripV2Region(`# A\n${ROSTER.begin}\nopen legacy\n${REGION}`)).toThrow(ComposeError)
   })
 })

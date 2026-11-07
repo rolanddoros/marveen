@@ -41,6 +41,16 @@
 // then tells the caller whether to run the legacy sequence: yes while the
 // file has no v2 region (it stays a legacy file), no once it has one (legacy
 // blocks must not be appended to a v2 file).
+//
+// Rollback (E): with the flag off, or refused, a file that still has a v2
+// region (the flag was on before) gets the region stripped (stripV2Region),
+// after a backup of the v2 file, and the caller then runs the legacy sequence,
+// which writes its blocks again. Without the strip, the legacy writers
+// appended their blocks next to the region. A strip that fails (a broken
+// file, the backup, the write) leaves the file as it was and the legacy
+// sequence is skipped: still no legacy blocks next to a region. A file
+// without a region is only read, so a never-flagged install stays
+// byte-identical.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -55,7 +65,7 @@ import { getFederationConfig } from '../federation/config.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { profileWantsThinChiefHandoff, type ProfileTemplate } from '../profiles.js'
 import { backupClaudeMd } from './backup.js'
-import { composeClaudeMd } from './compose.js'
+import { composeClaudeMd, stripV2Region } from './compose.js'
 import { buildLiveContext, defaultManagedSettingsPath, RENDERED_FIELDS } from './live-context.js'
 import { renderRegion } from './registry.js'
 import { REGION_BEGIN } from './render.js'
@@ -171,6 +181,37 @@ function refusal(deps: WireDeps, name: string, profile: ProfileTemplate | null):
   return null
 }
 
+// The rollback of the header for one CLAUDE.md. Returns whether the caller may run the legacy sequence.
+function rollbackV2(deps: WireDeps, name: string, claudeMdPath: string): boolean {
+  let text: string
+  try {
+    text = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return true // absent or unreadable: the legacy sequence decides, as before
+  }
+  if (!hasV2Region(text)) return true
+  try {
+    const stripped = stripV2Region(text)
+    if (!stripped.changed) return true // the marker line sits in a code fence: owner text, no region
+    backupClaudeMd(deps.storeDir, name, text, deps.now())
+    atomicWriteFileSync(claudeMdPath, stripped.text)
+    logger.info({ name }, 'CLAUDE.md builder: v2 is off for this agent; the v2 region is removed (backed up) and the legacy sections are written again')
+    return true
+  } catch (err) {
+    logger.error({ err, name }, 'CLAUDE.md builder: removing the v2 region failed; the file is left as it was and the legacy sections are not appended')
+    return false
+  }
+}
+
+// Whether the file has a v2 region; unreadable reads as no (the legacy sequence decides, as before).
+function fileHasV2Region(claudeMdPath: string): boolean {
+  try {
+    return hasV2Region(readFileSync(claudeMdPath, 'utf-8'))
+  } catch {
+    return false
+  }
+}
+
 // Steps 3-8 of the header for one CLAUDE.md. Returns whether the caller should run the legacy sequence.
 function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boolean): boolean {
   let hadRegion = false
@@ -202,46 +243,51 @@ function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boo
 // A sub agent at start, after its settings are written and its token synced. true = the v2 path handled the
 // CLAUDE.md and the caller skips the legacy sequence; false = the caller runs it.
 export function applySubClaudeMdV2(name: string, profile: ProfileTemplate, deps: WireDeps = defaultWireDeps()): boolean {
+  // agentDir throws on a name it refuses; these entry points never throw (the legacy sequence then decides).
+  let claudeMdPath: string | null = null
+  try { claudeMdPath = join(agentDir(name), 'CLAUDE.md') } catch { /* stays null */ }
   if (!subFlagOn(name)) {
+    const legacy = claudeMdPath === null || rollbackV2(deps, name, claudeMdPath)
     flagOffHousekeeping(deps)
-    return false
+    return !legacy
   }
   try {
     const why = refusal(deps, name, profile)
     if (why !== null) {
       logger.warn({ name, why }, 'CLAUDE.md builder: v2 refused; the legacy sections are kept')
-      return false
+      return claudeMdPath !== null && !rollbackV2(deps, name, claudeMdPath)
     }
-    const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+    if (claudeMdPath === null) throw new Error(`no agent directory path for ${JSON.stringify(name)}`)
     if (!existsSync(claudeMdPath)) return false
     ensureProjectRootInClaudeMd(name)
     ensureSkillSectionCurrent(name)
     return !writeV2(deps, name, claudeMdPath, deps.strict(name, profile))
   } catch (err) {
     logger.error({ err, name }, 'CLAUDE.md builder: v2 path failed before the write; the legacy sections are kept')
-    return false
+    return claudeMdPath !== null && fileHasV2Region(claudeMdPath)
   }
 }
 
 // The main agent at boot (live instances only). Same contract as applySubClaudeMdV2.
 export function applyMainClaudeMdV2(deps: WireDeps = defaultWireDeps()): boolean {
-  if (!mainFlagOn()) {
-    flagOffHousekeeping(deps)
-    return false
-  }
   const name = deps.mainAgentId
+  const claudeMdPath = join(deps.root, 'CLAUDE.md')
+  if (!mainFlagOn()) {
+    const legacy = rollbackV2(deps, name, claudeMdPath)
+    flagOffHousekeeping(deps)
+    return !legacy
+  }
   try {
     const why = refusal(deps, name, null)
     if (why !== null) {
       logger.warn({ name, why }, 'CLAUDE.md builder: v2 refused; the legacy sections are kept')
-      return false
+      return !rollbackV2(deps, name, claudeMdPath)
     }
-    const claudeMdPath = join(deps.root, 'CLAUDE.md')
     if (!existsSync(claudeMdPath)) return false
     ensureFederationClaudeMdSection()
     return !writeV2(deps, name, claudeMdPath, false)
   } catch (err) {
     logger.error({ err, name }, 'CLAUDE.md builder: v2 path failed before the write; the legacy sections are kept')
-    return false
+    return fileHasV2Region(claudeMdPath)
   }
 }
