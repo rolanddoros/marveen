@@ -57,13 +57,16 @@ const ALLOWED_MODULES = [
 const ALLOWED_BUILTINS = ['node:crypto', 'node:fs', 'node:os', 'node:path', 'node:url']
 // sort() order; accessSync and existsSync are live-context.ts's hook-script and roster checks
 const ALLOWED_FS = ['accessSync', 'constants', 'existsSync', 'lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'statSync']
+// the hash only (Ron 13154)
+const ALLOWED_CRYPTO = ['createHash']
 
-interface Graph { modules: string[]; builtins: string[]; fsNames: string[]; dynamic: string[] }
+interface Graph { modules: string[]; builtins: string[]; fsNames: string[]; cryptoNames: string[]; dynamic: string[] }
 
 function importGraph(entry: string): Graph {
   const seen = new Set<string>()
   const builtins = new Set<string>()
   const fsNames = new Set<string>()
+  const cryptoNames = new Set<string>()
   const dynamic: string[] = []
   const visit = (file: string) => {
     if (seen.has(file)) return
@@ -77,13 +80,14 @@ function importGraph(entry: string): Graph {
         visit(resolve(dirname(file), spec.replace(/\.js$/, '.ts')))
       } else {
         builtins.add(spec)
-        if (spec === 'node:fs') for (const n of what.replace(/[{}]/g, '').split(',')) if (n.trim()) fsNames.add(n.trim())
+        const names = spec === 'node:fs' ? fsNames : spec === 'node:crypto' ? cryptoNames : null
+        if (names) for (const n of what.replace(/[{}]/g, '').split(',')) if (n.trim()) names.add(n.trim())
       }
     }
     for (const m of src.matchAll(/^\s*import\s+'([^']+)'/gm)) dynamic.push(`${relative(REPO, file)}: side-effect import ${m[1]}`)
   }
   visit(entry)
-  return { modules: [...seen].map((f) => relative(REPO, f)).sort(), builtins: [...builtins].sort(), fsNames: [...fsNames].sort(), dynamic }
+  return { modules: [...seen].map((f) => relative(REPO, f)).sort(), builtins: [...builtins].sort(), fsNames: [...fsNames].sort(), cryptoNames: [...cryptoNames].sort(), dynamic }
 }
 
 // Free calls (not a method: `re.exec(x)` is a RegExp), member calls of the
@@ -107,6 +111,10 @@ describe('read-only: import graph and static ban', () => {
 
   it('only reading fs functions are imported', () => {
     expect(g.fsNames).toEqual(ALLOWED_FS)
+  })
+
+  it('only createHash is imported from node:crypto', () => {
+    expect(g.cryptoNames).toEqual(ALLOWED_CRYPTO)
   })
 
   it.each(ALLOWED_MODULES)('%s has no writing, spawning or network call', (rel) => {

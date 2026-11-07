@@ -397,7 +397,11 @@ export function planRegion(report: AgentReport, text: string, root: string, opts
       to: report.file,
       context: 3,
       show: (_side, line, index) => {
-        if (line.tag === 'generated' && !opts.verbatimGenerated) return blocks.has(index) ? blocks.get(index) ?? null : '<generated line, text not shown>'
+        // Every generated line is inside a BEGIN..END block (scanClaudeMd
+        // throws otherwise), so blocks maps each one: the BEGIN line to the
+        // placeholder, the others to null (left out). New-side lines are
+        // never tagged generated.
+        if (line.tag === 'generated' && !opts.verbatimGenerated) return blocks.get(index) ?? null
         return mask(line.raw.replace(/\n$/, ''))
       },
     })
