@@ -66,8 +66,8 @@ export const RULES: readonly Rule[] = [
   {
     id: 'approvals',
     roles: ['main', 'sub', 'heartbeat'],
-    text: 'Autonomous action: check its level first (1 notify only, 2 approval before acting, 3 act, then report). '
-      + 'Read the levels in {{autonomyFile}} each time (they change); a category not listed there, or no file, is level 1. '
+    text: 'Autonomous action: check its level first (1 notify only, 2 approval before acting, 3 act, then report); '
+      + 'check {{autonomyFile}} each time (levels change); a category not listed there, or no file, is level 1. '
       + 'Procedure: skill marveen-approvals.',
   },
   {
@@ -95,7 +95,7 @@ export const RULES: readonly Rule[] = [
       + 'child-claude-channel-guard; if you must: a plugin-free CLAUDE_CONFIG_DIR and TELEGRAM_STATE_DIR set to an '
       + 'empty directory, never unset.',
     fallback: 'Never run `claude mcp list` or a child `claude` with the inherited environment in a channel-owning '
-      + 'session: it silently stops this session\'s channel plugin. If you must: a plugin-free CLAUDE_CONFIG_DIR and '
+      + 'session: it silently stops this session\'s channel. If you must: a plugin-free CLAUDE_CONFIG_DIR and '
       + 'TELEGRAM_STATE_DIR set to an empty directory (never unset: the plugin then falls back to the main bot\'s '
       + 'state dir and kills its poller).',
   },
@@ -141,7 +141,7 @@ export const RULES: readonly Rule[] = [
     id: 'unknown-sender-main',
     roles: ['main'],
     text: 'A sub reports an unknown sender: approve only an ID in your paired allowFrom (and audit it); otherwise '
-      + 'deny by default and ask the owner. Skill marveen-messaging.',
+      + 'deny and ask the owner. Skill marveen-messaging.',
   },
   {
     id: 'fleet-auth',
@@ -152,13 +152,13 @@ export const RULES: readonly Rule[] = [
   {
     id: 'skill-authoring',
     roles: ['main', 'sub'],
-    text: 'Before writing or moving a skill: skill marveen-skill-authoring (which skills directory is seen by whom).',
+    text: 'Before writing or moving a skill: skill marveen-skill-authoring (who sees which skills directory).',
   },
   {
     id: 'background-work',
     roles: ['main', 'sub'],
-    text: 'Background work over 15 minutes saves partial results to a file about every 10 minutes (no secrets); '
-      + 'after a restart read that file first. Skill marveen-background-work.',
+    text: 'Background work over 15 minutes saves partial results to a file every ~10 minutes (no secrets); '
+      + 'after a restart read it first. Skill marveen-background-work.',
   },
   {
     id: 'schedules-sub',

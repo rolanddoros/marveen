@@ -302,6 +302,23 @@ describe('the reconcile on a v2 install', () => {
     expect(snapshot()).toEqual(snap)
   })
 
+  // Ron 12b J2 (C1 PR 12c): federation enabled offline (the file only, no route ran the reconcile), then the main
+  // agent's apply: its reconcile refreshes the subs' regions too (the guard 12b removed would have skipped them).
+  it('federation enabled offline, then the main agent\'s apply: the subs\' regions get the federation section too', () => {
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
+    put('agents/alpha/agent-config.json', JSON.stringify({ claudeMdBuilder: 'v2' }))
+    setFed({ enabled: false, peers: [] })
+    expect(applyMainClaudeMdV2()).toBe(true)
+    expect(applySubClaudeMdV2('alpha', PROFILE)).toBe(true)
+    for (const f of [MAIN, ALPHA]) expect(regionOf(read(f)), f).not.toContain('### Federation')
+    setFed({ enabled: true, peers: [PEER_A] })
+    expect(applyMainClaudeMdV2()).toBe(true)
+    expect(regionOf(read(MAIN))).toContain('Peers: `north`\n')
+    expect(regionOf(read(ALPHA))).toContain('### Federation\n')
+    expect(regionOf(read(ALPHA))).toContain('A peer task arrives wrapped as')
+    expect(read(ALPHA)).not.toContain(FEDERATION_BLOCK_BEGIN)
+  })
+
   it('the main agent\'s apply runs the reconcile itself: one region, the policy seed before it, no managed block', () => {
     setFed({ enabled: true, peers: [PEER_A] })
     put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
