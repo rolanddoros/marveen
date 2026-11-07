@@ -41,6 +41,13 @@ const TICK_MS = 20
 // meaningless values. 60s is 60x the default threshold, already unambiguously "blocked"; never
 // below WARN_MS, so a raised threshold can still be crossed.
 const MAX_DRIFT_MS = Math.max(60_000, WARN_MS)
+// How many of the window's LARGEST drifts are kept for p99 (16 KB). max, mean and count are
+// running values and always exact; only p99 needs the distribution. The nearest-rank p99 of n
+// drifts is the (n - ceil(0.99n) + 1)-th largest, so keeping the top 2048 makes it exact up to
+// ~204 000 ticks per window (~68 min at 20ms; the default 30s window is 1500 ticks). Past that
+// the 2048th-largest drift is reported, which is >= the true p99 (an upper bound). This keeps
+// memory fixed whatever EVENT_LOOP_LAG_SAMPLE_MS is.
+const P99_KEEP = 2048
 
 export interface LagSample { maxMs: number; meanMs: number; p99Ms: number }
 
@@ -101,22 +108,29 @@ export interface LagRecorder extends LagHistogram {
 //  - gap shorter than the tick (the timer fired early by jitter): drift 0;
 //  - otherwise drift = gap - tickMs, clamped to capMs.
 // The anchor survives reset(): the first tick of a new window is measured like any other.
-export function createLagRecorder(tickMs: number = TICK_MS, capMs: number = MAX_DRIFT_MS, startMs?: number): LagRecorder {
-  let last: number | undefined = startMs
-  let samples: number[] = [] // drift per tick, ms
+// A non-finite startMs means "no anchor yet": the first recordTick only sets the anchor.
+// percentile(p) is the nearest-rank percentile, exact while the rank falls inside the `keep`
+// largest drifts (see P99_KEEP), otherwise the smallest kept drift (an upper bound).
+export function createLagRecorder(
+  tickMs: number = TICK_MS, capMs: number = MAX_DRIFT_MS, startMs?: number, keep: number = P99_KEEP,
+): LagRecorder {
+  let last: number | undefined = startMs !== undefined && Number.isFinite(startMs) ? startMs : undefined
+  let top: number[] = [] // the `keep` largest drifts of the window, ms, unordered
+  let minAt = 0 // index of the smallest entry in `top` once it is full
+  let count = 0
   let sum = 0
   let max = 0
   return {
-    get count() { return samples.length },
+    get count() { return count },
     get max() { return max * 1e6 },
-    get mean() { return samples.length ? (sum / samples.length) * 1e6 : NaN },
+    get mean() { return count ? (sum / count) * 1e6 : NaN },
     percentile(p: number) {
-      if (!samples.length) return 0
-      const sorted = [...samples].sort((a, b) => a - b)
-      const rank = Math.min(sorted.length, Math.max(1, Math.ceil((p / 100) * sorted.length)))
-      return sorted[rank - 1] * 1e6
+      if (!count) return 0
+      const rank = Math.min(count, Math.max(1, Math.ceil((p / 100) * count)))
+      const desc = [...top].sort((a, b) => b - a)
+      return desc[Math.min(count - rank + 1, desc.length) - 1] * 1e6
     },
-    reset() { samples = []; sum = 0; max = 0 },
+    reset() { top = []; minAt = 0; count = 0; sum = 0; max = 0 },
     recordTick(nowMs: number) {
       if (!Number.isFinite(nowMs)) return
       const prev = last
@@ -125,9 +139,16 @@ export function createLagRecorder(tickMs: number = TICK_MS, capMs: number = MAX_
       const gap = nowMs - prev
       if (gap < 0) return
       const drift = Math.min(capMs, Math.max(0, gap - tickMs))
-      samples.push(drift)
+      count++
       sum += drift
       if (drift > max) max = drift
+      if (top.length < keep) {
+        top.push(drift)
+        if (top.length === keep) minAt = top.indexOf(Math.min(...top))
+      } else if (drift > top[minAt]) {
+        top[minAt] = drift
+        minAt = top.indexOf(Math.min(...top))
+      }
     },
   }
 }

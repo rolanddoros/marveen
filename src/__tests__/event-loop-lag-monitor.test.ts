@@ -200,6 +200,83 @@ describe('createLagRecorder (JS-timer drift per tick)', () => {
   })
 })
 
+describe('createLagRecorder follow-ups (Ron review of d394126e)', () => {
+  it('L1: early ticks count as 0 in the MEAN, not as negative drift', () => {
+    // 10 ticks 1ms early + one tick 100ms late -> drifts 0 x10, 100 -> mean 100/11
+    const ticks: number[] = []
+    let t = 0
+    for (let i = 0; i < 10; i++) { t += 19; ticks.push(t) }
+    t += 120; ticks.push(t)
+    const r = recorderFed(0, ticks)
+    const s = readLagSample(r)
+    expect(r.count).toBe(11)
+    expect(s.maxMs).toBe(100)
+    expect(s.meanMs).toBeCloseTo(100 / 11, 6) // 9.09; negative early drifts would give 90/11 = 8.18
+  })
+
+  it('L2: a WARN threshold above 60s raises the cap with it, so a long block can still cross it', async () => {
+    const prev = process.env.EVENT_LOOP_LAG_WARN_MS
+    try {
+      process.env.EVENT_LOOP_LAG_WARN_MS = '120000'
+      vi.resetModules()
+      const m = await import('../web/event-loop-lag-monitor.js')
+      const r = m.createLagRecorder(undefined, undefined, 0) // default cap = max(60s, WARN_MS)
+      r.recordTick(20)
+      r.recordTick(20 + 20 + 200_000) // a 200s stall
+      expect(m.readLagSample(r).maxMs).toBe(120_000)
+      warn.mockClear()
+      expect(m.sampleLagOnce(r)).toBe('blocked') // default threshold = WARN_MS = 120000
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0][0]).toMatchObject({ maxMs: 120_000, thresholdMs: 120_000 })
+    } finally {
+      if (prev === undefined) delete process.env.EVENT_LOOP_LAG_WARN_MS
+      else process.env.EVENT_LOOP_LAG_WARN_MS = prev
+      vi.resetModules()
+    }
+  })
+
+  it('L5: a non-finite startMs means no anchor yet: the first tick only anchors, no NaN sample', () => {
+    for (const start of [NaN, Infinity, -Infinity]) {
+      const r = createLagRecorder(20, 60_000, start)
+      r.recordTick(100)
+      expect(r.count).toBe(0)
+      r.recordTick(150) // 30ms late
+      expect(r.count).toBe(1)
+      expect(readLagSample(r)).toEqual({ maxMs: 30, meanMs: 30, p99Ms: 30 })
+    }
+  })
+
+  // Drifts 1..500ms in order. Nearest-rank p99 of 500 = the 495th smallest = the 6th largest = 495.
+  function ramp(keep: number) {
+    const r = createLagRecorder(20, 60_000, 0, keep)
+    let t = 0
+    for (let d = 1; d <= 500; d++) { t += 20 + d; r.recordTick(t) }
+    return r
+  }
+
+  it('L3: p99 is exact while its rank falls inside the kept largest drifts; max/mean/count always exact', () => {
+    const r = ramp(10) // the 6th largest is kept
+    expect(r.count).toBe(500)
+    expect(readLagSample(r)).toEqual({ maxMs: 500, meanMs: 250.5, p99Ms: 495 })
+  })
+
+  it('L3: past the kept buffer p99 is the smallest kept drift, an upper bound; max/mean stay exact', () => {
+    const r = ramp(2) // only 500 and 499 are kept
+    expect(readLagSample(r)).toEqual({ maxMs: 500, meanMs: 250.5, p99Ms: 499 })
+    r.reset()
+    expect(readLagSample(r)).toEqual({ maxMs: 0, meanMs: 0, p99Ms: 0 })
+    expect(r.count).toBe(0)
+  })
+
+  it('L3: with the default buffer a long window (3000 ticks) still gets the exact p99', () => {
+    const r = createLagRecorder(20, 60_000, 0)
+    let t = 0
+    for (let i = 0; i < 3000; i++) { t += i % 75 === 0 ? 520 : 20; r.recordTick(t) } // 40 ticks 500ms late
+    // rank ceil(0.99 * 3000) = 2970 -> the 31st largest -> 500 (40 late ticks)
+    expect(readLagSample(r)).toEqual({ maxMs: 500, meanMs: (40 * 500) / 3000, p99Ms: 500 })
+  })
+})
+
 describe('startEventLoopLagMonitor end to end (fake timers, injected clock)', () => {
   // Drive the monitor's own timers; the injected clock moves with them, plus any extra jump.
   async function drive(jumps: Record<number, number>) {
