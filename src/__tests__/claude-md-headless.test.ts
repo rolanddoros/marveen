@@ -2,12 +2,12 @@
 // source (channel.ts) and its parity with the dashboard readers (telegram.ts),
 // capabilities.channel in the live context, what the region leaves out for a
 // headless sub (sections.ts), and the dry-run's shortening candidates.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
-  CHANNEL_ENV_KEYS, CHANNEL_IDS, agentChannelState, agentHasChannel, channelEnvPath, envKeySet, type ChannelId,
+  CHANNEL_ENV_KEYS, CHANNEL_IDS, agentChannelState, agentHasChannel, channelEnvPath, envKeySet, launcherKeySet, type ChannelId,
 } from '../web/claude-md/channel.js'
 import { buildLiveContext } from '../web/claude-md/live-context.js'
 import { renderRegion } from '../web/claude-md/registry.js'
@@ -18,8 +18,16 @@ import { scanClaudeMd } from '../web/claude-md/compose.js'
 import {
   readAgentDiscordConfig, readAgentGooglechatConfig, readAgentSlackConfig, readAgentTeamsConfig, readAgentTelegramConfig,
 } from '../web/telegram.js'
-import { AGENTS_BASE_DIR } from '../web/agent-config.js'
+import { AGENTS_BASE_DIR, readAgentExtraChannels, readAgentGromzo } from '../web/agent-config.js'
+import { agentHasChannel as launcherHasPrimaryChannel, resolveAgentProvider } from '../web/agent-process.js'
+import { buildExtraChannelLaunch } from '../web/agent-extra-channels.js'
 import { FIXTURES } from './fixtures/claude-md/contexts.js'
+
+// Literal, so a changed key in channel.ts cannot move the fixtures along with it (Ron 13351 suggestion 1).
+const KEYS: Record<ChannelId, string> = {
+  telegram: 'TELEGRAM_BOT_TOKEN', discord: 'DISCORD_BOT_TOKEN', slack: 'SLACK_BOT_TOKEN',
+  googlechat: 'GOOGLECHAT_PROJECT_ID', teams: 'TEAMS_BOT_APP_ID',
+}
 
 let base: string
 beforeAll(() => { base = mkdtempSync(join(tmpdir(), 'claude-md-headless-')) })
@@ -71,10 +79,39 @@ describe('channel.ts: the source', () => {
     expect(agentHasChannel(blankProvider)).toBe(false)
   })
 
+  it('the key per provider, as the dashboard readers and the launcher name them', () => {
+    expect(CHANNEL_ENV_KEYS).toEqual(KEYS)
+    expect(CHANNEL_IDS).toEqual(['telegram', 'discord', 'slack', 'googlechat', 'teams'])
+  })
+
   it.each(CHANNEL_IDS)('Kevin 13325: only %s configured -> a channel', (id) => {
     const d = fresh()
-    put(channelEnvPath(d, id), `${CHANNEL_ENV_KEYS[id]}=test-value\n`)
+    put(join(d, '.claude', 'channels', id, '.env'), `${KEYS[id]}=test-value\n`)
+    expect(agentChannelState(d, id)).toBe('configured')
     expect(agentHasChannel(d)).toBe(true)
+  })
+
+  it('Ron 13351: gromzo and extraChannels in agent-config.json count, with no channel file at all', () => {
+    const cfg = (v: unknown) => { const d = fresh(); put(join(d, 'agent-config.json'), JSON.stringify(v)); return agentHasChannel(d) }
+    expect(cfg({ gromzo: true })).toBe(true)
+    expect(cfg({ gromzo: 'yes' })).toBe(true) // fail safe: any value but false/null
+    expect(cfg({ gromzo: false })).toBe(false)
+    expect(cfg({ gromzo: null })).toBe(false)
+    expect(cfg({ extraChannels: ['slack'] })).toBe(true) // even without its token
+    expect(cfg({ extraChannels: [] })).toBe(false)
+    expect(cfg({ extraChannels: 'discord' })).toBe(true)
+  })
+
+  it('a token only the launcher\'s line-anchored test finds still counts', () => {
+    const text = 'OLD_TELEGRAM_BOT_TOKEN= \nTELEGRAM_BOT_TOKEN=test-value\n'
+    expect(envKeySet(text, 'TELEGRAM_BOT_TOKEN')).toBe(false)
+    expect(launcherKeySet(text, 'TELEGRAM_BOT_TOKEN')).toBe(true)
+    const d = fresh()
+    put(join(d, '.claude', 'channels', 'telegram', '.env'), text)
+    expect(agentChannelState(d, 'telegram')).toBe('absent') // the dashboard flag, unchanged
+    expect(agentHasChannel(d)).toBe(true)
+    expect(launcherKeySet('# TELEGRAM_BOT_TOKEN=x\n', 'TELEGRAM_BOT_TOKEN')).toBe(false)
+    expect(launcherKeySet('  TELEGRAM_BOT_TOKEN= v \n', 'TELEGRAM_BOT_TOKEN')).toBe(true)
   })
 
   it('fail safe: an unreadable channel file, a channelProvider, or an agent-config.json that does not parse', () => {
@@ -114,11 +151,69 @@ describe('telegram.ts reads through channel.ts (one source with /api/agents)', (
   }
   it.each(CHANNEL_IDS)('%s: the dashboard flag equals agentChannelState(...) === "configured"', (id) => {
     expect(readers[id]()).toBe(false)
-    for (const body of [`${CHANNEL_ENV_KEYS[id]}=\n`, `${CHANNEL_ENV_KEYS[id]}=test-value\n`, `# x\n${CHANNEL_ENV_KEYS[id]}=  v \n`, 'OTHER=1\n']) {
+    put(join(probeDir, '.claude', 'channels', id, '.env'), `${KEYS[id]}=test-value\n`)
+    expect(readers[id]()).toBe(true)
+    for (const body of [`${KEYS[id]}=\n`, `${KEYS[id]}=test-value\n`, `# x\n${KEYS[id]}=  v \n`, 'OTHER=1\n']) {
       put(channelEnvPath(probeDir, id), body)
       expect(readers[id](), body).toBe(agentChannelState(probeDir, id) === 'configured')
     }
     expect(readers[id]()).toBe(false)
+  })
+})
+
+// Ron 13351: every source the launcher loads a channel plugin from is one channel.ts knows. For each
+// fixture, "the launcher would load a channel" implies agentHasChannel (channel.ts may say true more often).
+describe('channel.ts covers every channel source of the launcher', () => {
+  const PROBE = 'channel-launch-probe'
+  const dir = join(AGENTS_BASE_DIR, PROBE)
+  function cleanup(): void {
+    if (!existsSync(dir)) return
+    if (existsSync(join(dir, 'CLAUDE.md'))) throw new Error(`refusing: ${dir} looks like a live agent`)
+    rmSync(dir, { recursive: true, force: true })
+  }
+  beforeEach(cleanup)
+  afterEach(cleanup)
+  // agent-process.ts startAgentProcess: hasAnyChannel = hasChannel || extra providers || gromzo 'on'
+  // (the socket taken as usable, so a Gromzo agent counts wherever mxd runs).
+  const launcherLoads = () => launcherHasPrimaryChannel(PROBE) || (() => {
+    const l = buildExtraChannelLaunch(readAgentExtraChannels(PROBE), resolveAgentProvider(PROBE), dir, undefined,
+      readAgentGromzo(PROBE) ? { slug: PROBE, sockUsable: true } : undefined)
+    return l.providers.length > 0 || l.gromzo === 'on'
+  })()
+  const cases: [string, Record<string, string>][] = [
+    ['nothing', {}],
+    ['primary telegram token', { '.claude/channels/telegram/.env': 'TELEGRAM_BOT_TOKEN=test-value\n' }],
+    ['primary teams via channelProvider', { 'agent-config.json': '{"channelProvider":"teams"}', '.claude/channels/teams/.env': 'TEAMS_BOT_APP_ID=test-value\n' }],
+    ['extraChannels slack with its token', { 'agent-config.json': '{"extraChannels":["slack"]}', '.claude/channels/slack/.env': 'SLACK_BOT_TOKEN=test-value\n' }],
+    ['gromzo only', { 'agent-config.json': '{"gromzo":true}' }],
+    ['token only the anchored test finds', { '.claude/channels/telegram/.env': 'OLD_TELEGRAM_BOT_TOKEN= \nTELEGRAM_BOT_TOKEN=test-value\n' }],
+    ['discord token, no channelProvider', { '.claude/channels/discord/.env': 'DISCORD_BOT_TOKEN=test-value\n' }],
+  ]
+  it.each(cases)('%s', (_n, files) => {
+    mkdirSync(dir, { recursive: true })
+    for (const [rel, body] of Object.entries(files)) put(join(dir, rel), body)
+    if (launcherLoads()) expect(agentHasChannel(dir)).toBe(true)
+    if (Object.keys(files).length === 0) expect(agentHasChannel(dir)).toBe(false)
+  })
+
+  it('the gromzo case is one the launcher does load (the fixture is not vacuous)', () => {
+    put(join(dir, 'agent-config.json'), '{"gromzo":true}')
+    expect(launcherLoads()).toBe(true)
+    expect(agentHasChannel(dir)).toBe(true)
+  })
+
+  // A tripwire: a new channel input of the launch makes this red, so channel.ts gets it too.
+  it('the launcher takes its channels from exactly these readers', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
+    // the launch itself (startAgentProcess), from the primary provider to hasAnyChannel
+    const from = src.indexOf('  const agentProvider = resolveAgentProvider(name)\n  const provider = getProvider(agentProvider)')
+    const launch = src.slice(from, src.indexOf('const hasAnyChannel', from))
+    expect(from).toBeGreaterThan(0)
+    expect([...new Set(launch.match(/\b(?:read[A-Za-z]*|parse[A-Za-z]*Token|resolveAgentProvider)\(/g))].sort()).toEqual([
+      'parseTelegramToken(', 'readAgentExtraChannels(', 'readAgentGromzo(', 'readChannelToken(', 'resolveAgentProvider(',
+    ])
+    expect(src).toContain('const hasAnyChannel = hasChannel || hasExtraChannels\n')
+    expect(src).toContain("const hasExtraChannels = extraLaunch.providers.length > 0 || extraLaunch.gromzo === 'on'\n")
   })
 })
 
@@ -249,7 +344,7 @@ describe('dry-run: shortening candidates of a headless sub', () => {
     for (const s of SENTINELS) expect(out, s).not.toContain(s)
   })
 
-  it.each([[['--json']], [['--redact-names']], [['--json', '--redact-names']]])('%j: no owner text either', (extra) => {
+  it.each([[['--json']], [['--redact-names']], [['--json', '--redact-names']], [['--excerpts']], [['--json', '--excerpts']]])('%j: no owner text either', (extra) => {
     const out = cli('--agent', 'zed', ...(extra as string[]))
     for (const s of SENTINELS) expect(out, s).not.toContain(s)
     expect(out).toMatch(/"headless": \{|headless \(no channel\)/)

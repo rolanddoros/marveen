@@ -8,9 +8,15 @@
 // its key (the bot token, or the id that stands for it): the same check the
 // dashboard readers made inline until now. agentHasChannel() is fail safe:
 // the channel-bound CLAUDE.md rules (unknown sender, child claude) are
-// security rules, so only "no channel at all" reads as headless. A channel
-// file that exists but cannot be read, an agent-config.json that cannot be
-// parsed, or a channelProvider set in it all count as a channel.
+// security rules, so only "no channel at all" reads as headless. It covers
+// every source the launcher takes a channel from (agent-process.ts: the
+// primary provider's token, the extraChannels providers' tokens, and the
+// Gromzo plugin of `gromzo: true`, agent-extra-channels.ts; Ron 13351), and
+// leans to "channel" wherever it cannot tell: a channel file that exists but
+// cannot be read, an agent-config.json that cannot be parsed, and any
+// channelProvider, non-empty extraChannels or gromzo value in it count as a
+// channel, and a token counts if either the dashboard readers' test or the
+// launcher's line-anchored one (channel-provider.ts readChannelToken) finds it.
 //
 // No token value leaves this module: every export returns a boolean or a
 // state. Imports node:fs (reading only) and node:path; nothing else, so the
@@ -45,6 +51,13 @@ export function envKeySet(envText: string, key: string): boolean {
   return !!m?.[1]?.trim()
 }
 
+// The launcher's test (channel-provider.ts readChannelToken): `KEY=<value>` on
+// a line of its own (leading blanks allowed), the value trimmed non-blank.
+export function launcherKeySet(envText: string, key: string): boolean {
+  const m = envText.match(new RegExp(`^\\s*${key}=(.+)$`, 'm'))
+  return !!m?.[1]?.trim()
+}
+
 function readOrState(path: string): string | 'absent' | 'unreadable' {
   try {
     return readFileSync(path, 'utf-8')
@@ -62,17 +75,26 @@ export function agentChannelState(agentRoot: string, channel: ChannelId): Channe
   return envKeySet(text, CHANNEL_ENV_KEYS[channel]) ? 'configured' : 'absent'
 }
 
-// agent-config.json channelProvider: set (a non-blank string), not set, or
-// the file is there but cannot be read or parsed.
-function channelProviderState(agentRoot: string): 'set' | 'unset' | 'unreadable' {
+// A config value that may name a channel: anything but absent, null, false,
+// a blank string or an empty array.
+function present(v: unknown): boolean {
+  if (v === undefined || v === null || v === false) return false
+  if (typeof v === 'string') return v.trim() !== ''
+  if (Array.isArray(v)) return v.length > 0
+  return true
+}
+
+// agent-config.json: a channel named (channelProvider, extraChannels, gromzo;
+// see present()), none, or the file is there but cannot be read or parsed.
+function configChannelState(agentRoot: string): 'set' | 'unset' | 'unreadable' {
   const text = readOrState(join(agentRoot, 'agent-config.json'))
   if (text === 'absent') return 'unset'
   if (text === 'unreadable') return 'unreadable'
   try {
     const cfg: unknown = JSON.parse(text)
     if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return 'unreadable'
-    const p = (cfg as Record<string, unknown>).channelProvider
-    return typeof p === 'string' && p.trim() !== '' ? 'set' : 'unset'
+    const c = cfg as Record<string, unknown>
+    return present(c.channelProvider) || present(c.extraChannels) || present(c.gromzo) ? 'set' : 'unset'
   } catch {
     return 'unreadable'
   }
@@ -80,6 +102,11 @@ function channelProviderState(agentRoot: string): 'set' | 'unset' | 'unreadable'
 
 // True unless the agent has no channel at all (fail safe, see the header).
 export function agentHasChannel(agentRoot: string): boolean {
-  if (channelProviderState(agentRoot) !== 'unset') return true
-  return CHANNEL_IDS.some((c) => agentChannelState(agentRoot, c) !== 'absent')
+  if (configChannelState(agentRoot) !== 'unset') return true
+  return CHANNEL_IDS.some((c) => {
+    const text = readOrState(channelEnvPath(agentRoot, c))
+    if (text === 'absent') return false
+    if (text === 'unreadable') return true
+    return envKeySet(text, CHANNEL_ENV_KEYS[c]) || launcherKeySet(text, CHANNEL_ENV_KEYS[c])
+  })
 }
