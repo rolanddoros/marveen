@@ -13,15 +13,25 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-HELPER="${HELPER_BIN:-$ROOT/scripts/agent-msg.sh}"
 FAILS=0; N=0
 ok() { N=$((N+1)); if [ "$2" = "0" ]; then echo "PASS  $1"; else echo "FAIL  $1${3:+  -- $3}"; FAILS=$((FAILS+1)); fi; }
 
-[ -r "$HELPER" ] || { echo "FATAL: the helper is missing: $HELPER" >&2; exit 2; }
+[ -r "${HELPER_BIN:-$ROOT/scripts/agent-msg.sh}" ] || { echo "FATAL: the helper is missing: ${HELPER_BIN:-$ROOT/scripts/agent-msg.sh}" >&2; exit 2; }
 
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/msgqueue.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 BIN="$SANDBOX/bin"; mkdir -p "$BIN"
+
+# The helper runs from a throwaway copy of the install: it logs a failed send to <its install>/store/
+# agent-msg-failures.log, and the 'not json' case below is a failed send. Run from the checkout it wrote the
+# checkout's log, and the scripts shards run in parallel in one checkout: jegyzetek.test.py (another shard)
+# checks that same file, and went red on fork CI whenever the two overlapped (2026-11-06).
+INST="$SANDBOX/inst"; mkdir -p "$INST/scripts" "$INST/store"
+cp "$ROOT/scripts/agent-msg.sh" "$INST/scripts/agent-msg.sh"
+cp -R "$ROOT/scripts/lib" "$INST/scripts/lib"
+HELPER="${HELPER_BIN:-$INST/scripts/agent-msg.sh}"
+REAL_FAIL_LOG="$ROOT/store/agent-msg-failures.log"
+SANDBOX_FAIL_LOG="$INST/store/agent-msg-failures.log"
 printf 'test-token\n' > "$SANDBOX/.dashboard-token"
 
 # A stub API on 127.0.0.1 (C2 PR4: the send is python now, not curl): nothing leaves the machine, and each
@@ -102,6 +112,18 @@ send 'not json'
 ok "malformed response is still a FAIL (the id check drives it)" "$([ "$RC" = "1" ] && echo 0 || echo 1)" "rc=$RC out='$OUT'"
 TRIES="$(wc -l < "$SANDBOX/calls.txt" | tr -d ' ')"
 ok "  ...after three tries, not one" "$([ "$TRIES" = "3" ] && echo 0 || echo 1)" "tries=$TRIES"
+
+# This run's own line, found by its stub endpoint (a fresh port per run): another suite writing the checkout's
+# log at the same moment is neither counted nor blamed. Only for the default helper: a HELPER_BIN of the
+# caller's own logs wherever its own install is.
+if [ -z "${HELPER_BIN:-}" ]; then
+  MARK="$(printf '\tfrom=igor\tto=hex\turl=%s/api/messages\t' "$API")"
+  marked() { if [ -f "$1" ]; then grep -cF -- "$MARK" "$1"; else echo 0; fi; }  # grep -c prints 0 itself on no match
+  ok "  ...and that failed send is logged in the sandbox install" "$([ "$(marked "$SANDBOX_FAIL_LOG")" = "1" ] && echo 0 || echo 1)" \
+     "sandbox log: $(cat "$SANDBOX_FAIL_LOG" 2>/dev/null)"
+  ok "  ...and not in the checkout's store/agent-msg-failures.log" "$([ "$(marked "$REAL_FAIL_LOG")" = "0" ] && echo 0 || echo 1)" \
+     "$(grep -F -- "$MARK" "$REAL_FAIL_LOG" 2>/dev/null)"
+fi
 
 echo "--- $((N-FAILS))/$N passed"
 [ "$FAILS" = "0" ]
