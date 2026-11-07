@@ -1280,6 +1280,8 @@ window._i18n.en = {
   'agents.wizard.generating_status': 'CLAUDE.md generating...',
   'agents.wizard.desc_label':    'Describe freely what you want this agent to do',
   'agents.wizard.profile_label': 'Security profile',
+  'agents.wizard.telegram_label': 'Will have its own Telegram bot',
+  'agents.wizard.telegram_hint': 'If not, it is created without a persona, with a smaller CLAUDE.md.',
   'agents.wizard.gen_hint':      'This may take a few seconds',
   'agents.wizard.pending_title': 'Your agent is ready, but its personality came from a template',
   'agents.wizard.pending_body':  'The agent was created and works, nothing was lost. Its personality could not be generated, so what you see below is a template. You can rewrite it here now, or later in the agent\'s settings.',

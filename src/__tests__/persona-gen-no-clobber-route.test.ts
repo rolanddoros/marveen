@@ -43,6 +43,8 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     agentDir: (name: string) => join(h.root, name),
     writeAgentModel: vi.fn(),
     writeAgentSecurityProfile: vi.fn(),
+    // C1 PR 11c-2: the real one writes under the install's agents/ dir, not h.root.
+    writeAgentPersonaAtCreation: vi.fn(),
     writeAgentDisplayName: vi.fn(),
     listAgentNames: () => [],
   }
