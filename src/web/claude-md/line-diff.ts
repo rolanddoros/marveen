@@ -84,8 +84,11 @@ export interface DiffOptions {
   from: string
   to: string
   context?: number
-  // How one line is printed (without its prefix and line ending); default: as is.
-  show?: (side: Side, line: DiffLine, index: number) => string
+  // How one line is printed (without its prefix and line ending); default: as
+  // is. null leaves the line out (the dry-run collapses a removed block into
+  // one placeholder line); the hunk header still counts it, so such a diff is
+  // for reading, not for applying.
+  show?: (side: Side, line: DiffLine, index: number) => string | null
   // The table limit; default MAX_CELLS (a parameter so the fallback is testable).
   maxCells?: number
 }
@@ -131,7 +134,9 @@ export function unifiedDiff(a: readonly DiffLine[], b: readonly DiffLine[], opts
     for (const o of slice) {
       const line = o.side === '+' ? b[o.b] : a[o.a]
       const index = o.side === '+' ? o.b : o.a
-      out.push(`${o.side}${show(o.side, line, index)}`)
+      const shown = show(o.side, line, index)
+      if (shown === null) continue
+      out.push(`${o.side}${shown}`)
       if (!line.raw.endsWith('\n')) out.push('\\ No newline at end of file')
     }
   }

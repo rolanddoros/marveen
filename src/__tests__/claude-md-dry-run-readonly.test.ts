@@ -53,7 +53,8 @@ const ALLOWED_MODULES = [
   'src/web/claude-md/render.ts',
   'src/web/claude-md/sections.ts',
 ]
-const ALLOWED_BUILTINS = ['node:fs', 'node:os', 'node:path', 'node:url']
+// node:crypto: the sha256 of a removed generated block in the full diff (dry-run.ts)
+const ALLOWED_BUILTINS = ['node:crypto', 'node:fs', 'node:os', 'node:path', 'node:url']
 // sort() order; accessSync and existsSync are live-context.ts's hook-script and roster checks
 const ALLOWED_FS = ['accessSync', 'constants', 'existsSync', 'lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'statSync']
 
@@ -314,7 +315,7 @@ describe('read-only: runtime under node --permission (read access only)', () => 
   })
 
   it('the sandboxed --json output is the full report (same agents as in-process)', () => {
-    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, '--all', '--json'])
+    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, '--all', '--json', '--full-diff'])
     const data = JSON.parse(r.stdout)
     expect(data.agents.map((a: { name: string; status: string }) => `${a.name}:${a.status}`))
       .toEqual(['chief:ok', 'alpha:ok', 'beta:refused', 'delta:refused', 'gamma:missing'])
@@ -350,7 +351,7 @@ describe('read-only: started through a symlinked path', () => {
 
   it('a real run prints the full report, under --permission with the link and the real path granted', () => {
     const before = manifest(root)
-    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--home', home, '--all'], [link])
+    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--home', home, '--all', '--full-diff'], [link])
     expect(r.stderr).toBe('')
     expect(r.code).toBe(1)
     expect(r.stdout).toContain('\nsummary: 5 agent(s): 2 ok, 2 refused, 0 unreadable, 0 error, 1 missing; exit 1\n')

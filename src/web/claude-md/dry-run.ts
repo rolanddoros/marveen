@@ -19,7 +19,9 @@
 // pins the import graph and runs the CLI under `node --permission` with read
 // access only.
 
+import { createHash } from 'node:crypto'
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, sep } from 'node:path'
 import { parseEnvContent } from '../../env-parse.js'
 import { ComposeError, composeClaudeMd, scanClaudeMd, type ScannedLine } from './compose.js'
@@ -71,17 +73,25 @@ export interface AgentReport {
 export interface PlanOptions {
   // The main agent's user-scope settings layer lives under it (live-context.ts).
   homeDir?: string
-  // false (default): no owner text in the diff: no context lines, and a
-  // changed non-blank owner line (the last line gaining its final newline)
-  // is printed as a placeholder. true: 3 context lines, verbatim; NOT for a
-  // PR description.
+  // false (default): no diff, the report is the summary (Kevin 13132).
+  // true: the unified diff with 3 context lines and the owner text verbatim;
+  // every legacy generated block it removes is ONE placeholder line with
+  // its line count and a sha256 prefix, never its text (an owner may have
+  // edited it by hand; Johnny 13131). NOT for a PR description.
   fullDiff?: boolean
+  // Tests only (the git-apply oracle): the generated block lines verbatim.
+  verbatimGenerated?: boolean
   // false (default): the owner chat_id is masked wherever the diff shows it.
   showChatId?: boolean
 }
 
 // The v2 region budget of design 2.3, as claude-md-goldens.test.ts measures it.
 export const REGION_BUDGET = 5500
+
+// Over the budget: more than REGION_BUDGET UTF-16 units; exactly 5500 fits.
+export function isOverBudget(regionLength: number): boolean {
+  return regionLength > REGION_BUDGET
+}
 
 // src/config.ts defaults: MAIN_AGENT_ID ?? 'marveen'; HEARTBEAT_AGENT_ID is a constant.
 export const DEFAULT_MAIN_AGENT_ID = 'marveen'
@@ -303,6 +313,8 @@ export interface DryRunResult {
   // The configured OWNER_NAME / BOT_NAME (readIdentityNames): --redact-names
   // masks them; the report never prints this field.
   identity: IdentityNames
+  // The home whose .claude/settings.json is the main agent's user layer.
+  homeDir: string
 }
 
 export class UsageError extends Error {
@@ -314,6 +326,26 @@ export class UsageError extends Error {
 
 // The dry run over `root`: every listed agent (main first, then the subs in
 // name order), or the one named. Throws UsageError for an unknown agent.
+// The legacy generated blocks of a scan, for the full diff: the BEGIN line's
+// index -> '<generated block <id>: N lines, sha256:<12 hex>>' (N and the hash
+// over the block's lines as they are in the file, markers included, so the
+// block can be found locally); every other line of the block -> null (left
+// out of the diff).
+export function blockPlaceholders(lines: readonly ScannedLine[]): Map<number, string | null> {
+  const out = new Map<number, string | null>()
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].kind !== 'begin') continue
+    let j = i
+    while (j + 1 < lines.length && lines[j].kind !== 'end') j++
+    const raw = lines.slice(i, j + 1).map((l) => l.raw).join('')
+    const hash = createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, 12)
+    out.set(i, `<generated block ${lines[i].block ?? '?'}: ${j - i + 1} lines, sha256:${hash}>`)
+    for (let k = i + 1; k <= j; k++) out.set(k, null)
+    i = j
+  }
+  return out
+}
+
 function valueAt(obj: unknown, path: string): unknown {
   return path.split('.').reduce<unknown>((o, k) => (o !== null && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), obj)
 }
@@ -331,6 +363,9 @@ export function planRegion(report: AgentReport, text: string, root: string, opts
     region = renderRegion(live.ctx)
     composed = composeClaudeMd(text, region)
   } catch (err) {
+    // ComposeError cannot happen here: dryRun plans only a file evaluateFile
+    // accepted, and that check is the same scan composeClaudeMd runs. It is
+    // caught anyway, so a future difference reads as status "error" (Ron 13122).
     if (err instanceof LiveContextError || err instanceof TemplateError || err instanceof ComposeError) {
       return { ...report, status: 'error', error: { message: `${err.name}: ${err.message}` } }
     }
@@ -347,21 +382,26 @@ export function planRegion(report: AgentReport, text: string, root: string, opts
   const regionCount = splitRaw(region).length
   const newLines: DiffLine[] = newRaw.map((raw, i) => ({ raw, tag: i >= newRaw.length - regionCount ? 'region' : 'owner' }))
   // A BOM is file-level (compose keeps it); it rides on line 1 of both sides.
-  if (bom && oldLines.length > 0) oldLines[0] = { ...oldLines[0], raw: bom + oldLines[0].raw }
+  // A file that is only a BOM has no line to carry it: then the BOM is the old
+  // side's one line, without a newline, as git sees that file; adding it to
+  // the new side alone gave a second BOM when applied (Ron 13122).
+  if (bom) oldLines[0] = oldLines.length > 0 ? { ...oldLines[0], raw: bom + oldLines[0].raw } : { raw: bom, tag: 'owner' }
   if (bom && newLines.length > 0) newLines[0] = { ...newLines[0], raw: bom + newLines[0].raw }
 
   const chatId = live.ctx.owner.chatId
   const mask = (line: string) => (chatId && !opts.showChatId ? line.split(chatId).join('<chat_id masked>') : line)
-  const diff = unifiedDiff(oldLines, newLines, {
-    from: report.file,
-    to: report.file,
-    context: opts.fullDiff ? 3 : 0,
-    show: (_side, line, index) => {
-      const content = line.raw.replace(/\n$/, '')
-      if (!opts.fullDiff && line.tag === 'owner' && content.trim() !== '') return `<owner line ${index + 1}, text not shown>`
-      return mask(content)
-    },
-  })
+  const blocks = blockPlaceholders(scanned)
+  const diff = opts.fullDiff
+    ? unifiedDiff(oldLines, newLines, {
+      from: report.file,
+      to: report.file,
+      context: 3,
+      show: (_side, line, index) => {
+        if (line.tag === 'generated' && !opts.verbatimGenerated) return blocks.has(index) ? blocks.get(index) ?? null : '<generated line, text not shown>'
+        return mask(line.raw.replace(/\n$/, ''))
+      },
+    })
+    : undefined
 
   return {
     ...report,
@@ -370,10 +410,10 @@ export function planRegion(report: AgentReport, text: string, root: string, opts
       file: codePoints(composed.text),
       region: codePoints(region),
       regionLength: region.length,
-      overBudget: region.length > REGION_BUDGET,
+      overBudget: isOverBudget(region.length),
       removedBlocks: composed.removed,
     },
-    diff,
+    ...(diff !== undefined ? { diff } : {}),
   }
 }
 
@@ -401,5 +441,5 @@ export function dryRun(root: string, agent?: string, opts: PlanOptions = {}): Dr
     if (report.status !== 'ok' || got === null) return report
     return planRegion(report, new TextDecoder('utf-8', { ignoreBOM: true }).decode(got), root, opts)
   })
-  return { root, mainAgentId: mainId, agents, listed, identity: readIdentityNames(root) }
+  return { root, mainAgentId: mainId, agents, listed, identity: readIdentityNames(root), homeDir: opts.homeDir ?? homedir() }
 }

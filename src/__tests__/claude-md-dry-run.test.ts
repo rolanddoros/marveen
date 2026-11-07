@@ -2,15 +2,17 @@
 // The read-only proof is claude-md-dry-run-readonly.test.ts; the detectors' unit
 // tests and source parity are claude-md-owner-zone.test.ts.
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { codeVersion, formatJson, formatText, runCli } from '../web/claude-md/dry-run-cli.js'
+import { codeVersion, formatJson, formatText, makeRedactor, outsidePaths, runCli } from '../web/claude-md/dry-run-cli.js'
 import { composeClaudeMd } from '../web/claude-md/compose.js'
-import { dryRun } from '../web/claude-md/dry-run.js'
+import { REGION_BUDGET, dryRun, isOverBudget } from '../web/claude-md/dry-run.js'
 import { buildLiveContext } from '../web/claude-md/live-context.js'
 import { renderRegion } from '../web/claude-md/registry.js'
+import { TEMPLATES_DIR } from '../web/claude-md/render.js'
 import { DRY_RUN_TREE, writeDryRunTree } from './fixtures/claude-md/dry-run-tree.js'
 
 let base: string
@@ -184,7 +186,7 @@ describe('no owner-zone text in the default output (Kevin 12995)', () => {
 
   it('--excerpts shows the finding lines, masked and flagged as not for a PR (the positive control)', () => {
     const { out } = cli('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'chief', '--excerpts')
-    expect(out).toContain('EXCERPTS ON: owner-zone text below (findings masked, diff context verbatim); not for a PR description')
+    expect(out).toContain('EXCERPTS ON: owner-zone text below, masked; not for a PR description')
     expect(out).toContain('      | Read the X-Memory-Search header. OZSENTINEL-chief-3 call <masked> or mail <masked>\n')
     // line 8 is longer than 160 code points: cut, so its trailing sentinel is not shown
     expect(out).toMatch(/\n      \| curl -s -H "Authorization: Bearer \$\(cat [^\n]*\.\.\.\n/)
@@ -243,8 +245,9 @@ function expected(r: string, name: string, file: string): string {
 }
 
 let applySeq = 0
-// The full diff (--excerpts --show-chat-id), applied by git in a scratch dir that
-// is no repository, must give exactly what composeClaudeMd writes.
+// The full diff with the generated lines verbatim (verbatimGenerated, a module
+// option the CLI never sets), applied by git in a scratch dir that is no
+// repository, must give exactly what composeClaudeMd writes.
 function applied(r: string, file: string, diff: string): string {
   const dir = join(base, `apply-${applySeq++}`)
   mkdirSync(dirname(join(dir, file)), { recursive: true })
@@ -259,8 +262,7 @@ function applied(r: string, file: string, diff: string): string {
 
 describe('PR 8b: the region diff', () => {
   it.each([['chief', 'CLAUDE.md'], ['alpha', 'agents/alpha/CLAUDE.md']])('%s: the full diff applies and gives what composeClaudeMd writes', (name, file) => {
-    const { data } = json('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', name, '--excerpts', '--show-chat-id')
-    const r = report(data, name)
+    const r = dryRun(root, name, { homeDir: HOME_FIX(), fullDiff: true, showChatId: true, verbatimGenerated: true }).agents[0]
     expect(r.diff?.startsWith(`--- a/${file}\n+++ b/${file}\n@@ `)).toBe(true)
     expect(applied(root, file, r.diff as string)).toBe(expected(root, name, file))
   })
@@ -277,39 +279,58 @@ describe('PR 8b: the region diff', () => {
     expect(chief.after?.removedBlocks).toEqual(['evidence-rule', 'federation'])
   })
 
-  it('the default diff has no owner line and no context; old blocks removed, the region added', () => {
-    const r = report(json('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'alpha').data, 'alpha')
+  it('the default output is the summary: no diff in text or JSON (Kevin 13132)', () => {
+    const t = cli('--dry-run', '--root', root, '--home', HOME_FIX(), '--all').out
+    expect(t).not.toContain('@@')
+    expect(t).not.toContain('  diff (')
+    expect(t).not.toContain('BEGIN MARVEEN GENERATED v2')
+    expect(t).toContain('  after: file ')
+    // Kevin 13137: the blocks are counted, their content is not compared
+    expect(t).toContain('; 2 block(s) removed (fleet-roster, autonomy-wiring), content not compared to the old template\n')
+    const { data } = json('--dry-run', '--root', root, '--home', HOME_FIX(), '--all')
+    expect(data.fullDiff).toBe(false)
+    for (const a of data.agents) expect('diff' in a, a.name).toBe(false)
+    expect(report(data, 'alpha').after?.removedBlocks).toEqual(['fleet-roster', 'autonomy-wiring'])
+  })
+
+  it('--full-diff: each removed block is one placeholder line with its line count and hash, the region added', () => {
+    const { data } = json('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'alpha', '--full-diff')
+    expect(data.fullDiff).toBe(true)
+    const r = report(data, 'alpha')
     const lines = (r.diff as string).split('\n')
-    expect(lines.filter((l) => l.startsWith(' '))).toEqual([])
+    const src = readFileSync(join(root, 'agents', 'alpha', 'CLAUDE.md'), 'utf-8')
+    const ph = (id: string) => {
+      // the real block, not the decoy in the fence above it; CRLF kept
+      const a = src.lastIndexOf(`<!-- BEGIN GENERATED: ${id} `)
+      const e = src.indexOf(`<!-- END GENERATED: ${id} -->`, a)
+      const block = src.slice(a, src.indexOf('\n', e) + 1)
+      const n = block.split('\n').length - 1
+      return `<generated block ${id}: ${n} lines, sha256:${createHash('sha256').update(block).digest('hex').slice(0, 12)}>`
+    }
     const removed = lines.filter((l) => l.startsWith('-') && !l.startsWith('---')).map((l) => l.slice(1).replace(/\r$/, ''))
-    expect(removed.filter((l) => l.trim() !== '')).toEqual([
-      '<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->', '- chief', '- beta',
-      '<!-- END GENERATED: fleet-roster -->',
-      '<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->',
-      'Generated autonomy text with curl -s http://localhost:3420/api/approvals inside a block.',
-      '<!-- END GENERATED: autonomy-wiring -->',
-    ])
+    expect(removed.filter((l) => l.trim() !== '')).toEqual([ph('fleet-roster'), ph('autonomy-wiring')])
+    expect(ph('fleet-roster')).toMatch(/: 4 lines, sha256:[0-9a-f]{12}>$/)
+    // the block lines as removed lines (the new region lists the agents too)
+    for (const s of ['\n-- chief', '\n-- beta', 'Generated autonomy text']) expect(r.diff, s).not.toContain(s)
     expect(lines).toContain('+<!-- BEGIN MARVEEN GENERATED v2 (do not edit; source: src/web/claude-md) -->')
     expect(lines).toContain('+<!-- END MARVEEN GENERATED v2 -->')
   })
 
   it('chat_id is masked by default and shown with --show-chat-id', () => {
-    const masked = cli('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'chief').out
+    const masked = cli('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'chief', '--full-diff').out
     expect(masked).toContain('(chat_id <chat_id masked>)')
     expect(masked).not.toContain('1234567890')
-    expect(cli('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'chief', '--show-chat-id').out).toContain('(chat_id 1234567890)')
+    expect(cli('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'chief', '--full-diff', '--show-chat-id').out).toContain('(chat_id 1234567890)')
   })
 
-  it('a changed owner line (the final newline added) is a placeholder by default, verbatim with --excerpts', () => {
+  it('a changed owner line (the final newline added): not in the default output, verbatim with --full-diff', () => {
     const r2 = join(base, 'no-eol')
     mkdirSync(join(r2, 'agents', 'zed'), { recursive: true })
     writeFileSync(join(r2, '.env'), 'MAIN_AGENT_ID=chief\n')
     writeFileSync(join(r2, 'CLAUDE.md'), '# chief\n')
     writeFileSync(join(r2, 'agents', 'zed', 'CLAUDE.md'), '# Zed\nlast owner line OZSENTINEL-zed')
-    const d = report(json('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'zed').data, 'zed').diff as string
-    expect(d).toContain('\n-<owner line 2, text not shown>\n\\ No newline at end of file\n+<owner line 2, text not shown>\n+\n+<!-- BEGIN MARVEEN')
-    expect(d).not.toContain('OZSENTINEL')
-    const full = report(json('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'zed', '--excerpts').data, 'zed').diff as string
+    expect(cli('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'zed', '--excerpts').out).not.toContain('OZSENTINEL')
+    const full = report(json('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'zed', '--full-diff').data, 'zed').diff as string
     expect(full).toContain('-last owner line OZSENTINEL-zed\n\\ No newline at end of file\n+last owner line OZSENTINEL-zed\n')
     expect(applied(r2, 'agents/zed/CLAUDE.md', full)).toBe(expected(r2, 'zed', 'agents/zed/CLAUDE.md'))
   })
@@ -320,9 +341,26 @@ describe('PR 8b: the region diff', () => {
     writeFileSync(join(r2, '.env'), 'MAIN_AGENT_ID=chief\n')
     writeFileSync(join(r2, 'CLAUDE.md'), '# chief\n')
     writeFileSync(join(r2, 'agents', 'bo', 'CLAUDE.md'), '\ufeff# Bo\n')
-    const full = report(json('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'bo', '--excerpts').data, 'bo').diff as string
+    const full = report(json('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'bo', '--full-diff').data, 'bo').diff as string
     expect(full).toContain('\n \ufeff# Bo\n+\n+<!-- BEGIN MARVEEN')
     expect(applied(r2, 'agents/bo/CLAUDE.md', full)).toBe(expected(r2, 'bo', 'agents/bo/CLAUDE.md'))
+  })
+
+  // Ron 13122 (J3): a file that is only a BOM has no line to carry it; the
+  // diff must not add a second one on the new side.
+  it('a BOM-only file: the diff applies to exactly one BOM', () => {
+    const r2 = join(base, 'bom-only')
+    mkdirSync(join(r2, 'agents', 'bb'), { recursive: true })
+    writeFileSync(join(r2, '.env'), 'MAIN_AGENT_ID=chief\n')
+    writeFileSync(join(r2, 'CLAUDE.md'), '# chief\n')
+    writeFileSync(join(r2, 'agents', 'bb', 'CLAUDE.md'), '\ufeff')
+    const want = expected(r2, 'bb', 'agents/bb/CLAUDE.md')
+    expect(want.startsWith('\ufeff')).toBe(true)
+    expect(want.slice(1)).not.toContain('\ufeff')
+    const full = report(json('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'bb', '--full-diff').data, 'bb').diff as string
+    expect(full.startsWith('--- a/agents/bb/CLAUDE.md\n+++ b/agents/bb/CLAUDE.md\n@@ -1 +1,')).toBe(true)
+    expect(full).toContain('\n-\ufeff\n\\ No newline at end of file\n+\ufeff')
+    expect(applied(r2, 'agents/bb/CLAUDE.md', full)).toBe(want)
   })
 })
 
@@ -382,6 +420,13 @@ describe('PR 8b: assumptions, per agent, never silent (Kevin 12995)', () => {
     expect(formatText(fake as never)).toContain('(5501 of the 5500 budget, OVER BUDGET)')
   })
 
+  it('the budget boundary: exactly 5500 fits, 5501 is over (Ron 13122)', () => {
+    expect(REGION_BUDGET).toBe(5500)
+    expect(isOverBudget(5499)).toBe(false)
+    expect(isOverBudget(5500)).toBe(false)
+    expect(isOverBudget(5501)).toBe(true)
+  })
+
   it('--home must be absolute', () => {
     const r = cli('--dry-run', '--root', root, '--home', 'rel/home', '--all')
     expect(r.code).toBe(2)
@@ -409,12 +454,12 @@ describe('--redact-names', () => {
   })
   const SENT = ['zzsentinelagent', 'aasentinelagent', 'chiefsentinelxq', 'rootsentinelxq', 'ownersentinelxq', 'botsentinelxq']
 
-  it.each([[[]], [['--json']], [['--excerpts']], [['--json', '--excerpts']]])('%j: no agent name and no root path', (extra) => {
+  it.each([[[]], [['--json']], [['--excerpts']], [['--full-diff']], [['--json', '--excerpts', '--full-diff']]])('%j: no agent name and no root path', (extra) => {
     const { out } = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--redact-names', ...(extra as string[]))
     for (const s of SENT) expect(out.toLowerCase(), s).not.toContain(s)
     expect(out).toContain('agent-03')
     // the region diff was there to leak from: its identity line
-    expect(out).toContain('Owner: <OWNER>.')
+    if ((extra as string[]).includes('--full-diff')) expect(out).toContain('Owner: <OWNER>.')
   })
 
   it('numbers the agents main first, then the subs in name order, the same with --agent', () => {
@@ -431,7 +476,7 @@ describe('--redact-names', () => {
   })
 
   it('excerpts: a name and the root inside owner text are replaced too', () => {
-    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--agent', 'chiefsentinelxq', '--redact-names', '--excerpts').out
+    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--agent', 'chiefsentinelxq', '--redact-names', '--excerpts', '--full-diff').out
     expect(t).toContain('      | Ask agent-03 or <BOT> for <OWNER>nak `curl -s <ROOT>/x http://h/api/x`\n')
     // the verbatim diff context carries the same owner line, redacted the same way
     expect(t).toContain('\n Ask agent-03 or <BOT> for <OWNER>nak `curl -s <ROOT>/x http://h/api/x`\n')
@@ -439,7 +484,7 @@ describe('--redact-names', () => {
   })
 
   it('without the flag the names are printed (the local report)', () => {
-    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--excerpts').out
+    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--excerpts', '--full-diff').out
     for (const s of SENT) expect(t).toContain(s)
     expect(t).toContain('Owner: ownersentinelxq.')
   })
@@ -476,5 +521,107 @@ describe('code version (Ron S3)', () => {
       expect(codeVersion(join(d, f)), f).toBe('unknown')
     }
     expect(codeVersion(join(d, 'missing'))).toBe('unknown')
+  })
+})
+
+// Ron 13122 (B1): a word of OWNER_NAME / BOT_NAME that is also an agent name
+// split the person's name ("Roland agent-04 Doros"); one longest-first pass.
+describe('--redact-names: a person name that contains an agent name', () => {
+  let r4: string
+  const LEFT = ['ownerfirstxq', 'ownerlastxq', 'botlastxq', 'agentkevinxq', 'agentdennisxq', 'chiefbxq']
+  beforeAll(() => {
+    r4 = join(base, 'b1', 'install')
+    mkdirSync(join(r4, 'agents', 'agentkevinxq'), { recursive: true })
+    mkdirSync(join(r4, 'agents', 'agentdennisxq'), { recursive: true })
+    writeFileSync(join(r4, '.env'), 'MAIN_AGENT_ID=chiefbxq\nOWNER_NAME=ownerfirstxq AgentKevinXQ ownerlastxq\nBOT_NAME=agentdennisxq botlastxq\n')
+    // the bot name STARTS with an agent name: only the longest-first order keeps it whole
+    writeFileSync(join(r4, 'CLAUDE.md'), '# chief\n\nAsk agentdennisxq botlastxq about it `curl -s http://h/api/x`\n')
+    writeFileSync(join(r4, 'agents', 'agentkevinxq', 'CLAUDE.md'), '# k\n')
+    writeFileSync(join(r4, 'agents', 'agentdennisxq', 'CLAUDE.md'), '# d\n')
+  })
+
+  it.each([[['--full-diff']], [['--json', '--full-diff']], [['--excerpts', '--full-diff']], [['--json', '--excerpts']], [[]]])('%j: no word of a name is left', (extra) => {
+    const { out } = cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all', '--redact-names', ...(extra as string[]))
+    for (const w of LEFT) expect(out.toLowerCase(), w).not.toContain(w)
+    // the identity line of every region
+    if ((extra as string[]).includes('--full-diff')) expect(out.split('Owner: <OWNER>.').length - 1).toBe(3)
+  })
+
+  it('excerpts: the bot name with an agent name inside is one <BOT>', () => {
+    const t = cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--agent', 'chiefbxq', '--redact-names', '--excerpts').out
+    expect(t).toContain('      | Ask <BOT> about it `curl -s http://h/api/x`\n')
+  })
+
+  it('without the flag the full names are printed', () => {
+    const t = cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all', '--full-diff').out
+    expect(t).toContain('Owner: ownerfirstxq AgentKevinXQ ownerlastxq.')
+  })
+})
+
+// Ron 13122 (J2): paths outside the root in an error message.
+describe('--redact-names: the home and the checkout', () => {
+  it('a settings layer that cannot be read names the home as <HOME>', () => {
+    const r5 = join(base, 'j2', 'install')
+    const home = join(base, 'j2', 'homesentinelxq')
+    mkdirSync(r5, { recursive: true })
+    mkdirSync(join(home, '.claude', 'settings.json'), { recursive: true }) // a directory: cannot read
+    writeFileSync(join(r5, '.env'), 'MAIN_AGENT_ID=chief\n')
+    writeFileSync(join(r5, 'CLAUDE.md'), '# chief\n')
+    const plain = cli('--dry-run', '--root', r5, '--home', home, '--all')
+    expect(plain.out).toContain(`cannot read ${join(home, '.claude', 'settings.json')}`)
+    for (const extra of [[], ['--json']]) {
+      const { code, out } = cli('--dry-run', '--root', r5, '--home', home, '--all', '--redact-names', ...extra)
+      expect(code).toBe(1)
+      expect(out).not.toContain('homesentinelxq')
+      expect(out).toContain('cannot read <HOME>/.claude/settings.json')
+    }
+  })
+
+  it('the checkout (where the templates are) is <CHECKOUT>; the root wins a tie', () => {
+    const result = dryRun(root, 'alpha', { homeDir: HOME_FIX() })
+    const checkout = dirname(dirname(TEMPLATES_DIR))
+    expect(outsidePaths(result)).toEqual([[HOME_FIX(), '<HOME>'], [checkout, '<CHECKOUT>']])
+    result.agents[0] = { ...result.agents[0], status: 'error', error: { message: `TemplateError: ${TEMPLATES_DIR}/identity.md` } }
+    const t = formatText(result, { redactNames: true })
+    expect(t).toContain('TemplateError: <CHECKOUT>/templates/claude-md/identity.md')
+    expect(t).not.toContain(checkout)
+    const r = makeRedactor({ ...result, root: checkout }, outsidePaths(result))
+    expect(r.text(`${checkout}/x ${HOME_FIX()}/y`)).toBe('<ROOT>/x <HOME>/y')
+    // a path only matches where its name ends
+    expect(r.text(`${checkout}-other/x`)).toBe(`${checkout}-other/x`)
+    // the longer path first, wherever it is in the list (here the root is its prefix)
+    expect(makeRedactor({ ...result, root: dirname(checkout) }, outsidePaths(result)).text(`${checkout}/x`)).toBe('<CHECKOUT>/x')
+    // a placeholder is not taken apart by a name that matches inside it
+    expect(makeRedactor({ ...result, listed: [...result.listed, 'home'] }, outsidePaths(result)).text(`${HOME_FIX()}/y`)).toBe('<HOME>/y')
+  })
+})
+
+// Kevin 13132 / Johnny 13131 (J5): a legacy generated block an owner edited by
+// hand is owner text; its text appears in no output, only its placeholder.
+describe('a hand-edited generated block', () => {
+  let r6: string
+  const BLOCK = '<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->\n'
+    + '- chief\n- HANDEDITSENTINEL my own note about chiefsentinel6\n'
+    + '<!-- END GENERATED: fleet-roster -->\n'
+  beforeAll(() => {
+    r6 = join(base, 'j5', 'install')
+    mkdirSync(join(r6, 'agents', 'kay'), { recursive: true })
+    writeFileSync(join(r6, '.env'), 'MAIN_AGENT_ID=chiefsentinel6\n')
+    writeFileSync(join(r6, 'CLAUDE.md'), '# chief\n')
+    writeFileSync(join(r6, 'agents', 'kay', 'CLAUDE.md'), `# Kay\n\n${BLOCK}`)
+  })
+  const placeholder = () => `<generated block fleet-roster: 4 lines, sha256:${createHash('sha256').update(BLOCK).digest('hex').slice(0, 12)}>`
+
+  it.each([[[]], [['--json']], [['--excerpts']], [['--redact-names']], [['--json', '--redact-names']]])('%j: the edited text is not printed, and there is no diff', (extra) => {
+    const { out } = cli('--dry-run', '--root', r6, '--home', HOME_FIX(), '--all', ...(extra as string[]))
+    expect(out).not.toContain('HANDEDITSENTINEL')
+    expect(out).not.toContain(placeholder())
+    expect(out).toContain('fleet-roster')
+  })
+
+  it.each([[['--full-diff']], [['--full-diff', '--json']], [['--full-diff', '--redact-names']], [['--full-diff', '--excerpts', '--json', '--redact-names']]])('%j: only the placeholder with N lines and the 12-hex hash', (extra) => {
+    const { out } = cli('--dry-run', '--root', r6, '--home', HOME_FIX(), '--agent', 'kay', ...(extra as string[]))
+    expect(out).not.toContain('HANDEDITSENTINEL')
+    expect(out).toContain(`-${placeholder()}`)
   })
 })

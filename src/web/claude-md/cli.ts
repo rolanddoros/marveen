@@ -1,5 +1,5 @@
 // C1 PR 8: `node dist/web/claude-md/cli.js --dry-run --root <dir> (--agent <name> | --all)
-//   [--json] [--excerpts] [--redact-names] [--show-chat-id] [--home <dir>]`
+//   [--json] [--excerpts] [--redact-names] [--full-diff] [--show-chat-id] [--home <dir>]`
 //
 // The entry module: it runs the CLI on import, with no "am I the main module"
 // guard. Such a guard (import.meta.url === pathToFileURL(process.argv[1]).href)
@@ -10,13 +10,17 @@
 //
 // Read-only report over an install's CLAUDE.md files (dry-run.ts). The main
 // agent runs it against the live tree and pastes the output into a PR
-// description, so the DEFAULT output carries no owner-zone text: a finding is
-// file:line, detector and pattern name, and the region diff (PR 8b) has no
-// context lines and shows a changed owner line only as a placeholder. The
-// owner chat_id is masked unless --show-chat-id. `--excerpts` adds a masked
-// excerpt of each finding's line and a diff with 3 verbatim context lines;
-// that output is NOT for a PR description (the owner zones belong to the
-// agents' principals). `--redact-names` replaces the root with <ROOT>, every
+// description, so the DEFAULT output is a summary with no owner-zone text:
+// per agent the status, the chars before and after, the legacy blocks, the
+// owner-zone findings as file:line, detector and pattern name, and the
+// assumptions (Kevin 13132). `--excerpts` adds a masked excerpt of each
+// finding's line. `--full-diff` adds the unified diff (3 context lines, the
+// owner text verbatim; each removed legacy block is one placeholder line with
+// its line count and a sha256 prefix, never its text, since an owner may have
+// edited it). Neither is for a PR description (the owner zones belong to the
+// agents' principals); to keep a full diff, redirect stdout to a file under
+// store/ (the CLI writes no file). The owner chat_id is masked in the diff
+// unless --show-chat-id. `--redact-names` replaces the root with <ROOT>, every
 // agent name with agent-01..NN (main agent first, then the sub-agents in name
 // order), and the configured OWNER_NAME / BOT_NAME with <OWNER> / <BOT>: the
 // fork is public, so the PR text is made with it, and the full report stays

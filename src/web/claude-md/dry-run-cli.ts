@@ -6,10 +6,11 @@ import { readFileSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { REGION_BUDGET, dryRun, UsageError, type AgentReport, type DryRunResult } from './dry-run.js'
+import { TEMPLATES_DIR } from './render.js'
 import { maskedExcerpt } from './owner-zone.js'
 
 export const USAGE = 'usage: cli.js --dry-run --root <dir> (--agent <name> | --all) [--json] [--excerpts] [--redact-names]'
-  + ' [--show-chat-id] [--home <dir>]'
+  + ' [--full-diff] [--show-chat-id] [--home <dir>]'
 
 interface Options {
   root: string
@@ -17,6 +18,7 @@ interface Options {
   json: boolean
   excerpts: boolean
   redactNames: boolean
+  fullDiff: boolean
   showChatId: boolean
   home?: string
 }
@@ -29,6 +31,7 @@ export function parseArgs(argv: readonly string[]): Options {
   let json = false
   let excerpts = false
   let redactNames = false
+  let fullDiff = false
   let showChatId = false
   let home: string | undefined
   for (let i = 0; i < argv.length; i++) {
@@ -43,6 +46,7 @@ export function parseArgs(argv: readonly string[]): Options {
     else if (a === '--json') json = true
     else if (a === '--excerpts') excerpts = true
     else if (a === '--redact-names') redactNames = true
+    else if (a === '--full-diff') fullDiff = true
     else if (a === '--show-chat-id') showChatId = true
     else if (a === '--home') home = value()
     else if (a === '--root') root = value()
@@ -61,7 +65,7 @@ export function parseArgs(argv: readonly string[]): Options {
   }
   if (!isDir) throw new UsageError(`--root is not a directory: ${abs}`)
   if (home !== undefined && !isAbsolute(home)) throw new UsageError(`--home must be an absolute path: ${home}`)
-  return { root: abs.replace(/(.)\/+$/, '$1'), agent, json, excerpts, redactNames, showChatId, home }
+  return { root: abs.replace(/(.)\/+$/, '$1'), agent, json, excerpts, redactNames, fullDiff, showChatId, home }
 }
 
 // Why a rendered value is only an assumption (live-context.ts).
@@ -92,11 +96,12 @@ export function codeVersion(stamp = join(dirname(fileURLToPath(import.meta.url))
 // same number on every run of the same install, whichever agent is asked for.
 // Applied to the report's own fields and to every free text it prints (error
 // messages, excerpts, the region diff and the assumed values), where an agent
-// name counts only as a whole word. The configured OWNER_NAME and BOT_NAME
+// name counts only as a whole word. The home and the checkout become <HOME>
+// and <CHECKOUT> (Ron 13122). The configured OWNER_NAME and BOT_NAME
 // (DryRunResult.identity) become <OWNER> and <BOT> at every occurrence, also
 // inside a word (a Hungarian suffix is glued on: "Rolandnak") (Kevin 13039).
 // Names match in any letter case ("Dennis" in owner text is the agent dennis;
-// Ron, 8a review 13073); the root is a path and matches exactly.
+// Ron, 8a review 13073); the paths match exactly.
 export interface Redactor {
   name(n: string): string
   text(s: string): string
@@ -104,31 +109,60 @@ export interface Redactor {
 
 const IDENTITY: Redactor = { name: (n) => n, text: (s) => s }
 
-export function makeRedactor(result: DryRunResult): Redactor {
+// The paths outside the root that a report can print (an error message):
+// the home whose settings layer was read, and the checkout the code runs from
+// (render.ts finds its templates there).
+export function outsidePaths(result: DryRunResult): [string, string][] {
+  return [[result.homeDir, '<HOME>'], [dirname(dirname(TEMPLATES_DIR)), '<CHECKOUT>']]
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export function makeRedactor(result: DryRunResult, outside: readonly [string, string][] = []): Redactor {
   const width = Math.max(2, String(result.listed.length).length)
   const map = new Map(result.listed.map((n, i) => [n, `agent-${String(i + 1).padStart(width, '0')}`]))
-  const byLower = new Map([...map].map(([n, tag]) => [n.toLowerCase(), tag]))
-  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Longest first, so a name that contains another is replaced whole.
-  const words = [...map.keys()].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
-  // Longest first again: a bot name that contains the owner name (or back).
+
+  // Paths first, case-sensitive, the longest first (the home is often a
+  // prefix of the root), each only where a path name ends; on a tie (the
+  // checkout is the install) the root wins.
+  const pathTag = new Map<string, string>()
+  for (const [p, tag] of [[result.root, '<ROOT>'] as [string, string], ...outside]) {
+    if (p.length > 1 && !pathTag.has(p)) pathTag.set(p, tag)
+  }
+  const paths = [...pathTag.keys()].sort((x, y) => y.length - x.length)
+  const pathRe = paths.length > 0 ? new RegExp(paths.map((p) => `${escapeRe(p)}(?![A-Za-z0-9_-])`).join('|'), 'g') : null
+
+  // Then every name in ONE alternation, the longest first, so a person's name
+  // that contains an agent name ("Roland Kevin Doros" and the agent kevin) is
+  // replaced whole before the agent name could split it (Ron, 8b review
+  // 13122). An agent name counts only as a whole word; a person's name at
+  // every occurrence. A placeholder already written is skipped.
+  const tags = new Map<string, string>()
+  for (const [n, tag] of map) tags.set(n.toLowerCase(), tag)
   const people: [string, string][] = []
   if (result.identity.owner) people.push([result.identity.owner, '<OWNER>'])
   if (result.identity.bot) people.push([result.identity.bot, '<BOT>'])
-  people.sort((a, b) => b[0].length - a[0].length)
-  const re = words.length > 0 ? new RegExp(`(?<![A-Za-z0-9_-])(?:${words.map(escapeRe).join('|')})(?![A-Za-z0-9_-])`, 'gi') : null
+  for (const [v, tag] of people) tags.set(v.toLowerCase(), tag)
+  const alts = [
+    ...[...map.keys()].filter((n) => n.length > 0).map((n) => ({ s: n, word: true })),
+    ...people.map(([v]) => ({ s: v, word: false })),
+  ].sort((x, y) => y.s.length - x.s.length)
+  const nameRe = alts.length > 0
+    ? new RegExp(`<(?:ROOT|HOME|CHECKOUT)>|${alts.map((x) => (x.word ? `(?<![A-Za-z0-9_-])${escapeRe(x.s)}(?![A-Za-z0-9_-])` : escapeRe(x.s))).join('|')}`, 'gi')
+    : null
+
   return {
     name: (n) => map.get(n) ?? n,
     text: (s) => {
-      const rooted = s.split(result.root).join('<ROOT>')
-      const named = re ? rooted.replace(re, (w) => byLower.get(w.toLowerCase()) ?? w) : rooted
-      return people.reduce((t, [v, ph]) => t.replace(new RegExp(escapeRe(v), 'gi'), ph), named)
+      const pathed = pathRe ? s.replace(pathRe, (m) => pathTag.get(m) ?? m) : s
+      return nameRe ? pathed.replace(nameRe, (w) => tags.get(w.toLowerCase()) ?? w) : pathed
     },
   }
 }
 
 interface FormatOptions {
   excerpts?: boolean
+  fullDiff?: boolean
   redactNames?: boolean
   code?: string
 }
@@ -152,7 +186,7 @@ function redactValues(r: Redactor, values: Record<string, unknown>): Record<stri
 
 // The report as printed: names redacted when asked, excerpts attached when asked.
 function view(result: DryRunResult, opts: FormatOptions) {
-  const r = opts.redactNames ? makeRedactor(result) : IDENTITY
+  const r = opts.redactNames ? makeRedactor(result, outsidePaths(result)) : IDENTITY
   return {
     root: opts.redactNames ? '<ROOT>' : result.root,
     mainAgentId: r.name(result.mainAgentId),
@@ -175,8 +209,10 @@ function view(result: DryRunResult, opts: FormatOptions) {
 export function formatText(result: DryRunResult, opts: FormatOptions = {}): string {
   const v = view(result, opts)
   const out: string[] = [`claude-md dry-run (read-only), root ${v.root}, main agent ${v.mainAgentId}, code ${v.code}`]
-  if (opts.excerpts) out.push('EXCERPTS ON: owner-zone text below (findings masked, diff context verbatim); not for a PR description')
-  if (opts.redactNames) out.push('names redacted: root <ROOT>, agents agent-NN (main agent first, then the sub-agents in name order), owner <OWNER>, bot <BOT>')
+  if (opts.excerpts) out.push('EXCERPTS ON: owner-zone text below, masked; not for a PR description')
+  if (opts.fullDiff) out.push('FULL DIFF ON: owner text below, verbatim; not for a PR description')
+  if (opts.redactNames) out.push('names redacted: root <ROOT>, agents agent-NN (main agent first, then the sub-agents in name order), owner <OWNER>, bot <BOT>, '
+    + 'home <HOME>, checkout <CHECKOUT>')
   for (const a of v.agents) {
     out.push('')
     out.push(`${a.name} (${a.role}) ${a.file}: ${a.status}`)
@@ -208,10 +244,12 @@ export function formatText(result: DryRunResult, opts: FormatOptions = {}): stri
     }
     if (a.after) {
       out.push(`  after: file ${a.after.file}, region ${a.after.region} chars (${a.after.regionLength} of the ${REGION_BUDGET} budget`
-        + `${a.after.overBudget ? ', OVER BUDGET' : ''}); removes ${a.after.removedBlocks.length > 0 ? a.after.removedBlocks.join(', ') : 'nothing'}`)
+        + `${a.after.overBudget ? ', OVER BUDGET' : ''}); ${a.after.removedBlocks.length > 0
+          ? `${a.after.removedBlocks.length} block(s) removed (${a.after.removedBlocks.join(', ')}), content not compared to the old template`
+          : 'no block removed'}`)
     }
     if (a.diff !== undefined) {
-      out.push(opts.excerpts ? '  diff (3 context lines, verbatim):' : '  diff (no owner text: no context lines, a changed owner line as a placeholder):')
+      out.push('  diff (3 context lines, owner text verbatim, each removed generated block as one placeholder line):')
       out.push(a.diff.replace(/\n$/, '') || '  (no change)')
     }
   }
@@ -225,7 +263,7 @@ export function formatText(result: DryRunResult, opts: FormatOptions = {}): stri
 export function formatJson(result: DryRunResult, opts: FormatOptions = {}): string {
   const v = view(result, opts)
   return `${JSON.stringify({
-    root: v.root, mainAgentId: v.mainAgentId, code: v.code, excerpts: opts.excerpts === true,
+    root: v.root, mainAgentId: v.mainAgentId, code: v.code, excerpts: opts.excerpts === true, fullDiff: opts.fullDiff === true,
     redactNames: opts.redactNames === true, agents: v.agents, exit: exitCodeOf(result),
   }, null, 2)}\n`
 }
@@ -242,13 +280,13 @@ export function runCli(argv: readonly string[], write: (s: string) => void, writ
   }
   let result: DryRunResult
   try {
-    result = dryRun(opts.root, opts.agent, { homeDir: opts.home, fullDiff: opts.excerpts, showChatId: opts.showChatId })
+    result = dryRun(opts.root, opts.agent, { homeDir: opts.home, fullDiff: opts.fullDiff, showChatId: opts.showChatId })
   } catch (err) {
     if (!(err instanceof UsageError)) throw err
     writeErr(`${err.message}\n${USAGE}\n`)
     return 2
   }
-  const fmt = { excerpts: opts.excerpts, redactNames: opts.redactNames }
+  const fmt = { excerpts: opts.excerpts, fullDiff: opts.fullDiff, redactNames: opts.redactNames }
   write(opts.json ? formatJson(result, fmt) : formatText(result, fmt))
   return exitCodeOf(result)
 }
