@@ -3549,8 +3549,10 @@ function renderWizardPendingBanner() {
     banner.hidden = true
     return
   }
-  document.getElementById('wizardPendingTitle').textContent = t('agents.wizard.pending_title')
-  document.getElementById('wizardPendingBody').textContent = t('agents.wizard.pending_body')
+  // C1 PR 11c-3: an agent created without Telegram has no persona, so its
+  // banner speaks of the role description; the Telegram banner is unchanged.
+  document.getElementById('wizardPendingTitle').textContent = t(wizardTelegram ? 'agents.wizard.pending_title' : 'agents.wizard.pending_title_headless')
+  document.getElementById('wizardPendingBody').textContent = t(wizardTelegram ? 'agents.wizard.pending_body' : 'agents.wizard.pending_body_headless')
   const detailEl = document.getElementById('wizardPendingDetail')
   const detail = wizardPersonalityPending.detail
   // The cause is shown, but only when the server actually sent one: an empty

@@ -262,10 +262,15 @@ export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 // carries after its persona (buildCreationSections). The start path's generated
 // blocks do not write them, so without them a failed generation left the agent
 // without its memory, schedule, time and fleet rules.
-function fallbackClaudeMd(name: string, description: string, model: string, sections = ''): string {
+//
+// C1 PR 11c-3 (Johnny 13431): an agent created without Telegram has no persona,
+// so its header speaks of the role description ("szerepleírásának"), not of the
+// personality; the Telegram agent's header is unchanged.
+function fallbackClaudeMd(name: string, description: string, model: string, sections = '', telegram = true): string {
+  const whatFailed = telegram ? 'személyiségének' : 'szerepleírásának'
   return `# ${name}
 
-> **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
+> **FIGYELEM: ez egy SABLON.** Az ügynök ${whatFailed} generálása nem sikerült a
 > létrehozáskor, ezért ez a fájl helyőrző. Az ügynök használható, de a saját
 > CLAUDE.md-je még nem készült el. Írd át itt, vagy az ügynök beállításainál.
 
@@ -694,7 +699,9 @@ function getAgentSummary(name: string): AgentSummary {
     hasGooglechat: gc.hasGooglechat,
     hasTeams: tc.hasTeams,
     channelProvider: readAgentChannelProvider(name),
-    status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
+    // C1 PR 11c-3 (Ron Low 1): an agent created without Telegram never gets a
+    // SOUL.md, so for it the CLAUDE.md alone is a complete configuration.
+    status: hasClaudeMd && (hasSoulMd || !readAgentPersonaAtCreation(name)) ? 'configured' : 'draft',
     running,
     runState,
     remoteHost: remote.host,
@@ -1316,7 +1323,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       try {
         for (const [f, content] of [
-          [claudeMdFile, fallbackClaudeMd(name, description, model, sections)],
+          [claudeMdFile, fallbackClaudeMd(name, description, model, sections, telegram)],
           // C1 PR 11c-2: no SOUL.md template either for an agent created without Telegram.
           [soulMdFile, telegram ? fallbackSoulMd(name, description) : null],
         ] as const) {
@@ -1387,7 +1394,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
       // what the message points at. The sentinel stays as a marker for whenever a
       // regeneration path gets built; it just must not be described as one today.
-      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail, ...skippedField }, 200)
+      // C1 PR 11c-3 (Johnny 13431): without Telegram there is no persona and no
+      // SOUL.md, so the warning names the role description and CLAUDE.md only.
+      const warning = telegram
+        ? 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.'
+        : 'CLAUDE.md generation failed, a template role description was used. Edit CLAUDE.md.'
+      json(res, { ok: true, name, personalityPending: true, warning, detail: personalityPendingDetail, ...skippedField }, 200)
       return true
     }
 
@@ -2775,7 +2787,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // service runs for weeks between restarts. No-op for sub-agents.
       if (name === MAIN_AGENT_ID) ensureFederationClaudeMdSection()
     }
-    if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
+    // C1 PR 11c-3 (Ron Low 4): the Settings tab shows the SOUL.md editor for every
+    // agent, and its Save sends the (empty) field. For an agent created without
+    // Telegram, which has no SOUL.md, an empty save must not create an empty one;
+    // a non-empty save, or a save over an existing file, writes as before.
+    if (data.soulMd !== undefined) {
+      const soulPath = join(agentDir(name), 'SOUL.md')
+      const emptyCreate = typeof data.soulMd === 'string' && data.soulMd.trim() === '' && !existsSync(soulPath) && !readAgentPersonaAtCreation(name)
+      if (!emptyCreate) atomicWriteFileSync(soulPath, data.soulMd)
+    }
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) {
       // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.

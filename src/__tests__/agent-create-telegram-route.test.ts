@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   soulCalls: 0,
   fail: false,
   personaAtCreation: true,
+  names: [] as string[],
   writePersona: vi.fn(),
 }))
 
@@ -29,13 +30,18 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   return {
     ...orig,
     agentDir: (name: string) => join(h.root, name),
+    // C1 PR 11c-3: the listing reads CLAUDE.md through agentConfigRoot and the PUT
+    // checks isKnownAgent; both resolve agentDir inside the module, so they are
+    // pointed at the temp root here too.
+    agentConfigRoot: (name: string) => join(h.root, name),
+    isKnownAgent: (name: string) => existsSync(join(h.root, name)),
     writeAgentModel: vi.fn(),
     writeAgentSecurityProfile: vi.fn(),
     writeAgentDisplayName: vi.fn(),
     writeAgentChannelProvider: vi.fn(),
     writeAgentPersonaAtCreation: h.writePersona,
     readAgentPersonaAtCreation: () => h.personaAtCreation,
-    listAgentNames: () => [],
+    listAgentNames: () => h.names,
   }
 })
 
@@ -137,6 +143,7 @@ beforeEach(() => {
   h.soulCalls = 0
   h.fail = false
   h.personaAtCreation = true
+  h.names = []
   h.writePersona.mockReset()
   process.env[CLI_VERSION_OVERRIDE_ENV] = ''
   resetClaudeCliVersionCache()
@@ -150,7 +157,12 @@ afterEach(() => {
 
 describe('POST /api/agents: the telegram answer (C1 PR 11c-2)', () => {
   it('telegram=false: no persona asked for, no generateSoulMd, no SOUL.md; CLAUDE.md written; personaAtCreation false', async () => {
+    // C1 PR 11c-3 (Ron Low 2): a successful creation logs no error. Without the
+    // `content === null` skip the absent SOUL.md would throw into the catch, which
+    // logs a false "generation failed" while the response still says ok.
+    const error = vi.spyOn(logger, 'error')
     const r = await create({ telegram: false })
+    expect(error).not.toHaveBeenCalled()
     expect(r.status).toBe(200)
     expect(r.body).toEqual({ ok: true, name: NAME })
     expect(h.claudeArgs).toEqual([[NAME, 'probe agent', expect.any(String), { telegram: false }]])
@@ -207,6 +219,128 @@ describe('POST /api/agents: the telegram answer (C1 PR 11c-2)', () => {
     await create({ telegram: true })
     expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toContain('SABLON')
     expect(readFileSync(join(dir(), 'SOUL.md'), 'utf8')).toContain('SABLON')
+  })
+})
+
+// C1 PR 11c-3 (Johnny 13431): telegram=false + failed generation speaks of the role
+// description and CLAUDE.md only; the Telegram failure keeps today's wording. Texts verbatim.
+describe('POST /api/agents: failure-path wording without Telegram (C1 PR 11c-3)', () => {
+  const TG_WARNING = 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.'
+  const HEADLESS_WARNING = 'CLAUDE.md generation failed, a template role description was used. Edit CLAUDE.md.'
+  const TG_HEADER = '> **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a\n'
+  const HEADLESS_HEADER = '> **FIGYELEM: ez egy SABLON.** Az ügynök szerepleírásának generálása nem sikerült a\n'
+
+  it('telegram=false: the API warning is the headless one', async () => {
+    h.fail = true
+    const r = await create({ telegram: false })
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ ok: true, name: NAME, personalityPending: true, detail: 'boom' })
+    expect(r.body.warning).toBe(HEADLESS_WARNING)
+  })
+
+  it('telegram=true: the API warning is today\'s', async () => {
+    h.fail = true
+    const r = await create({ telegram: true })
+    expect(r.body.personalityPending).toBe(true)
+    expect(r.body.warning).toBe(TG_WARNING)
+  })
+
+  it('telegram=false: the template CLAUDE.md header says the role description failed', async () => {
+    h.fail = true
+    await create({ telegram: false })
+    const md = readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')
+    expect(md).toContain(HEADLESS_HEADER)
+    expect(md).not.toContain('személyiség')
+    // the mandatory sections still follow the template
+    expect(md).toContain(`(the seven sections for ${NAME})`)
+  })
+
+  it('telegram=true: the template CLAUDE.md header is today\'s', async () => {
+    h.fail = true
+    await create({ telegram: true })
+    const md = readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')
+    expect(md).toContain(TG_HEADER)
+    expect(md).not.toContain('szerepleírás')
+  })
+})
+
+// C1 PR 11c-3 (Ron Low 1): a persona-less agent never gets a SOUL.md, so CLAUDE.md
+// alone makes it 'configured'; an agent created with a persona still needs both.
+describe('GET /api/agents: status of an agent created without Telegram (C1 PR 11c-3)', () => {
+  const statusOf = async (files: Record<string, string>) => {
+    mkdirSync(dir(), { recursive: true })
+    for (const [f, c] of Object.entries(files)) writeFileSync(join(dir(), f), c)
+    h.names = [NAME]
+    const r = await call('GET', '/api/agents', {})
+    expect(r.status).toBe(200)
+    const rows = r.body as unknown as Array<{ name: string; status: string }>
+    expect(rows.map(a => a.name)).toEqual([NAME])
+    return rows[0].status
+  }
+
+  it('without a persona: CLAUDE.md alone = configured', async () => {
+    h.personaAtCreation = false
+    expect(await statusOf({ 'CLAUDE.md': '# role\n' })).toBe('configured')
+  })
+
+  it('without a persona: no CLAUDE.md = draft', async () => {
+    h.personaAtCreation = false
+    expect(await statusOf({ 'CLAUDE.md': '  \n' })).toBe('draft')
+  })
+
+  it('with a persona: CLAUDE.md without SOUL.md = draft, both = configured (unchanged)', async () => {
+    h.personaAtCreation = true
+    expect(await statusOf({ 'CLAUDE.md': '# role\n' })).toBe('draft')
+    expect(await statusOf({ 'SOUL.md': '# soul\n' })).toBe('configured')
+  })
+})
+
+// C1 PR 11c-3 (Ron Low 4): the Settings tab's SOUL.md Save sends the field even when
+// it is empty. For a persona-less agent without SOUL.md that save creates nothing;
+// every other save writes as before.
+describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agent (C1 PR 11c-3)', () => {
+  const put = (payload: Record<string, unknown>) => {
+    mkdirSync(dir(), { recursive: true })
+    return call('PUT', `/api/agents/${NAME}`, payload)
+  }
+  const soul = () => join(dir(), 'SOUL.md')
+
+  for (const empty of ['', '  \n\t']) {
+    it(`without a persona, no SOUL.md, soulMd=${JSON.stringify(empty)}: 200 and no SOUL.md`, async () => {
+      h.personaAtCreation = false
+      const r = await put({ soulMd: empty })
+      expect(r.status).toBe(200)
+      expect(r.body).toEqual({ ok: true })
+      expect(existsSync(soul())).toBe(false)
+    })
+  }
+
+  it('without a persona, non-empty soulMd: written (a hand-written persona is allowed)', async () => {
+    h.personaAtCreation = false
+    await put({ soulMd: '# by hand\n' })
+    expect(readFileSync(soul(), 'utf8')).toBe('# by hand\n')
+  })
+
+  it('without a persona, an existing SOUL.md emptied: written empty (clearing is an edit, not a create)', async () => {
+    h.personaAtCreation = false
+    mkdirSync(dir(), { recursive: true })
+    writeFileSync(soul(), '# old\n')
+    await put({ soulMd: '' })
+    expect(readFileSync(soul(), 'utf8')).toBe('')
+  })
+
+  it('with a persona, no SOUL.md, empty soulMd: the empty file is created as today', async () => {
+    h.personaAtCreation = true
+    await put({ soulMd: '' })
+    expect(existsSync(soul())).toBe(true)
+    expect(readFileSync(soul(), 'utf8')).toBe('')
+  })
+
+  it('without a persona, empty soulMd next to claudeMd: CLAUDE.md written, still no SOUL.md', async () => {
+    h.personaAtCreation = false
+    await put({ claudeMd: '# role\n', soulMd: '' })
+    expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toBe('# role\n')
+    expect(existsSync(soul())).toBe(false)
   })
 })
 

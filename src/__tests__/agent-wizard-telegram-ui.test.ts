@@ -116,3 +116,66 @@ describe('creation wizard: the Telegram question (C1 PR 11c-2)', () => {
     expect(h.split("'agents.soul_md_generating'").length - 1).toBe(1)
   })
 })
+
+// C1 PR 11c-3 (Johnny 13431): telegram=false + failed generation. The step-3 banner names
+// the role description, not the personality, through two NEW keys; the existing keys and
+// the Telegram banner are unchanged. All strings verbatim from Johnny's file.
+describe('creation wizard: the failure banner without Telegram (C1 PR 11c-3)', () => {
+  const HU_TITLE = 'Az ügynököd kész, de a szerepleírása sablonból jött'
+  const EN_TITLE = 'Your agent is ready, but its role description came from a template'
+  const HU_BODY = 'Az ügynök létrejött és működik, semmi nem veszett el. A szerepleírását nem sikerült generálni, ezért amit lent látsz, sablon. Most átírhatod itt, vagy később az ügynök beállításaiban.'
+  const EN_BODY = 'The agent was created and works, nothing was lost. Its role description could not be generated, so what you see below is a template. You can rewrite it here now, or later in the agent\'s settings.'
+
+  it('the four headless strings are Johnny\'s, verbatim', () => {
+    expect(hu['agents.wizard.pending_title_headless']).toBe(HU_TITLE)
+    expect(hu['agents.wizard.pending_body_headless']).toBe(HU_BODY)
+    expect(en['agents.wizard.pending_title_headless']).toBe(EN_TITLE)
+    expect(en['agents.wizard.pending_body_headless']).toBe(EN_BODY)
+  })
+
+  it('the existing Telegram keys are unchanged', () => {
+    expect(hu['agents.wizard.pending_title']).toBe('Az ügynök elkészült, a személyisége viszont sablonból jött')
+    expect(hu['agents.wizard.pending_body']).toBe('Az ügynök létrejött és működik, nem veszett el semmi. A személyiségét nem sikerült legenerálni, ezért amit alább látsz, az egy sablon. Átírhatod most itt, vagy később bármikor az ügynök beállításainál.')
+    expect(en['agents.wizard.pending_title']).toBe('Your agent is ready, but its personality came from a template')
+    expect(en['agents.wizard.pending_body']).toBe('The agent was created and works, nothing was lost. Its personality could not be generated, so what you see below is a template. You can rewrite it here now, or later in the agent\'s settings.')
+  })
+
+  // Runs the real renderWizardPendingBanner from app.js against a stub DOM.
+  const renderBanner = (telegram: boolean, lang: Record<string, string>) => {
+    const start = APP.indexOf('function renderWizardPendingBanner() {')
+    expect(start).toBeGreaterThan(0)
+    const src = APP.slice(start, APP.indexOf('\n}\n', start) + 2)
+    const els: Record<string, { textContent: string; hidden: boolean }> = {}
+    for (const id of ['wizardPendingBanner', 'wizardPendingTitle', 'wizardPendingBody', 'wizardPendingDetail']) {
+      els[id] = { textContent: '', hidden: true }
+    }
+    const document = { getElementById: (id: string) => els[id] }
+    const t = (key: string, vars?: Record<string, string>) =>
+      (lang[key] ?? `MISSING:${key}`).replace(/\{(\w+)\}/g, (_m, k) => vars?.[k] ?? '')
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    new Function('document', 't', 'wizardPersonalityPending', 'wizardTelegram', `${src}\nrenderWizardPendingBanner()`)(
+      document, t, { detail: 'boom', warning: '' }, telegram)
+    return els
+  }
+
+  for (const [code, lang, title, body] of [['hu', () => hu, HU_TITLE, HU_BODY], ['en', () => en, EN_TITLE, EN_BODY]] as const) {
+    it(`${code}: without Telegram the banner shows the headless title and body`, () => {
+      const els = renderBanner(false, lang())
+      expect(els.wizardPendingBanner.hidden).toBe(false)
+      expect(els.wizardPendingTitle.textContent).toBe(title)
+      expect(els.wizardPendingBody.textContent).toBe(body)
+      expect(els.wizardPendingDetail.textContent).toBe(lang()['agents.wizard.pending_detail'].replace('{detail}', 'boom'))
+    })
+
+    it(`${code}: with Telegram the banner is today's`, () => {
+      const els = renderBanner(true, lang())
+      expect(els.wizardPendingTitle.textContent).toBe(lang()['agents.wizard.pending_title'])
+      expect(els.wizardPendingBody.textContent).toBe(lang()['agents.wizard.pending_body'])
+    })
+  }
+
+  it('the headless copy does not speak of a personality or SOUL.md', () => {
+    const copy = [HU_TITLE, HU_BODY, EN_TITLE, EN_BODY].join('\n')
+    expect(copy).not.toMatch(/személyiség|personality|persona|SOUL/i)
+  })
+})
