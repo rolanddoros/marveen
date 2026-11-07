@@ -96,6 +96,12 @@ vi.mock('../web/telegram.js', async (importOriginal) => {
   return { ...orig, sendWelcomeMessage: vi.fn(async () => {}) }
 })
 
+// C1 PR 11c-4: the agent detail reads the per-agent API key from the vault; no real vault here.
+vi.mock('../web/vault.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../web/vault.js')>()
+  return { ...orig, getSecret: () => null }
+})
+
 vi.mock('../web/agent-process.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../web/agent-process.js')>()
   return { ...orig, isAgentRunning: () => false }
@@ -310,14 +316,16 @@ describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agen
       h.personaAtCreation = false
       const r = await put({ soulMd: empty })
       expect(r.status).toBe(200)
-      expect(r.body).toEqual({ ok: true })
+      // C1 PR 11c-4: the skip is reported, so the client shows no "saved" toast.
+      expect(r.body).toEqual({ ok: true, soulMdWritten: false })
       expect(existsSync(soul())).toBe(false)
     })
   }
 
   it('without a persona, non-empty soulMd: written (a hand-written persona is allowed)', async () => {
     h.personaAtCreation = false
-    await put({ soulMd: '# by hand\n' })
+    const r = await put({ soulMd: '# by hand\n' })
+    expect(r.body).toEqual({ ok: true })
     expect(readFileSync(soul(), 'utf8')).toBe('# by hand\n')
   })
 
@@ -325,22 +333,54 @@ describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agen
     h.personaAtCreation = false
     mkdirSync(dir(), { recursive: true })
     writeFileSync(soul(), '# old\n')
-    await put({ soulMd: '' })
+    const r = await put({ soulMd: '' })
+    expect(r.body).toEqual({ ok: true })
     expect(readFileSync(soul(), 'utf8')).toBe('')
   })
 
   it('with a persona, no SOUL.md, empty soulMd: the empty file is created as today', async () => {
     h.personaAtCreation = true
-    await put({ soulMd: '' })
+    const r = await put({ soulMd: '' })
+    expect(r.body).toEqual({ ok: true })
     expect(existsSync(soul())).toBe(true)
     expect(readFileSync(soul(), 'utf8')).toBe('')
   })
 
   it('without a persona, empty soulMd next to claudeMd: CLAUDE.md written, still no SOUL.md', async () => {
     h.personaAtCreation = false
-    await put({ claudeMd: '# role\n', soulMd: '' })
+    const r = await put({ claudeMd: '# role\n', soulMd: '' })
+    expect(r.body).toEqual({ ok: true, soulMdWritten: false })
     expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toBe('# role\n')
     expect(existsSync(soul())).toBe(false)
+  })
+
+  it('a PUT without soulMd says nothing about it (C1 PR 11c-4)', async () => {
+    h.personaAtCreation = false
+    const r = await put({ claudeMd: '# role\n' })
+    expect(r.body).toEqual({ ok: true })
+  })
+})
+
+// C1 PR 11c-4: the agent detail carries personaAtCreation, so the Settings tab can
+// hide the SOUL.md editor for an agent created without Telegram.
+describe('GET /api/agents/:name: personaAtCreation in the detail (C1 PR 11c-4)', () => {
+  const detail = async () => {
+    mkdirSync(dir(), { recursive: true })
+    writeFileSync(join(dir(), 'CLAUDE.md'), '# role\n')
+    const r = await call('GET', `/api/agents/${NAME}`, {})
+    expect(r.status).toBe(200)
+    expect(r.body.name).toBe(NAME)
+    return r.body
+  }
+
+  it('created without Telegram: false', async () => {
+    h.personaAtCreation = false
+    expect((await detail()).personaAtCreation).toBe(false)
+  })
+
+  it('created with Telegram (or before the field): true', async () => {
+    h.personaAtCreation = true
+    expect((await detail()).personaAtCreation).toBe(true)
   })
 })
 
