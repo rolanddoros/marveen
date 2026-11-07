@@ -102,6 +102,9 @@ const EXPECTED: Record<string, string[]> = {
     // poller is refused; fail-open on the main agent (Kevin 13549 B1). Binds the operator's interactive
     // sessions in the project root too (Kevin 13441 (2)).
     'child-claude-channel-guard.mjs @ Bash',
+    // C1 PR 13b: warns (TOKEN_ARGV_GUARD=warn, the default) or blocks (enforce) a Bash command
+    // that puts the dashboard token on a process argv; fail-open wrapper, locked in hook_switches.
+    'token-argv-guard.py @ Bash',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   StopFailure: ['ledger-turn-failure.py'],

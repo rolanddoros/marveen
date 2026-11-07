@@ -368,6 +368,14 @@
         "gate": true,
         "purpose": "PreToolUse hook (matcher: Bash): a session whose Telegram poller can be killed must not start a child `claude` that would kill it (CHILDCLAUDEPOLLER1010).",
         "fingerprint": "76a32ad3a4c3d2ffaba12479249ec26bcd09ef6591eb933c10580e5e5cc38460"
+      },
+      {
+        "index": 22,
+        "id": "pre-tool-use/token-argv-guard",
+        "hook": "token-argv-guard",
+        "gate": true,
+        "purpose": "PreToolUse hook (matcher: Bash): warn when a command puts the dashboard token on a process argv.",
+        "fingerprint": "bade5914cb94567f4f89d2d0f5ac158c9768944ec6ee617904643fa812d043ba"
       }
     ],
     "Stop": [
