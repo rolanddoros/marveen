@@ -38,7 +38,8 @@ function generatedPair(id: string): MarkerPair {
   }
 }
 
-// src/web/federation/onboarding.ts FEDERATION_BLOCK_BEGIN / _END (main only).
+// src/web/federation/onboarding.ts FEDERATION_BLOCK_BEGIN / _END (the main agent's file and every sub's: the
+// sub-agents get their own shorter block between the same markers).
 export const FEDERATION_MARKERS: MarkerPair = {
   id: 'federation',
   begin: '<!-- MARVEEN-FEDERATION:BEGIN -- kezelt blokk / managed block, do not edit inside -->',

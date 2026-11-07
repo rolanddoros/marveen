@@ -309,11 +309,12 @@ describe('capabilities', () => {
     expect(caps('marveen')).toMatchObject({ kanbanWrite: true, scheduleWrite: true })
   })
 
-  it('federation: store/federation.json enabled === true, everything else off', () => {
+  // C1 PR 12b: through the bridge's validator, so an enabled file that fails validation reads off (it read ON before)
+  it('federation: a valid store/federation.json with enabled === true, everything else off', () => {
     expect(build('marveen').ctx.capabilities.federation).toBe(false)
     const cases: [string, boolean][] = [
       ['{"enabled": true}', true],
-      ['{"enabled": true, "peers": "not-a-list"}', true],
+      ['{"enabled": true, "peers": "not-a-list"}', false],
       ['{"enabled": false}', false],
       ['{"enabled": "true"}', false],
       ['{"enabled": 1}', false],
@@ -505,9 +506,11 @@ describe('import tree', () => {
     return { files: files.sort(), builtins: [...builtins].sort() }
   }
 
-  it('reaches exactly six source files, none of the forbidden ones, and only fs, os and path', () => {
+  it('reaches exactly eight source files, none of the forbidden ones, and only fs, os and path', () => {
     const { files, builtins } = tree('web/claude-md/live-context.ts')
-    expect(files).toEqual(['env-parse.ts', 'web/claude-md/agent-name.ts', 'web/claude-md/channel.ts', 'web/claude-md/context.ts', 'web/claude-md/hooks-from-settings.ts', 'web/claude-md/live-context.ts'])
+    expect(files).toEqual(['env-parse.ts', 'web/claude-md/agent-name.ts', 'web/claude-md/channel.ts', 'web/claude-md/context.ts', 'web/claude-md/hooks-from-settings.ts', 'web/claude-md/live-context.ts',
+      // C1 PR 12b: the bridge's pure validator
+      'web/federation/address.ts', 'web/federation/validate.ts'])
     for (const f of FORBIDDEN) expect(files).not.toContain(f)
     expect(builtins).toEqual(['node:fs', 'node:os', 'node:path'])
   })

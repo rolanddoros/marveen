@@ -171,13 +171,46 @@ describe('federation parity with validateFederationConfig', () => {
     }
   })
 
-  it('an enabled file that fails validation reads ON here (the conservative side for the v2 refusal)', () => {
-    const cfg = { enabled: true, peers: 'not-a-list' }
-    expect(typeof validateFederationConfig(cfg)).toBe('string')
-    put('store/federation.json', JSON.stringify(cfg))
-    expect(live('boss').ctx.capabilities.federation).toBe(true)
+  // C1 PR 12b: the bridge's own validator, so an invalid file reads off as getFederationConfig fails closed (it read ON
+  // before, the conservative side for the v2 refusal that 12b removes).
+  it('an enabled file that fails validation reads off, with no peers', () => {
+    for (const cfg of [{ enabled: true, peers: 'not-a-list' }, { enabled: true, peers: [{ id: 'bad id', baseUrl: 'https://a.example', inboundToken: 'x'.repeat(32) }] }]) {
+      expect(typeof validateFederationConfig(cfg)).toBe('string')
+      put('store/federation.json', JSON.stringify(cfg))
+      expect(live('boss').ctx.capabilities.federation, JSON.stringify(cfg)).toBe(false)
+      expect(live('boss').ctx.federation.peers).toEqual([])
+    }
+    put('store/federation.json', '{not json')
+    expect(live('boss').ctx.capabilities.federation).toBe(false)
     rmSync(join(ROOT, 'store', 'federation.json'))
     expect(live('boss').ctx.capabilities.federation).toBe(false)
+  })
+
+  it('the peers and the mode of a valid enabled file: the validator\'s ids, paired = an outbound token is set, no token value', () => {
+    const inA = 'a'.repeat(32)
+    const inB = 'b'.repeat(32)
+    const outA = 'c'.repeat(32)
+    const cfg = {
+      enabled: true,
+      routingMode: 'advisory',
+      peers: [
+        { id: 'North', baseUrl: 'https://north.example/', inboundToken: inA, outboundToken: outA },
+        { id: 'south-lab', baseUrl: 'http://127.0.0.1:3999', inboundToken: inB, outboundToken: '' },
+      ],
+    }
+    const res = validateFederationConfig(cfg)
+    expect(typeof res).toBe('object')
+    put('store/federation.json', JSON.stringify(cfg))
+    const { ctx } = live('boss')
+    expect(ctx.capabilities.federation).toBe(true)
+    expect(ctx.federation).toEqual({ routingMode: 'advisory', peers: [{ id: 'north', paired: true }, { id: 'south-lab', paired: false }] })
+    const dump = JSON.stringify(ctx)
+    for (const t of [inA, inB, outA]) expect(dump).not.toContain(t)
+    expect(ctx.federation.peers.map((p) => p.id)).toEqual((res as { peers: { id: string }[] }).peers.map((p) => p.id))
+    // disabled with the same peers: off, no peers (lossless disable keeps them in the file only)
+    put('store/federation.json', JSON.stringify({ ...cfg, enabled: false }))
+    expect(live('boss').ctx.federation).toEqual({ routingMode: 'catalog-first', peers: [] })
+    rmSync(join(ROOT, 'store', 'federation.json'))
   })
 })
 

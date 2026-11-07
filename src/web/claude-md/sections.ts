@@ -1,8 +1,10 @@
 // C1 PR 7b: the content of the v2 region (design 2.3), as registry sections.
 //
 // Order: identity, rule index, evidence rule, helper index (or the
-// helper-denied pointer), then the fleet roster (subs) or the federation
-// pointer (main, when enabled). Prose lives in templates/claude-md/*.md; the
+// helper-denied pointer), the fleet roster (subs), then the federation section
+// when federation is on: the main agent's (addressing, peers, routing, the
+// safety lines) or a sub's (a task a peer sends in); the rest of the rules is
+// skill marveen-federation (C1 PR 12b, Kevin 13384 D3). Prose lives in templates/claude-md/*.md; the
 // one-line rule texts live in RULES below, because each is a single line with
 // a role filter and an optional hook coupling, which a logic-free template
 // cannot express.
@@ -35,6 +37,8 @@
 // main agent always has a channel, and the heartbeat worker's region (no
 // channel either, but no such rule) stays as it is.
 
+import type { FederationRoutingMode } from '../federation/validate.js'
+import { isValidIdSegment } from '../federation/address.js'
 import type { AgentDocContext, AgentRole, HookId } from './context.js'
 import type { Section } from './registry.js'
 import { loadTemplate, renderTemplate } from './render.js'
@@ -256,6 +260,58 @@ function roster(ctx: AgentDocContext): string {
   return [renderTemplate(loadTemplate('roster'), { reach }, 'roster'), ...rows].join('\n')
 }
 
+// The main agent's peer list (Kevin 13463). External data going into a prompt file, so:
+// - only an id that passes the federation validator's own check (address.ts isValidIdSegment, stored lower-case) is
+//   written; any other is never written, not even escaped: it counts in "+N more" (claude-md/wire.ts logs the count);
+// - a fixed order, paired peers first, then by id, so the same peers always give the same bytes;
+// - at most PEER_MAX peers, and the whole list, "+N more" included, at most PEER_LIST_MAX_CHARS characters: as many
+//   whole entries as fit, never a cut id (eight 64-character ids would otherwise take the region over its budget).
+export const PEER_MAX = 8
+export const PEER_LIST_MAX_CHARS = 120
+const PEER_PENDING = ' (pairing, not addressable yet)'
+const DIRECTORY = '`GET /api/federation/directory`'
+
+export function renderablePeerId(id: string): boolean {
+  return isValidIdSegment(id) && id === id.toLowerCase()
+}
+
+export function peerList(peers: AgentDocContext['federation']['peers']): string {
+  if (peers.length === 0) return 'none configured yet'
+  const ok = peers.filter((p) => renderablePeerId(p.id))
+    .sort((a, b) => (a.paired === b.paired ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.paired ? -1 : 1))
+  const items = ok.map((p) => `\`${p.id}\`${p.paired ? '' : PEER_PENDING}`)
+  for (let k = Math.min(PEER_MAX, items.length); k >= 1; k--) {
+    const rest = peers.length - k
+    const text = items.slice(0, k).join(', ') + (rest > 0 ? `, +${rest} more: ${DIRECTORY}` : '')
+    if (text.length <= PEER_LIST_MAX_CHARS) return text
+  }
+  return `${peers.length} configured: ${DIRECTORY}`
+}
+
+// One sentence per routing mode (onboarding.ts renderRoutingDirective, condensed; the skill has the rest).
+export const ROUTING: Readonly<Record<FederationRoutingMode, string>> = {
+  'strong': `Routing: check the catalogue (${DIRECTORY}) first and delegate by default when a specialist plausibly fits.`,
+  'catalog-first': `Routing: check the catalogue (${DIRECTORY}) first; delegate if a specialist fits, else do it yourself.`,
+  'advisory': `Routing: do tasks yourself; delegate only when a specialist clearly fits better (catalogue: ${DIRECTORY}).`,
+}
+
+function federationMain(ctx: AgentDocContext): string {
+  return renderTemplate(loadTemplate('federation'), {
+    send: ctx.profile.helperAllowed
+      ? `\`message ${ctx.mainAgentId} <system>/<agent> <file>\``
+      : 'send as skill marveen-messaging describes',
+    peers: peerList(ctx.federation.peers),
+    routing: ROUTING[ctx.federation.routingMode],
+  }, 'federation')
+}
+
+function federationSub(ctx: AgentDocContext): string {
+  return renderTemplate(loadTemplate('federation-sub'), {
+    mainAgentId: ctx.mainAgentId,
+    reply: ctx.profile.helperAllowed ? 'with the helper\'s message verb' : 'as skill marveen-messaging describes',
+  }, 'federation-sub')
+}
+
 export const DEFAULT_SECTIONS: readonly Section[] = [
   { id: 'identity', appliesTo: () => true, render: identity },
   { id: 'rules', appliesTo: () => true, render: rules },
@@ -263,5 +319,6 @@ export const DEFAULT_SECTIONS: readonly Section[] = [
   { id: 'helper-index', appliesTo: (c) => c.profile.helperAllowed, render: helperIndex },
   { id: 'helper-denied', appliesTo: (c) => !c.profile.helperAllowed, render: () => loadTemplate('helper-denied') },
   { id: 'roster', appliesTo: (c) => c.role === 'sub' && c.roster.length > 0, render: roster },
-  { id: 'federation', appliesTo: (c) => c.role === 'main' && c.capabilities.federation, render: () => loadTemplate('federation') },
+  { id: 'federation', appliesTo: (c) => c.role === 'main' && c.capabilities.federation, render: federationMain },
+  { id: 'federation-sub', appliesTo: (c) => c.role === 'sub' && c.capabilities.federation, render: federationSub },
 ]

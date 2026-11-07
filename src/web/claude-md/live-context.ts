@@ -41,11 +41,16 @@
 // - profile.helperAllowed: opts.helperAllowed (the dashboard passes
 //   agentUsesApiHelper), else a simplified deny-rule reading: ASSUMED.
 // - capabilities.kanbanWrite: false only for the heartbeat worker
-//   (agentGetsKanbanWriteGate); capabilities.federation: store/federation.json
-//   "enabled" === true (a file that does not parse reads off, as the dashboard
-//   does; an enabled file that fails its other checks still reads ON here,
-//   the conservative side for the v2 refusal); capabilities.scheduleWrite:
-//   the main agent only (auth-gate rule schedule-writes-main-agent-only).
+//   (agentGetsKanbanWriteGate); capabilities.federation and federation:
+//   store/federation.json through the bridge's own validator
+//   (federation/validate.ts, with the .env main id as the default systemId):
+//   on only when the file validates and says enabled; absent, not JSON or
+//   invalid reads off with no peers, as getFederationConfig fails closed (C1
+//   PR 12b; before, an enabled file that failed its other checks read ON, the
+//   conservative side for the v2 refusal that 12b removes). A peer's tokens
+//   never reach the ctx, only `paired` (its outbound token is set);
+//   capabilities.scheduleWrite: the main agent only (auth-gate rule
+//   schedule-writes-main-agent-only).
 // - autonomy: store/autonomy-config.json, each category clamped as
 //   readAutonomyLevel does (an integer level, 1..3, capped by maxLevel; a
 //   non-integer level reads 1). A missing file is no categories; an
@@ -92,6 +97,7 @@ import { isAgentName } from './agent-name.js'
 import { agentHasChannel } from './channel.js'
 import { HOOK_IDS, type AgentDocContext, type AgentRole, type AutonomyLevel, type HookId } from './context.js'
 import { HOOK_SPECS, hooksFromSettings } from './hooks-from-settings.js'
+import { DEFAULT_ROUTING_MODE, validateFederationConfigWith } from '../federation/validate.js'
 
 export class LiveContextError extends Error {
   constructor(message: string) {
@@ -143,8 +149,8 @@ export interface LiveContext {
 // test reads them out of the source). A rendered field must never be an
 // assumption on a real write.
 export const RENDERED_FIELDS = [
-  'capabilities.channel', 'capabilities.federation', 'capabilities.kanbanWrite', 'hooks', 'mainAgentId', 'name',
-  'owner.chatId', 'owner.name', 'profile.helperAllowed', 'profile.strict', 'projectRoot', 'role', 'roster', 'team',
+  'capabilities.channel', 'capabilities.federation', 'capabilities.kanbanWrite', 'federation', 'hooks', 'mainAgentId',
+  'name', 'owner.chatId', 'owner.name', 'profile.helperAllowed', 'profile.strict', 'projectRoot', 'role', 'roster', 'team',
 ] as const
 
 const DEFAULT_MAIN_AGENT_ID = 'marveen'
@@ -258,9 +264,21 @@ function readAutonomy(root: string): Record<string, AutonomyLevel> {
   return out
 }
 
-function federationEnabled(root: string): boolean {
-  const cfg = readJsonObject(join(root, 'store', 'federation.json'))
-  return cfg?.enabled === true
+// store/federation.json as the bridge reads it (see the header): on, the
+// routing mode and the peers (id, paired) of a file that validates and is
+// enabled; anything else is off.
+function federationState(root: string, mainAgentId: string): { enabled: boolean; doc: AgentDocContext['federation'] } {
+  const off = { enabled: false, doc: { routingMode: DEFAULT_ROUTING_MODE, peers: [] } }
+  const text = readText(join(root, 'store', 'federation.json'))
+  if (text === null) return off
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { return off }
+  const cfg = validateFederationConfigWith(parsed, mainAgentId)
+  if (typeof cfg === 'string' || !cfg.enabled) return off
+  return {
+    enabled: true,
+    doc: { routingMode: cfg.routingMode ?? DEFAULT_ROUTING_MODE, peers: cfg.peers.map((p) => ({ id: p.id, paired: p.outboundToken.length > 0 })) },
+  }
 }
 
 // One settings layer: `value` is the parsed object, or null when the file is
@@ -441,6 +459,7 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
   }
 
   const storedProfile = agentCfg?.securityProfile
+  const federation = federationState(root, mainAgentId)
   assumptions.push('profile.id', 'capabilities.emailSend', 'capabilities.browser', 'capabilities.thinChief', 'tokenPath')
 
   const ctx: AgentDocContext = {
@@ -457,7 +476,7 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
       scheduleWrite: role === 'main',
       emailSend: 'none',
       browser: false,
-      federation: federationEnabled(root),
+      federation: federation.enabled,
       thinChief: false,
       channel: role === 'main' ? true : role === 'heartbeat' ? false : agentHasChannel(agentDir),
     },
@@ -465,6 +484,7 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
     team: { reportsTo, directReports },
     roster: names.filter((n) => n !== name).map((n) => ({ name: n })),
     hooks,
+    federation: federation.doc,
   }
   const order = (h: HookNotWired) => `${h.id === 'all' ? '' : h.id}\u0000${h.path ?? ''}\u0000${h.reason}`
   hooksNotWired.sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0))

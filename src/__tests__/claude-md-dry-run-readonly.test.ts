@@ -55,6 +55,9 @@ const ALLOWED_MODULES = [
   'src/web/claude-md/registry.ts',
   'src/web/claude-md/render.ts',
   'src/web/claude-md/sections.ts',
+  // C1 PR 12b: live-context.ts reads store/federation.json through the bridge's pure validator
+  'src/web/federation/address.ts',
+  'src/web/federation/validate.ts',
 ]
 // node:crypto: the sha256 of a removed generated block in the full diff (dry-run.ts)
 const ALLOWED_BUILTINS = ['node:crypto', 'node:fs', 'node:os', 'node:path', 'node:url']

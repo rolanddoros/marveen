@@ -20,6 +20,16 @@
 //     never rewrites or removes it: the owner's trust decisions survive
 //     every enable/disable cycle and even full removal.
 //
+// C1 PR 12b, a file on the v2 CLAUDE.md builder (it carries the v2 region,
+// claude-md/render.ts REGION_BEGIN as a whole line): this engine writes no
+// managed block into it, the v2 region has its own federation section. The
+// policy seed still goes into the main agent's file once, BEFORE the region
+// (seedFederationPolicy), so the next compose leaves it where it is. After the
+// reconcile, a refresher the builder registers (setFederationV2Refresher,
+// claude-md/wire.ts) re-renders the region of every agent on v2, so a peer or
+// mode change reaches it; this module does not import the builder (it imports
+// this one). A file without the region is handled exactly as before.
+//
 // Size discipline: the block renders the peer LIST only (one line per peer,
 // comments capped); manifest data (remote agent rosters) must NEVER be
 // rendered into it -- that would put hundreds of lines into every main-agent
@@ -33,6 +43,7 @@ import { getEffectiveSettingValue } from '../../settings-store.js'
 import { agentDir } from '../agent-config.js'
 import { shellWord } from '../sanitize.js'
 import { catalogAgentNames } from './local-catalog.js'
+import { REGION_BEGIN } from '../claude-md/render.js'
 import { getFederationConfig, DEFAULT_ROUTING_MODE, type FederationConfig, type FederationRoutingMode } from './config.js'
 
 export const FEDERATION_BLOCK_BEGIN = '<!-- MARVEEN-FEDERATION:BEGIN -- kezelt blokk / managed block, do not edit inside -->'
@@ -320,6 +331,35 @@ export function applyFederationBlock(content: string, block: string | null): str
   return `${content.replace(/\n*$/, '')}\n\n${block}\n`
 }
 
+// Whether the file is on the v2 builder: the region's BEGIN marker as a whole line (as claude-md/wire.ts
+// hasV2Region reads it).
+function onV2Region(content: string): boolean {
+  return content.split('\n').some((l) => l.replace(/\r$/, '') === REGION_BEGIN)
+}
+
+/** The owner policy seed for the main agent's file: the content with the seed
+ *  added, or null when the anchor is already there. Without a v2 region it is
+ *  appended at EOF (as before); with one it goes before the region, so the
+ *  region stays at EOF where the builder puts it. Pure. */
+export function seedFederationPolicy(content: string, lang: 'hu' | 'en'): string | null {
+  if (content.includes(FEDERATION_POLICY_ANCHOR)) return null
+  const seed = renderPolicySeed(lang)
+  if (!onV2Region(content)) return `${content.replace(/\n*$/, '')}\n\n${seed}\n`
+  const lines = content.split('\n')
+  const at = lines.findIndex((l) => l.replace(/\r$/, '') === REGION_BEGIN)
+  const head = lines.slice(0, at).join('\n').replace(/\n*$/, '')
+  const tail = lines.slice(at).join('\n')
+  return head === '' ? `${seed}\n\n${tail}` : `${head}\n\n${seed}\n\n${tail}`
+}
+
+// Set by the v2 builder (claude-md/wire.ts) when it loads; null in a process that never loads it.
+let v2Refresher: (() => void) | null = null
+
+/** The v2 builder registers its region refresh here (see the header). */
+export function setFederationV2Refresher(fn: (() => void) | null): void {
+  v2Refresher = fn
+}
+
 function resolveLang(): 'hu' | 'en' {
   try {
     return getEffectiveSettingValue('DASHBOARD_LANG') === 'en' ? 'en' : 'hu'
@@ -335,11 +375,13 @@ function ensureBlockInFile(path: string, block: string | null, lang: 'hu' | 'en'
   try {
     if (!existsSync(path)) return false // no persona yet: nothing to onboard
     const content = readFileSync(path, 'utf-8')
-    let next = applyFederationBlock(content, block)
+    // A v2 file gets no managed block (see the header).
+    let next = onV2Region(content) ? null : applyFederationBlock(content, block)
     let changed = next !== null
     let working = next ?? content
-    if (seedPolicy && block !== null && !working.includes(FEDERATION_POLICY_ANCHOR)) {
-      working = `${working.replace(/\n*$/, '')}\n\n${renderPolicySeed(lang)}\n`
+    const seeded = seedPolicy && block !== null ? seedFederationPolicy(working, lang) : null
+    if (seeded !== null) {
+      working = seeded
       changed = true
     }
     if (!changed) return false
@@ -385,6 +427,13 @@ export function ensureFederationClaudeMdSection(): boolean {
     }
 
     if (changed) logger.info({ fed: true, enabled: cfg.enabled, lang }, 'federation: CLAUDE.md onboarding reconciled (main + sub-agents)')
+    if (v2Refresher !== null) {
+      try {
+        v2Refresher()
+      } catch (err) {
+        logger.warn({ err }, 'federation: the v2 CLAUDE.md region refresh failed')
+      }
+    }
     return changed
   } catch (err) {
     logger.warn({ err }, 'federation: CLAUDE.md onboarding ensure skipped')
