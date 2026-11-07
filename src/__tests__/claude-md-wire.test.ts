@@ -192,6 +192,8 @@ const deps = (over: Partial<WireDeps> = {}): WireDeps => ({
   helperAllowed: () => true,
   strict: () => false,
   now: () => NOW,
+  // the expected backup directory names below are Budapest times; the install zone of a CI host is UTC
+  tz: 'Europe/Budapest',
   homeDir: join(ROOT, 'home'),
   managedSettingsPath: join(ROOT, 'managed-settings.json'),
   ...over,
@@ -201,6 +203,13 @@ const read = (p: string) => readFileSync(p, 'utf-8')
 const count = (text: string, line: string) => text.split('\n').filter((l) => l === line).length
 const backups = () => (existsSync(join(ROOT, 'store', 'claude-md-backup'))
   ? readdirSync(join(ROOT, 'store', 'claude-md-backup')).filter((n) => n !== 'product-skills').sort() : [])
+
+describe('the backup zone is the install zone (ISSUE1895: no zone literal in code)', () => {
+  it('defaultWireDeps passes config.ts APP_TZ', async () => {
+    const { APP_TZ } = await import('../config.js')
+    expect(defaultWireDeps().tz).toBe(APP_TZ)
+  })
+})
 
 describe('regionSkillRefs', () => {
   it('the marveen-* skill names, lower-cased and unique; a file name such as marveen-api.sh is not one', () => {

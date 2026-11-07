@@ -4,7 +4,9 @@
 // rollback, v2 -> legacy). The bytes BEFORE the transition go to
 //   <store>/claude-md-backup/<ts>/<agent>/CLAUDE.md
 //   <store>/claude-md-backup/<ts>/<agent>/MANIFEST.sha256   ("<sha256>  CLAUDE.md", sha256sum -c format)
-// <ts> is Budapest local time, YYYYMMDD-HHMMSS, with a -1, -2 ... suffix when
+// <ts> is the install's local time (the caller passes config.ts APP_TZ:
+// SCHEDULER_TZ, else the host zone; ISSUE1895, no zone literal in code),
+// YYYYMMDD-HHMMSS, with a -1, -2 ... suffix when
 // that directory already exists (claimed with a non-recursive mkdir, so two
 // writers never share one). Directories 0700, files 0600: the owner zone can
 // hold personal text. Both files are read back and checked before this
@@ -16,7 +18,6 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const BACKUP_DIR_NAME = 'claude-md-backup'
-export const BACKUP_TZ = 'Europe/Budapest'
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const MAX_SUFFIX = 99
 
@@ -32,7 +33,7 @@ export function sha256(text: string): string {
 }
 
 // YYYYMMDD-HHMMSS in the given time zone.
-export function backupStamp(now: Date, tz: string = BACKUP_TZ): string {
+export function backupStamp(now: Date, tz: string): string {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
     timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   }).formatToParts(now).map((p) => [p.type, p.value]))
@@ -46,12 +47,12 @@ function mkdirPrivate(path: string, recursive: boolean): void {
 
 // Writes the backup of `text` (the CLAUDE.md bytes before the transition) and
 // returns the directory that holds it. Throws BackupError on any failure.
-export function backupClaudeMd(storeDir: string, agent: string, text: string, now: Date = new Date()): string {
+export function backupClaudeMd(storeDir: string, agent: string, text: string, now: Date, tz: string): string {
   if (!AGENT_RE.test(agent)) throw new BackupError(`not an agent name: ${JSON.stringify(agent)}`)
   try {
     const base = join(storeDir, BACKUP_DIR_NAME)
     mkdirPrivate(base, true)
-    const stamp = backupStamp(now)
+    const stamp = backupStamp(now, tz)
     let dir = ''
     for (let i = 0; i <= MAX_SUFFIX && dir === ''; i++) {
       const candidate = join(base, i === 0 ? stamp : `${stamp}-${i}`)

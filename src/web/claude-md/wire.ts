@@ -55,7 +55,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { AGENT_API_ORIGIN, DASHBOARD_PUBLIC_URL, HEARTBEAT_AGENT_ID, MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, WEB_PORT } from '../../config.js'
+import { AGENT_API_ORIGIN, APP_TZ, DASHBOARD_PUBLIC_URL, HEARTBEAT_AGENT_ID, MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, WEB_PORT } from '../../config.js'
 import { readEnvFile } from '../../env.js'
 import { logger } from '../../logger.js'
 import { agentDir, listAllAgentNames } from '../agent-config.js'
@@ -119,6 +119,8 @@ export interface WireDeps {
   helperAllowed: (name: string) => boolean
   strict: (name: string, profile?: ProfileTemplate) => boolean
   now: () => Date
+  // The backup directory's time zone: the install zone (config.ts APP_TZ).
+  tz: string
   // The live ctx's settings sources (tests point them at the temp root).
   homeDir: string
   managedSettingsPath: string
@@ -135,6 +137,7 @@ export function defaultWireDeps(): WireDeps {
     helperAllowed: (name) => agentUsesApiHelper(name),
     strict: (name, profile) => agentRunsStrict(name, profile),
     now: () => new Date(),
+    tz: APP_TZ,
     homeDir: homedir(),
     managedSettingsPath: defaultManagedSettingsPath(),
   }
@@ -193,7 +196,7 @@ function rollbackV2(deps: WireDeps, name: string, claudeMdPath: string): boolean
   try {
     const stripped = stripV2Region(text)
     if (!stripped.changed) return true // the marker line sits in a code fence: owner text, no region
-    backupClaudeMd(deps.storeDir, name, text, deps.now())
+    backupClaudeMd(deps.storeDir, name, text, deps.now(), deps.tz)
     atomicWriteFileSync(claudeMdPath, stripped.text)
     logger.info({ name }, 'CLAUDE.md builder: v2 is off for this agent; the v2 region is removed (backed up) and the legacy sections are written again')
     return true
@@ -230,7 +233,7 @@ function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boo
     if (!productSkillsInstalled(deps.skillPaths, refs)) throw new Error('a skill the region points at is not installed as the manifest records')
     const composed = composeClaudeMd(text, region)
     if (!composed.changed) return false
-    if (!hadRegion) backupClaudeMd(deps.storeDir, name, text, deps.now())
+    if (!hadRegion) backupClaudeMd(deps.storeDir, name, text, deps.now(), deps.tz)
     atomicWriteFileSync(claudeMdPath, composed.text)
     logger.info({ name, removed: composed.removed, firstV2: !hadRegion }, 'CLAUDE.md builder: v2 region written')
     return false
