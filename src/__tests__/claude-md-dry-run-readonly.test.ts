@@ -25,7 +25,7 @@
 //    would make every check above pass vacuously.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,6 +41,7 @@ const ALLOWED_MODULES = [
   'src/env-parse.ts',
   'src/web/claude-md/cli.ts',
   'src/web/claude-md/compose.ts',
+  'src/web/claude-md/dry-run-cli.ts',
   'src/web/claude-md/dry-run.ts',
   'src/web/claude-md/legacy-markers.ts',
   'src/web/claude-md/owner-zone.ts',
@@ -165,6 +166,8 @@ const CONTROLS: Record<string, string> = {
 
 let base: string
 let out: string
+let link: string
+const STAMP = '0123456789abcdef0123456789abcdef01234567'
 let root: string
 let childTmp: string
 let childHome: string
@@ -180,6 +183,11 @@ beforeAll(() => {
   ], { encoding: 'utf-8', cwd: REPO })
   if (tsc.status !== 0) throw new Error(`tsc failed: ${tsc.stdout}${tsc.stderr}`)
   writeFileSync(join(out, 'package.json'), '{"type":"module"}\n')
+  // dist/.built-commit as the build writes it: the report header names it (Ron S3).
+  writeFileSync(join(out, '.built-commit'), `${STAMP}\n`)
+  // The same build behind a symlink (Ron B1: a main-module guard was false there).
+  link = join(base, 'link')
+  symlinkSync(out, link)
   writeFileSync(join(out, 'guard.mjs'), GUARD)
   for (const [name, code] of Object.entries(CONTROLS)) writeFileSync(join(out, name), code)
   root = join(base, 'install')
@@ -196,10 +204,11 @@ afterAll(() => {
 })
 
 // The one spawn helper for the CLI and the controls alike.
-function sandboxed(script: string, args: string[]) {
+// `script` is relative to the build, or an absolute path (the symlinked start).
+function sandboxed(script: string, args: string[], extraRead: string[] = []) {
   const r = spawnSync(process.execPath, [
-    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${root}`,
-    '--import', join(out, 'guard.mjs'), join(out, script), ...args,
+    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${root}`, ...extraRead.map((p) => `--allow-fs-read=${p}`),
+    '--import', join(out, 'guard.mjs'), script.startsWith('/') ? script : join(out, script), ...args,
   ], {
     encoding: 'utf-8',
     cwd: childHome,
@@ -293,5 +302,43 @@ describe('read-only: runtime under node --permission (read access only)', () => 
     const data = JSON.parse(r.stdout)
     expect(data.agents.map((a: { name: string; status: string }) => `${a.name}:${a.status}`))
       .toEqual(['chief:ok', 'alpha:ok', 'beta:refused', 'delta:refused', 'gamma:missing'])
+  })
+
+  it('the header names the code version from dist/.built-commit (Ron S3)', () => {
+    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--agent', 'alpha'])
+    expect(r.stdout.split('\n')[0]).toBe(`claude-md dry-run (read-only), root ${root}, main agent chief, code ${STAMP}`)
+  })
+})
+
+// Ron B1 (13027): Node resolves the main module through a symlink to its real
+// path while argv[1] stays as given, so a "main module" guard was false and the
+// CLI printed nothing and exited 0. The entry module now has no guard.
+describe('read-only: started through a symlinked path', () => {
+  const viaLink = join('LINK', 'web', 'claude-md', 'cli.js')
+  const linked = () => viaLink.replace('LINK', link)
+
+  it('a bad argument exits 2 with the usage text (also without --permission)', () => {
+    const r = sandboxed(linked(), ['--dry-run', '--bogus'], [link])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('unknown argument: "--bogus"')
+    const plain = spawnSync(process.execPath, [linked(), '--bogus'], { encoding: 'utf-8', env: { PATH: '/usr/bin:/bin' } })
+    expect(plain.status).toBe(2)
+    expect(plain.stderr).toContain('usage: cli.js --dry-run')
+  })
+
+  it('a real run prints the full report, under --permission with the link and the real path granted', () => {
+    const before = manifest(root)
+    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--all'], [link])
+    expect(r.stderr).toBe('')
+    expect(r.code).toBe(1)
+    expect(r.stdout).toContain('\nsummary: 5 agent(s): 2 ok, 2 refused, 0 unreadable, 1 missing; exit 1\n')
+    expect(manifest(root)).toEqual(before)
+  })
+
+  it('under --permission without a grant for the link path, Node refuses loudly (no silent empty run)', () => {
+    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--all'])
+    expect(r.code).not.toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('ERR_ACCESS_DENIED')
   })
 })

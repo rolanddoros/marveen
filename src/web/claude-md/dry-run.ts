@@ -237,6 +237,9 @@ export interface DryRunResult {
   root: string
   mainAgentId: string
   agents: AgentReport[]
+  // Every listed agent (main first, then the subs in name order), also when
+  // one agent was asked for: --redact-names numbers agents by this list.
+  listed: string[]
 }
 
 export class UsageError extends Error {
@@ -252,7 +255,8 @@ export function dryRun(root: string, agent?: string): DryRunResult {
   const mainId = readMainAgentId(root)
   const subs = listSubAgents(root, mainId)
   const roleOf = (n: string): AgentRole => (n === mainId ? 'main' : n === HEARTBEAT_AGENT_ID ? 'heartbeat' : 'sub')
-  let names = [mainId, ...subs]
+  const listed = [mainId, ...subs]
+  let names = listed
   if (agent !== undefined) {
     if (!AGENT_NAME_RE.test(agent) || !names.includes(agent)) throw new UsageError(`unknown agent: ${JSON.stringify(agent)}`)
     names = [agent]
@@ -269,5 +273,5 @@ export function dryRun(root: string, agent?: string): DryRunResult {
     }
     return evaluateFile(n, roleOf(n), file, got, root, retired)
   })
-  return { root, mainAgentId: mainId, agents }
+  return { root, mainAgentId: mainId, agents, listed }
 }
