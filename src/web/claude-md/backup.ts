@@ -28,8 +28,9 @@ export class BackupError extends Error {
   }
 }
 
-export function sha256(text: string): string {
-  return createHash('sha256').update(text, 'utf-8').digest('hex')
+// sha256 of the exact bytes (a string is hashed as its UTF-8 bytes).
+export function sha256(data: string | Uint8Array): string {
+  return createHash('sha256').update(data).digest('hex')
 }
 
 // YYYYMMDD-HHMMSS in the given time zone.
@@ -45,9 +46,10 @@ function mkdirPrivate(path: string, recursive: boolean): void {
   chmodSync(path, 0o700)
 }
 
-// Writes the backup of `text` (the CLAUDE.md bytes before the transition) and
-// returns the directory that holds it. Throws BackupError on any failure.
-export function backupClaudeMd(storeDir: string, agent: string, text: string, now: Date, tz: string): string {
+// Writes the backup of `bytes` (the CLAUDE.md bytes before the transition, as read: never a decoded and
+// re-encoded string, which would turn an invalid UTF-8 byte into U+FFFD; Ron 10b B1) and returns the
+// directory that holds it. Throws BackupError on any failure.
+export function backupClaudeMd(storeDir: string, agent: string, bytes: Uint8Array, now: Date, tz: string): string {
   if (!AGENT_RE.test(agent)) throw new BackupError(`not an agent name: ${JSON.stringify(agent)}`)
   try {
     const base = join(storeDir, BACKUP_DIR_NAME)
@@ -69,13 +71,13 @@ export function backupClaudeMd(storeDir: string, agent: string, text: string, no
     mkdirPrivate(agentDir, false)
     const file = join(agentDir, 'CLAUDE.md')
     const manifest = join(agentDir, 'MANIFEST.sha256')
-    const digest = sha256(text)
+    const digest = sha256(bytes)
     const manifestText = `${digest}  CLAUDE.md\n`
-    writeFileSync(file, text, { encoding: 'utf-8', mode: 0o600, flag: 'wx' })
+    writeFileSync(file, bytes, { mode: 0o600, flag: 'wx' })
     writeFileSync(manifest, manifestText, { encoding: 'utf-8', mode: 0o600, flag: 'wx' })
     chmodSync(file, 0o600)
     chmodSync(manifest, 0o600)
-    if (sha256(readFileSync(file, 'utf-8')) !== digest || readFileSync(manifest, 'utf-8') !== manifestText) {
+    if (sha256(readFileSync(file)) !== digest || readFileSync(manifest, 'utf-8') !== manifestText) {
       throw new BackupError(`backup read-back does not match: ${agentDir}`)
     }
     return agentDir

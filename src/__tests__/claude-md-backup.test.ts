@@ -11,6 +11,7 @@ beforeEach(() => { store = mkdtempSync(join(tmpdir(), 'cmd-backup-')) })
 afterEach(() => { rmSync(store, { recursive: true, force: true }) })
 
 const TEXT = '# Kevin\n\nOwner zone with $& and ékezet, CRLF line\r\n'
+const BYTES = Buffer.from(TEXT, 'utf-8')
 const NOW = new Date('2026-11-06T22:43:00Z') // 23:43:00 in Budapest (CET)
 // The zone is the caller's (wire.ts passes config.ts APP_TZ, ISSUE1895); these cases pin Budapest explicitly.
 const TZ = 'Europe/Budapest'
@@ -31,7 +32,7 @@ describe('backupStamp', () => {
 
 describe('backupClaudeMd', () => {
   it('writes the bytes and a sha256sum manifest under <store>/claude-md-backup/<ts>/<agent>, 0700 / 0600', () => {
-    const dir = backupClaudeMd(store, 'kevin', TEXT, NOW, TZ)
+    const dir = backupClaudeMd(store, 'kevin', BYTES, NOW, TZ)
     expect(dir).toBe(join(store, 'claude-md-backup', '20261106-234300', 'kevin'))
     expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf-8')).toBe(TEXT)
     const digest = createHash('sha256').update(Buffer.from(TEXT, 'utf-8')).digest('hex')
@@ -42,29 +43,36 @@ describe('backupClaudeMd', () => {
   })
 
   it('the same second twice: the second gets a -1 directory, the first is untouched', () => {
-    const a = backupClaudeMd(store, 'kevin', TEXT, NOW, TZ)
-    const b = backupClaudeMd(store, 'kevin', 'other\n', NOW, TZ)
-    const c = backupClaudeMd(store, 'ron', 'third\n', NOW, TZ)
+    const a = backupClaudeMd(store, 'kevin', BYTES, NOW, TZ)
+    const b = backupClaudeMd(store, 'kevin', Buffer.from('other\n'), NOW, TZ)
+    const c = backupClaudeMd(store, 'ron', Buffer.from('third\n'), NOW, TZ)
     expect(b).toBe(join(store, 'claude-md-backup', '20261106-234300-1', 'kevin'))
     expect(c).toBe(join(store, 'claude-md-backup', '20261106-234300-2', 'ron'))
     expect(readFileSync(join(a, 'CLAUDE.md'), 'utf-8')).toBe(TEXT)
   })
 
+  it('the bytes as given, an invalid UTF-8 byte included: the backup and its sha256 are of the exact bytes (Ron 10b B1)', () => {
+    const raw = Buffer.concat([Buffer.from('# Alpha\nowner '), Buffer.from([0x80, 0xff]), Buffer.from(' line\n')])
+    const dir = backupClaudeMd(store, 'kevin', raw, NOW, TZ)
+    expect(readFileSync(join(dir, 'CLAUDE.md')).equals(raw)).toBe(true)
+    expect(readFileSync(join(dir, 'MANIFEST.sha256'), 'utf-8')).toBe(`${createHash('sha256').update(raw).digest('hex')}  CLAUDE.md\n`)
+  })
+
   it('an empty file is backed up too', () => {
-    const dir = backupClaudeMd(store, 'kevin', '', NOW, TZ)
+    const dir = backupClaudeMd(store, 'kevin', Buffer.alloc(0), NOW, TZ)
     expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf-8')).toBe('')
   })
 
   it('a store that cannot hold the backup throws BackupError', () => {
     const blocked = join(store, 'blocked')
     writeFileSync(blocked, 'a file where the store directory should be')
-    expect(() => backupClaudeMd(blocked, 'kevin', TEXT, NOW, TZ)).toThrow(BackupError)
+    expect(() => backupClaudeMd(blocked, 'kevin', BYTES, NOW, TZ)).toThrow(BackupError)
     writeFileSync(join(store, 'claude-md-backup'), 'a file where the backup directory should be')
-    expect(() => backupClaudeMd(store, 'kevin', TEXT, NOW, TZ)).toThrow(BackupError)
+    expect(() => backupClaudeMd(store, 'kevin', BYTES, NOW, TZ)).toThrow(BackupError)
   })
 
   it('an agent name with a separator throws before anything is written', () => {
-    for (const bad of ['../x', 'a/b', '', '.']) expect(() => backupClaudeMd(store, bad, TEXT, NOW, TZ), bad).toThrow(/not an agent name/)
+    for (const bad of ['../x', 'a/b', '', '.']) expect(() => backupClaudeMd(store, bad, BYTES, NOW, TZ), bad).toThrow(/not an agent name/)
     expect(existsSync(join(store, 'claude-md-backup'))).toBe(false)
   })
 })

@@ -21,10 +21,12 @@
 // keep calling their own writers.
 //
 // Flag on, the v2 path (writeV2), in this order, each step fail-closed:
-// 1. Refusals (warn-log, legacy kept): federation enabled (two writers would
-//    flip the file, PR 12), the heartbeat worker (PR 12), a thin-chief profile
-//    (the region does not carry that block), a helper-denied agent (its v2
-//    recipes need a skill that does not exist yet, Kevin 12997).
+// 1. Refusals (warn-log, the legacy sequence runs): federation enabled (two
+//    writers would flip the file, PR 12), the heartbeat worker (PR 12), a
+//    thin-chief profile (the region does not carry that block), a
+//    helper-denied agent (its v2 recipes need a skill that does not exist
+//    yet, Kevin 12997). A refused agent whose file already has a v2 region is
+//    taken BACK to legacy: the rollback below runs first.
 // 2. The owner-zone writers that also run today: a sub's
 //    ensureProjectRootInClaudeMd + ensureSkillSectionCurrent, the main agent's
 //    ensureFederationClaudeMdSection (it also cleans the sub files).
@@ -35,8 +37,16 @@
 // 5. The product skills: the guarded installer, then every marveen-* name the
 //    region mentions must be one of them, installed as the manifest records.
 // 6. composeClaudeMd; unchanged -> no write, no backup.
-// 7. A file without a v2 region yet is backed up first (BackupError stops it).
+// 7. A file without a v2 region yet is backed up first (BackupError stops it),
+//    with its bytes as read BEFORE step 2: the owner-zone writers can migrate
+//    the owner zone (a retired skill section), and the backup is the file as
+//    it was before the transition (Ron 10b J3).
 // 8. The atomic write.
+// The file is read as bytes and decoded strictly (TextDecoder fatal, the BOM
+// kept): a file that is not valid UTF-8 is not written, because a decoded and
+// re-encoded string turns each invalid byte into U+FFFD, in the file and in
+// its backup (Ron 10b B1; the dry-run refuses such a file the same way). The
+// backup holds the bytes as read, never a re-encoded string.
 // Any failure is error-logged and nothing more is written. The return value
 // then tells the caller whether to run the legacy sequence: yes while the
 // file has no v2 region (it stays a legacy file), no once it has one (legacy
@@ -50,7 +60,9 @@
 // file, the backup, the write) leaves the file as it was and the legacy
 // sequence is skipped: still no legacy blocks next to a region. A file
 // without a region is only read, so a never-flagged install stays
-// byte-identical.
+// byte-identical. The rendered product skills go only once no flag is on AND
+// no CLAUDE.md of the install still carries a region: an agent flagged off
+// but not restarted yet keeps pointing at them (Ron 10b J1).
 
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -168,11 +180,25 @@ export function anyFlagOn(): boolean {
 function flagOffHousekeeping(deps: WireDeps): void {
   try {
     if (!existsSync(deps.skillPaths.manifestPath) || anyFlagOn()) return
+    if (anyRegionLeft(deps)) {
+      logger.info('CLAUDE.md builder: no agent is on v2, but a CLAUDE.md still carries a region; the product skills stay until its next start')
+      return
+    }
     const r = removeProductSkills(deps.skillPaths)
     logger.info({ removed: r.removed, kept: r.kept }, 'CLAUDE.md builder: no agent is on v2 any more; the rendered product skills are removed')
     if (r.kept.length > 0) logger.warn({ kept: r.kept }, 'CLAUDE.md builder: these product skill files were changed by hand and are kept')
   } catch (err) {
     logger.error({ err }, 'CLAUDE.md builder: removing the rendered product skills failed; nothing more is removed')
+  }
+}
+
+// Whether any CLAUDE.md of the install (the main agent's, every agent's) still carries a v2 region; cannot tell -> true.
+function anyRegionLeft(deps: WireDeps): boolean {
+  try {
+    const files = [join(deps.root, 'CLAUDE.md'), ...listAllAgentNames().map((n) => join(agentDir(n), 'CLAUDE.md'))]
+    return files.some((f) => fileHasV2Region(f))
+  } catch {
+    return true
   }
 }
 
@@ -186,17 +212,18 @@ function refusal(deps: WireDeps, name: string, profile: ProfileTemplate | null):
 
 // The rollback of the header for one CLAUDE.md. Returns whether the caller may run the legacy sequence.
 function rollbackV2(deps: WireDeps, name: string, claudeMdPath: string): boolean {
-  let text: string
+  let file: ClaudeMdFile
   try {
-    text = readFileSync(claudeMdPath, 'utf-8')
+    file = readClaudeMd(claudeMdPath)
   } catch {
     return true // absent or unreadable: the legacy sequence decides, as before
   }
-  if (!hasV2Region(text)) return true
+  if (!file.hasRegion) return true
   try {
-    const stripped = stripV2Region(text)
+    if (file.text === null) throw new Error(`${claudeMdPath} is not valid UTF-8: the region is not removed (the bytes would change)`)
+    const stripped = stripV2Region(file.text)
     if (!stripped.changed) return true // the marker line sits in a code fence: owner text, no region
-    backupClaudeMd(deps.storeDir, name, text, deps.now(), deps.tz)
+    backupClaudeMd(deps.storeDir, name, file.bytes, deps.now(), deps.tz)
     atomicWriteFileSync(claudeMdPath, stripped.text)
     logger.info({ name }, 'CLAUDE.md builder: v2 is off for this agent; the v2 region is removed (backed up) and the legacy sections are written again')
     return true
@@ -204,6 +231,21 @@ function rollbackV2(deps: WireDeps, name: string, claudeMdPath: string): boolean
     logger.error({ err, name }, 'CLAUDE.md builder: removing the v2 region failed; the file is left as it was and the legacy sections are not appended')
     return false
   }
+}
+
+// A CLAUDE.md as bytes and as text. The text is decoded strictly (fatal, the BOM kept as a character): null when
+// the bytes are not valid UTF-8 (Ron 10b B1). hasRegion does not need valid UTF-8: the marker lines are ASCII.
+interface ClaudeMdFile { bytes: Buffer; text: string | null; hasRegion: boolean }
+
+function readClaudeMd(claudeMdPath: string): ClaudeMdFile {
+  const bytes = readFileSync(claudeMdPath)
+  let text: string | null
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+  } catch {
+    text = null
+  }
+  return { bytes, text, hasRegion: hasV2Region(text ?? new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes)) }
 }
 
 // Whether the file has a v2 region; unreadable reads as no (the legacy sequence decides, as before).
@@ -215,12 +257,15 @@ function fileHasV2Region(claudeMdPath: string): boolean {
   }
 }
 
-// Steps 3-8 of the header for one CLAUDE.md. Returns whether the caller should run the legacy sequence.
-function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boolean): boolean {
+// Steps 3-8 of the header for one CLAUDE.md. `before`: the file's bytes as read before step 2, for the backup.
+// Returns whether the caller should run the legacy sequence.
+function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boolean, before: Buffer): boolean {
   let hadRegion = false
   try {
-    const text = readFileSync(claudeMdPath, 'utf-8')
-    hadRegion = hasV2Region(text)
+    const file = readClaudeMd(claudeMdPath)
+    hadRegion = file.hasRegion
+    if (file.text === null) throw new Error(`${claudeMdPath} is not valid UTF-8: nothing is written (the bytes would change)`)
+    const text = file.text
     const { ctx, assumptions } = buildLiveContext(deps.root, name, { helperAllowed: true, strict, homeDir: deps.homeDir, managedSettingsPath: deps.managedSettingsPath })
     const assumedRendered = assumptions.filter((a) => (RENDERED_FIELDS as readonly string[]).includes(a))
     if (assumedRendered.length > 0) throw new Error(`rendered fields without a real source: ${assumedRendered.join(', ')}`)
@@ -233,7 +278,7 @@ function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boo
     if (!productSkillsInstalled(deps.skillPaths, refs)) throw new Error('a skill the region points at is not installed as the manifest records')
     const composed = composeClaudeMd(text, region)
     if (!composed.changed) return false
-    if (!hadRegion) backupClaudeMd(deps.storeDir, name, text, deps.now(), deps.tz)
+    if (!hadRegion) backupClaudeMd(deps.storeDir, name, before, deps.now(), deps.tz)
     atomicWriteFileSync(claudeMdPath, composed.text)
     logger.info({ name, removed: composed.removed, firstV2: !hadRegion }, 'CLAUDE.md builder: v2 region written')
     return false
@@ -262,9 +307,10 @@ export function applySubClaudeMdV2(name: string, profile: ProfileTemplate, deps:
     }
     if (claudeMdPath === null) throw new Error(`no agent directory path for ${JSON.stringify(name)}`)
     if (!existsSync(claudeMdPath)) return false
+    const before = readFileSync(claudeMdPath) // the backup's bytes, before step 2 can migrate the owner zone
     ensureProjectRootInClaudeMd(name)
     ensureSkillSectionCurrent(name)
-    return !writeV2(deps, name, claudeMdPath, deps.strict(name, profile))
+    return !writeV2(deps, name, claudeMdPath, deps.strict(name, profile), before)
   } catch (err) {
     logger.error({ err, name }, 'CLAUDE.md builder: v2 path failed before the write; the legacy sections are kept')
     return claudeMdPath !== null && fileHasV2Region(claudeMdPath)
@@ -287,8 +333,9 @@ export function applyMainClaudeMdV2(deps: WireDeps = defaultWireDeps()): boolean
       return !rollbackV2(deps, name, claudeMdPath)
     }
     if (!existsSync(claudeMdPath)) return false
+    const before = readFileSync(claudeMdPath) // the backup's bytes, before step 2 can change the file
     ensureFederationClaudeMdSection()
-    return !writeV2(deps, name, claudeMdPath, false)
+    return !writeV2(deps, name, claudeMdPath, false, before)
   } catch (err) {
     logger.error({ err, name }, 'CLAUDE.md builder: v2 path failed before the write; the legacy sections are kept')
     return fileHasV2Region(claudeMdPath)

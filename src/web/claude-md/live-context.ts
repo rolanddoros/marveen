@@ -59,9 +59,11 @@
 //   darwin), whose allowManagedHooksOnly leaves only its own hooks. A missing
 //   file is skipped; one that does not parse makes every hook false
 //   (fail-closed). Ron S1: where the layers read are not the session's (the
-//   main agent with MAIN_AGENT_CONFIG_DIR or MAIN_AGENT_ISOLATED_CONFIG, or a
-//   managed file that does not parse), hooks are all false and ASSUMED, so the
-//   write gate stops.
+//   main agent with MAIN_AGENT_CONFIG_DIR or MAIN_AGENT_ISOLATED_CONFIG; a sub
+//   whose agent-config.json names its own claudeConfigDir or claudePlan, so
+//   its user layer is not agents/<n>/.claude-config, Ron 10b J2; or a managed
+//   file that does not parse), hooks are all false and ASSUMED, so the write
+//   gate stops.
 // - hooksNotWired (Ron 13122 J1, Kevin 13130): a hook reads false SILENTLY
 //   when its wiring is there but the script fails the J4 check (one install
 //   gave a 4328-char region without --permission and 4521 under it: the hook
@@ -111,7 +113,7 @@ export function defaultManagedSettingsPath(os: string = platform()): string {
 export type HookNotWiredReason =
   | 'missing' // the script path a layer wires does not exist
   | 'not readable' // it exists, but is not a regular file that can be read here (a permission grant, a mode)
-  | 'config root is not the session\'s' // Ron S1: the main agent on MAIN_AGENT_CONFIG_DIR / MAIN_AGENT_ISOLATED_CONFIG
+  | 'config root is not the session\'s' // Ron S1: the main agent on another config root; a sub with claudeConfigDir / claudePlan
   | 'managed settings do not parse' // Ron S1: the highest layer is unknown
   | 'settings layer does not parse' // a project or user layer: hooksFromSettings reads every hook false
 
@@ -307,6 +309,14 @@ function mainOnOtherConfigRoot(root: string, env: Record<string, string>): boole
   return !['', '0', 'false', 'off', 'no'].includes(value('MAIN_AGENT_ISOLATED_CONFIG').toLowerCase())
 }
 
+// Whether a sub runs on a config root other than agents/<n>/.claude-config: its agent-config.json names a
+// claudeConfigDir or a claudePlan (agent-config.ts readAgentClaudeConfigDir / readAgentClaudePlan; any
+// non-blank string counts, the safe side), so the user layer read here is not the session's (Ron 10b J2).
+function subOnOtherConfigRoot(cfg: Record<string, unknown> | null | undefined): boolean {
+  const set = (v: unknown) => typeof v === 'string' && v.trim() !== ''
+  return cfg !== null && cfg !== undefined && (set(cfg.claudeConfigDir) || set(cfg.claudePlan))
+}
+
 // The effective permissions.defaultMode is "dontAsk": the highest layer that
 // sets a defaultMode decides, as in Claude Code. A strict profile pins it in the
 // project settings the scaffold writes, and only a strict one does, because
@@ -394,8 +404,10 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
   // the ones the session loads, the hooks have no real source: all false and ASSUMED, so the write gate stops.
   // - The main agent on another config root (MAIN_AGENT_CONFIG_DIR, or MAIN_AGENT_ISOLATED_CONFIG on): its user
   //   layer is not <home>/.claude/settings.json.
+  // - A sub with its own claudeConfigDir / claudePlan: its user layer is not agents/<n>/.claude-config (Ron 10b J2).
   // - A managed file that does not parse: the highest layer is unknown.
-  const otherRoot = role === 'main' && mainOnOtherConfigRoot(root, env)
+  const agentCfg = role === 'main' ? null : readJsonObject(join(agentDir, 'agent-config.json'))
+  const otherRoot = role === 'main' ? mainOnOtherConfigRoot(root, env) : subOnOtherConfigRoot(agentCfg)
   if (otherRoot || managedTop === null) {
     hooks = hooksFromSettings([null], check)
     assumptions.push('hooks')
@@ -421,7 +433,6 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
     assumptions.push('profile.helperAllowed')
   }
 
-  const agentCfg = role === 'main' ? null : readJsonObject(join(agentDir, 'agent-config.json'))
   const storedProfile = agentCfg?.securityProfile
   assumptions.push('profile.id', 'capabilities.emailSend', 'capabilities.browser', 'capabilities.thinChief', 'tokenPath')
 

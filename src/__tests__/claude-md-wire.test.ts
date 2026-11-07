@@ -379,6 +379,13 @@ describe('Ron S1: hooks without a real source stop the write by themselves', () 
     expect(read(join(ROOT, 'CLAUDE.md'))).toBe(before)
     expect(backups()).toEqual([])
   })
+  it('Ron 10b J2: a sub with its own claudeConfigDir: no region, legacy kept', () => {
+    put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' }, claudeMdBuilder: 'v2', claudeConfigDir: '/srv/kevin-login' }))
+    const before = read(KEVIN)
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(false)
+    expect(read(KEVIN)).toBe(before)
+    expect(backups()).toEqual([])
+  })
   it('a managed settings file that does not parse: no region for a sub, legacy kept', () => {
     flagKevin()
     put('managed-settings.json', '{broken')
@@ -471,5 +478,84 @@ describe('E: the flag off (or refused) on a file that still has its region: the 
     const before = snapshot()
     expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(false)
     expect(snapshot()).toEqual(before)
+  })
+})
+
+// Ron 10b review (13191): B1 (invalid UTF-8 must never be re-encoded), J1 (the product skills stay while a region
+// is left), J3 (the backup is the file before step 2).
+describe('Ron 10b B1: a CLAUDE.md that is not valid UTF-8 is never rewritten, and a backup holds the exact bytes', () => {
+  const rawKevin = (head: string, tail = '') => Buffer.concat([Buffer.from(head), Buffer.from([0x80, 0xff]), Buffer.from(tail)])
+  const readBytes = (p: string) => readFileSync(p)
+
+  it('flag on, no region yet: false (legacy decides, as for any file without a region), the bytes unchanged, no backup, no skills', () => {
+    const raw = rawKevin('# Alpha\nowner ', ' line\n\n<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->\nold\n<!-- END GENERATED: autonomy-wiring -->\n')
+    writeFileSync(KEVIN, raw)
+    flagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(false)
+    expect(readBytes(KEVIN).equals(raw)).toBe(true)
+    expect(backups()).toEqual([])
+    expect(existsSync(join(ROOT, '.claude', 'skills'))).toBe(false)
+  })
+
+  it('flag on, the file already has its region: true (no legacy blocks next to it), the bytes unchanged', () => {
+    const v2 = v2Bytes()
+    const raw = Buffer.concat([Buffer.from([0x80, 0xff, 0x0a]), v2])
+    writeFileSync(KEVIN, raw)
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date('2026-11-07T10:00:00Z') }))).toBe(true)
+    expect(readBytes(KEVIN).equals(raw)).toBe(true)
+    expect(backups()).toEqual(['20261106-234300'])
+  })
+
+  it('the rollback (flag off) on such a file: true (the legacy sequence skipped), the bytes unchanged, no new backup', () => {
+    const v2 = v2Bytes()
+    const raw = Buffer.concat([Buffer.from([0x80, 0xff, 0x0a]), v2])
+    writeFileSync(KEVIN, raw)
+    put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' } }))
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date('2026-11-07T10:00:00Z') }))).toBe(true)
+    expect(readBytes(KEVIN).equals(raw)).toBe(true)
+    expect(backups()).toEqual(['20261106-234300'])
+  })
+
+  it('the first-transition backup and the rollback backup are byte-identical to the file (BOM, CRLF, no final newline)', () => {
+    const original = Buffer.from('﻿# Kevin\r\nOwner line, ékezet\r\nlast line without newline', 'utf-8')
+    writeFileSync(KEVIN, original)
+    flagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    expect(readBytes(join(ROOT, 'store', 'claude-md-backup', '20261106-234300', 'kevin', 'CLAUDE.md')).equals(original)).toBe(true)
+    const v2 = readBytes(KEVIN)
+    put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' } }))
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date('2026-11-07T10:00:00Z') }))).toBe(false)
+    expect(readBytes(join(ROOT, 'store', 'claude-md-backup', '20261107-110000', 'kevin', 'CLAUDE.md')).equals(v2)).toBe(true)
+    expect(read(KEVIN).startsWith('﻿# Kevin\r\n')).toBe(true)
+  })
+
+  function v2Bytes(): Buffer {
+    flagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    return readFileSync(KEVIN)
+  }
+})
+
+describe('Ron 10b J1: the product skills go only once no CLAUDE.md carries a region', () => {
+  it('kevin flagged off but not restarted, ron starts: the skills stay; kevin starts (rollback): they go', () => {
+    put('agents/ron/CLAUDE.md', '# Ron\n')
+    flagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' } }))
+    expect(applySubClaudeMdV2('ron', PROFILE, deps())).toBe(false)
+    for (const n of PRODUCT_SKILLS) expect(existsSync(join(ROOT, '.claude', 'skills', n, 'SKILL.md')), n).toBe(true)
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => new Date('2026-11-07T10:00:00Z') }))).toBe(false)
+    for (const n of PRODUCT_SKILLS) expect(existsSync(join(ROOT, '.claude', 'skills', n)), n).toBe(false)
+  })
+})
+
+describe('Ron 10b J3: the first-transition backup is the file before the owner-zone writers ran', () => {
+  it('a foreign install path that step 2 re-anchors: the written file has the new root, the backup the old bytes', () => {
+    const original = '# Kevin\n\nToken: $(cat /oldhost/fleet/store/.dashboard-token)\n'
+    put('agents/kevin/CLAUDE.md', original)
+    flagKevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(true)
+    expect(read(KEVIN)).toContain(`$(cat ${ROOT}/store/.dashboard-token)`) // step 2 ran: the precondition of the test
+    expect(read(join(ROOT, 'store', 'claude-md-backup', '20261106-234300', 'kevin', 'CLAUDE.md'))).toBe(original)
   })
 })

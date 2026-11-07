@@ -670,4 +670,18 @@ describe('J1: hooks not wired, per agent, never silent', () => {
     const j = JSON.parse(cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all', '--redact-names', '--json').out)
     expect(report(j, 'agent-02').context?.hooksNotWired).toEqual([{ id: 'shellRescan', path: '<ROOT>/agents/agent-02/scripts/hooks/shell-rescan-guard.py', reason: 'missing' }])
   })
+
+  it('Ron 10b J5: under --redact-names a hook path outside the root, the home and the checkout keeps only its tail', () => {
+    const result = dryRun(r4, 'kaysentinelj1', { homeDir: HOME_FIX() })
+    result.agents[0].context!.hooksNotWired = [
+      { id: 'directiveVerify', path: '/srv/personsentinelj5/hosts/scripts/hooks/directive-verify.py', reason: 'not readable' },
+      { id: 'all', path: '/etc/personsentinelj5/managed-settings.json', reason: 'managed settings do not parse' },
+    ]
+    const t = formatText(result, { redactNames: true })
+    const j = formatJson(result, { redactNames: true })
+    for (const out of [t, j]) expect(out).not.toContain('personsentinelj5')
+    expect(t).toContain('  hooks not wired: directiveVerify <PATH>/scripts/hooks/directive-verify.py (not readable); all <PATH>/managed-settings.json (managed settings do not parse)\n')
+    // without the flag the local report prints the path as it is
+    expect(formatText(result)).toContain('/srv/personsentinelj5/hosts/scripts/hooks/directive-verify.py')
+  })
 })

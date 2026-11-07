@@ -130,6 +130,23 @@ describe('the main agent on another config root', () => {
     expect(mainHooksAssumed()).toBe(true)
   })
 
+  it('Ron 10b J2: a sub with its own claudeConfigDir or claudePlan: hooks assumed, one "all" entry', () => {
+    put('agents/kevin/.claude-config/settings.json', JSON.stringify(wired()))
+    expect(build('kevin').ctx.hooks.shellRescan).toBe(true)
+    for (const cfg of [{ claudeConfigDir: '/srv/kevin-login' }, { claudePlan: 'max-team' }, { claudeConfigDir: '~/.claude-kevin', claudePlan: 'x' }]) {
+      put('agents/kevin/agent-config.json', JSON.stringify(cfg))
+      const r = build('kevin')
+      expect(r.ctx.hooks, JSON.stringify(cfg)).toEqual(NONE)
+      expect(r.assumptions, JSON.stringify(cfg)).toContain('hooks')
+      expect(r.hooksNotWired, JSON.stringify(cfg)).toEqual([{ id: 'all', path: null, reason: 'config root is not the session\'s' }])
+    }
+    // blank or non-string values, and other keys, are no other root
+    for (const cfg of [{ claudeConfigDir: '' }, { claudePlan: '   ' }, { claudeConfigDir: 7 }, { team: { reportsTo: 'boss' } }]) {
+      put('agents/kevin/agent-config.json', JSON.stringify(cfg))
+      expect(build('kevin').assumptions, JSON.stringify(cfg)).not.toContain('hooks')
+    }
+  })
+
   it('a sub is not affected by the main agent\'s config root', () => {
     put('.env', 'MAIN_AGENT_ISOLATED_CONFIG=1\n')
     put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
