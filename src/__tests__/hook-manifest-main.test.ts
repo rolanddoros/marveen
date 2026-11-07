@@ -8,7 +8,7 @@
  * against (or be mistaken for a check of) the running system's file.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -39,8 +39,11 @@ describe('hook manifest, main scope', () => {
     expect(REPO_ROOT).not.toBe(LIVE_INSTALL_ROOT)
     expect(realpathSync(REPO_ROOT)).not.toBe(LIVE_INSTALL_ROOT)
     // Exact, not a prefix: a sealed copy under /root/marveen/store/... is a
-    // checkout of its own; a symlink onto the live settings file is not.
-    expect(realpathSync(SETTINGS_PATH)).not.toBe(`${LIVE_INSTALL_ROOT}/.claude/settings.json`)
+    // checkout of its own; a symlink onto the live settings file is not. The
+    // live side is resolved too where it exists (CI has no /root/marveen), in
+    // case the live file itself ever becomes a symlink (Ron 13746).
+    const live = `${LIVE_INSTALL_ROOT}/.claude/settings.json`
+    expect(realpathSync(SETTINGS_PATH)).not.toBe(existsSync(live) ? realpathSync(live) : live)
   })
 
   it('renders exactly the hooks object of the tracked .claude/settings.json', () => {
@@ -56,10 +59,6 @@ describe('hook manifest, main scope', () => {
     const count = Object.values(rendered).flatMap((groups) => groups ?? []).flatMap((g) => g.hooks).length
     expect(count).toBe(56)
     expect(HOOK_MANIFEST.entries.filter((e) => e.scope === 'main' || e.scope === 'both')).toHaveLength(41)
-  })
-
-  it('the sub-agent render is not part of C3-1a', () => {
-    expect(() => renderHooks(HOOK_MANIFEST, 'sub')).toThrow(/C3-1b/)
   })
 })
 
@@ -109,7 +108,7 @@ describe('hook manifest failMode, main scope', () => {
 
   it('counts 5 closed, 36 open, 0 advisory', () => {
     const counts = { closed: 0, open: 0, advisory: 0 }
-    for (const e of HOOK_MANIFEST.entries) counts[specFor(e, 'main').failMode]++
+    for (const e of HOOK_MANIFEST.entries.filter((x) => x.scope !== 'sub')) counts[specFor(e, 'main').failMode]++
     expect(counts).toEqual({ closed: 5, open: 36, advisory: 0 })
   })
 })
