@@ -52,6 +52,7 @@ import { injectClaudeMdExcludes, resolveDashboardOrigin } from './agent-scaffold
 import { logger } from '../logger.js'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { HB_METRICS_BLOCK_MARKER } from './heartbeat-metrics-inject.js'
+import { heartbeatFlagOn, writeHeartbeatClaudeMdV2 } from './claude-md/wire.js'
 
 const HEARTBEAT_AGENT_NAME = HEARTBEAT_AGENT_ID
 const HEARTBEAT_AGENT_DIR = join(PROJECT_ROOT, 'agents', HEARTBEAT_AGENT_NAME)
@@ -319,6 +320,10 @@ export function mergeClaudeSettingsJson(existingRaw: string | null): string {
 // for the same reason: the canonical source of truth for the agent's
 // instructions lives here, not on disk. settings.json is deliberately NOT
 // here -- it is merge-written (see mergeClaudeSettingsJson).
+// C1 PR 12a: with .env CLAUDE_MD_BUILDER_HEARTBEAT=v2 the CLAUDE.md is this
+// prose with the v2 region after it (claude-md/wire.ts
+// writeHeartbeatClaudeMdV2); off, or when v2 refuses or fails, the prose alone
+// as before.
 const ALWAYS_WRITE: ReadonlyArray<readonly [string, () => string]> = [
   ['CLAUDE.md', () => renderHeartbeatClaudeMd(currentHeartbeatIdentity())],
   ['agent-config.json', renderAgentConfigJson],
@@ -348,7 +353,9 @@ export function ensureHeartbeatAgent(): void {
       mkdirSync(claudeDir, { recursive: true })
     }
     for (const [relPath, render] of ALWAYS_WRITE) {
-      writeFileSync(join(HEARTBEAT_AGENT_DIR, relPath), render())
+      const path = join(HEARTBEAT_AGENT_DIR, relPath)
+      if (relPath === 'CLAUDE.md' && heartbeatFlagOn() && writeHeartbeatClaudeMdV2(path, render())) continue
+      writeFileSync(path, render())
     }
     const settingsPath = join(claudeDir, 'settings.json')
     const existingRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null
