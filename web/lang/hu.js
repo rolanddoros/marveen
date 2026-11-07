@@ -463,6 +463,9 @@ window._i18n.hu = {
   'agents.wizard.pending_title': 'Az ügynök elkészült, a személyisége viszont sablonból jött',
   'agents.wizard.pending_body':  'Az ügynök létrejött és működik, nem veszett el semmi. A személyiségét nem sikerült legenerálni, ezért amit alább látsz, az egy sablon. Átírhatod most itt, vagy később bármikor az ügynök beállításainál.',
   'agents.wizard.pending_detail': 'Ami nem sikerült: {detail}',
+  // C1 PR 11c-3 (Johnny 13431): the same banner for an agent created without Telegram (no persona).
+  'agents.wizard.pending_title_headless': 'Az ügynököd kész, de a szerepleírása sablonból jött',
+  'agents.wizard.pending_body_headless': 'Az ügynök létrejött és működik, semmi nem veszett el. A szerepleírását nem sikerült generálni, ezért amit lent látsz, sablon. Most átírhatod itt, vagy később az ügynök beállításaiban.',
   'agents.model.inherit':        'Öröklött (alapértelmezett)',
   'agents.model.fable51':       'Fable 5.1 (legújabb Fable)',
   'agents.model.fable5':         'Fable 5',
