@@ -229,6 +229,9 @@ describe('hooksNotWired (Ron 13122 J1): why a wired hook reads false', () => {
     put('.env', 'MAIN_AGENT_CONFIG_DIR=/srv/bot\n')
     put('.claude/settings.json', JSON.stringify(wired()), home)
     expect(build('marveen').hooksNotWired).toEqual([{ id: 'all', path: null, reason: 'config root is not the session\'s' }])
+    // the layers read are not the session's, so a script problem found in them is not reported as the cause
+    rmSync(SCRIPT())
+    expect(build('marveen').hooksNotWired).toEqual([{ id: 'all', path: null, reason: 'config root is not the session\'s' }])
   })
 
   it('the explicit switches are not faults: disableAllHooks and allowManagedHooksOnly give no entry', () => {
