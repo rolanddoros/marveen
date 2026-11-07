@@ -4179,6 +4179,7 @@ async function openMarveenDetail() {
     }
   } catch {}
   applyMarveenReadonlyMode(true)
+  applySoulEditorVisibility(currentAgent)
 
   // Telegram tab -- without this the tab stays in the default "not connected"
   // view even though the bot is running and receiving messages.
@@ -4204,6 +4205,16 @@ async function openMarveenDetail() {
 // it the one hook both open-paths share. Anything that must differ for the main
 // agent belongs here; putting it in openAgentDetail alone silently no-ops for
 // the main agent, whose panel never runs that function.
+// C1 PR 11c-4: an agent created without Telegram has no persona and no SOUL.md,
+// so the Settings tab hides the SOUL.md editor together with its Save. Only an
+// explicit false hides it: Telegram agents, agents created before the field and
+// the main agent (whose detail has no such field) keep it. Called on every detail
+// open, so the next agent never inherits the previous one's state.
+function applySoulEditorVisibility(agent) {
+  const group = document.getElementById('editSoulGroup')
+  if (group) group.hidden = agent?.personaAtCreation === false
+}
+
 function applyMarveenReadonlyMode(readOnly) {
   // The Team tab describes a SUB-agent's place in the hierarchy: role
   // (leader | member), who it reports to, who it delegates to. None of it
@@ -4690,6 +4701,7 @@ async function openAgentDetail(agentName) {
 
   // Restore editable Settings (Marveen detail flips this to read-only).
   applyMarveenReadonlyMode(false)
+  applySoulEditorVisibility(currentAgent)
 
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
@@ -6153,6 +6165,10 @@ document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
       body: JSON.stringify({ soulMd: document.getElementById('editSoulMd').value }),
     })
     if (!res.ok) throw new Error()
+    // C1 PR 11c-4: the server skipped the save (an empty SOUL.md for an agent
+    // created without Telegram), so there is nothing to announce.
+    const result = await res.json().catch(() => ({}))
+    if (result.soulMdWritten === false) return
     showToast(t('agents.soul_md_saved'))
   } catch { showToast(t('common.error_save')) }
 })

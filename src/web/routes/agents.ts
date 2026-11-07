@@ -578,6 +578,9 @@ export interface AgentSummary {
 
 interface AgentDetail extends AgentSummary {
   memoryIsolation: boolean
+  /** C1 PR 11c-4: false only for an agent created without Telegram (no persona,
+   *  no SOUL.md); the Settings tab hides the SOUL.md editor for it. */
+  personaAtCreation: boolean
   customProvider: string | null
   claudeMd: string
   soulMd: string
@@ -747,6 +750,7 @@ function getAgentDetail(name: string): AgentDetail {
   return {
     ...summary,
     memoryIsolation: readAgentMemoryIsolation(name),
+    personaAtCreation: readAgentPersonaAtCreation(name),
     customProvider: readAgentCustomProvider(name),
     claudeMd,
     soulMd,
@@ -2791,10 +2795,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // agent, and its Save sends the (empty) field. For an agent created without
     // Telegram, which has no SOUL.md, an empty save must not create an empty one;
     // a non-empty save, or a save over an existing file, writes as before.
+    // C1 PR 11c-4: a skipped save is reported (soulMdWritten: false), so the client
+    // does not announce a save that did not happen.
+    let soulMdSkipped = false
     if (data.soulMd !== undefined) {
       const soulPath = join(agentDir(name), 'SOUL.md')
       const emptyCreate = typeof data.soulMd === 'string' && data.soulMd.trim() === '' && !existsSync(soulPath) && !readAgentPersonaAtCreation(name)
       if (!emptyCreate) atomicWriteFileSync(soulPath, data.soulMd)
+      else soulMdSkipped = true
     }
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) {
@@ -2872,7 +2880,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       writeAgentClaudePlan(name, planId)
     }
-    json(res, { ok: true })
+    json(res, soulMdSkipped ? { ok: true, soulMdWritten: false } : { ok: true })
     return true
   }
 
