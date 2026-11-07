@@ -1,1 +1,1 @@
-### Rules (what, when, where the procedure is)
+### Rules (what, when, which skill)

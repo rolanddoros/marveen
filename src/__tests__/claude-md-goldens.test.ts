@@ -435,8 +435,17 @@ describe('budget, live-shaped worst case (Ron 12886, 12953)', () => {
     routingMode: longestMode,
     peers: Array.from({ length: PEER_MAX }, (_, i) => ({ id: `p${String(i).padStart(2, '0')}`.padEnd(36, 'x'), paired: true })),
   }
+  // C1 PR 12c (Kevin 13603): a real-shaped identity next to the fixture's (/srv/fleet, Owner, a 10-digit chat id),
+  // which is shorter than a live install: a 40-character install path (it appears twice: the autonomy file and the
+  // helper path), a 20-character owner name and a 13-digit chat id.
+  type Identity = Pick<AgentDocContext, 'projectRoot' | 'owner'>
+  const FIXTURE_IDENTITY: Identity = { projectRoot: FIXTURES.main.projectRoot, owner: FIXTURES.main.owner }
+  const REAL_IDENTITY: Identity = {
+    projectRoot: '/home/owner-account/install/marveen-prod',
+    owner: { name: 'Owner Name Longfield', chatId: '1234567890123' },
+  }
   let visited = 0
-  function worst(): { len: number; label: string } {
+  function worst(identity: Identity = FIXTURE_IDENTITY): { len: number; label: string } {
     let best = { len: 0, label: '' }
     for (const role of ['main', 'sub', 'heartbeat'] as const) {
       for (const strict of [true, false]) {
@@ -446,6 +455,7 @@ describe('budget, live-shaped worst case (Ron 12886, 12953)', () => {
             const name = fleet[0]
             const ctx: AgentDocContext = {
               ...FIXTURES.main,
+              ...identity,
               name,
               role,
               mainAgentId: fleet[1],
@@ -483,6 +493,18 @@ describe('budget, live-shaped worst case (Ron 12886, 12953)', () => {
     const w = worst()
     expect(visited).toBe(3 * 2 * 2 * 8)
     if (process.env.CLAUDE_MD_BUDGET_REPORT === '1') process.stdout.write(`WORST ${w.len} ${w.label}\n`)
+    expect(w.len, w.label).toBeLessThanOrEqual(BUDGET)
+  })
+
+  it('the same walk with a real-shaped identity stays within the 5.5k budget', () => {
+    expect(REAL_IDENTITY.projectRoot.length).toBe(40)
+    expect(REAL_IDENTITY.owner.name.length).toBe(20)
+    expect(REAL_IDENTITY.owner.chatId).toMatch(/^\d{13}$/)
+    expect(peerList(WORST_FED.peers).length).toBe(PEER_LIST_MAX_CHARS)
+    visited = 0
+    const w = worst(REAL_IDENTITY)
+    expect(visited).toBe(3 * 2 * 2 * 8)
+    if (process.env.CLAUDE_MD_BUDGET_REPORT === '1') process.stdout.write(`WORST-REAL ${w.len} ${w.label}\n`)
     expect(w.len, w.label).toBeLessThanOrEqual(BUDGET)
   })
 })
