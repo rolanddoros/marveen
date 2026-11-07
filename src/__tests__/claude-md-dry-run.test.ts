@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { codeVersion, formatJson, formatText, makeRedactor, outsidePaths, runCli } from '../web/claude-md/dry-run-cli.js'
-import { composeClaudeMd } from '../web/claude-md/compose.js'
-import { REGION_BUDGET, dryRun, isOverBudget } from '../web/claude-md/dry-run.js'
+import { composeClaudeMd, scanClaudeMd } from '../web/claude-md/compose.js'
+import { REGION_BUDGET, blockPlaceholders, dryRun, isOverBudget } from '../web/claude-md/dry-run.js'
 import { buildLiveContext } from '../web/claude-md/live-context.js'
 import { renderRegion } from '../web/claude-md/registry.js'
 import { TEMPLATES_DIR } from '../web/claude-md/render.js'
@@ -361,6 +361,48 @@ describe('PR 8b: the region diff', () => {
     expect(full.startsWith('--- a/agents/bb/CLAUDE.md\n+++ b/agents/bb/CLAUDE.md\n@@ -1 +1,')).toBe(true)
     expect(full).toContain('\n-\ufeff\n\\ No newline at end of file\n+\ufeff')
     expect(applied(r2, 'agents/bb/CLAUDE.md', full)).toBe(want)
+  })
+
+  // Ron 13154 (B16): the region's lines are tagged region, so a blank owner
+  // line after a removed block never pairs with a blank line of the region:
+  // it shows as removed, and the region is added whole.
+  it('blank_after_block_then_region_blank: the exact --full-diff text', () => {
+    const r2 = join(base, 'blank-after-block')
+    mkdirSync(join(r2, 'agents', 'kay'), { recursive: true })
+    writeFileSync(join(r2, '.env'), 'MAIN_AGENT_ID=chief\n')
+    writeFileSync(join(r2, 'CLAUDE.md'), '# chief\n')
+    const block = '<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->\n- chief\n<!-- END GENERATED: fleet-roster -->\n'
+    writeFileSync(join(r2, 'agents', 'kay', 'CLAUDE.md'), `# Kay\n\n${block}\n`)
+    const full = report(json('--dry-run', '--root', r2, '--home', HOME_FIX(), '--agent', 'kay', '--full-diff').data, 'kay').diff as string
+    const hash = createHash('sha256').update(block).digest('hex').slice(0, 12)
+    expect(full.split('\n').slice(3, 10)).toEqual([
+      ' # Kay', ' ', `-<generated block fleet-roster: 3 lines, sha256:${hash}>`, '-',
+      '+<!-- BEGIN MARVEEN GENERATED v2 (do not edit; source: src/web/claude-md) -->', '+## Generated rules (Marveen)', '+',
+    ])
+    const verbatim = dryRun(r2, 'kay', { homeDir: HOME_FIX(), fullDiff: true, verbatimGenerated: true }).agents[0].diff as string
+    expect(applied(r2, 'agents/kay/CLAUDE.md', verbatim)).toBe(expected(r2, 'kay', 'agents/kay/CLAUDE.md'))
+  })
+
+  // Ron 13154: the full diff has no fallback for a generated line outside
+  // the placeholder map, since there is none: every non-owner line is mapped.
+  it('blockPlaceholders maps every generated line of a scan, only the BEGIN line to text', () => {
+    const block = '<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->\n- chief\n<!-- END GENERATED: fleet-roster -->\n'
+    const texts = [
+      readFileSync(join(root, 'CLAUDE.md'), 'utf-8'),
+      readFileSync(join(root, 'agents', 'alpha', 'CLAUDE.md'), 'utf-8'),
+      expected(root, 'alpha', 'agents/alpha/CLAUDE.md'), // the v2 region
+      `${block}${block}`, // two blocks back to back
+      '# x\n<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->\n<!-- END GENERATED: fleet-roster -->', // empty, no final newline
+    ]
+    for (const text of texts) {
+      const lines = scanClaudeMd(text).lines
+      const map = blockPlaceholders(lines)
+      expect(lines.some((l) => l.kind !== 'owner')).toBe(true)
+      lines.forEach((l, i) => {
+        expect(map.has(i), `${l.kind} line ${i + 1}`).toBe(l.kind !== 'owner')
+        if (map.has(i)) expect(map.get(i) !== null, `${l.kind} line ${i + 1}`).toBe(l.kind === 'begin')
+      })
+    }
   })
 })
 
