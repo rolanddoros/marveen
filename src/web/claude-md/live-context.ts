@@ -74,6 +74,12 @@
 //   ones above, and a project or user layer that does not parse. A hook that
 //   no layer wires at all is not listed (that is configuration, not a fault),
 //   nor are the explicit switches disableAllHooks and allowManagedHooksOnly.
+// - capabilities.channel (C1 PR 11a-2): a sub reads channel.ts agentHasChannel
+//   on its agent dir, the same source as the dashboard's per-agent channel
+//   flags (fail safe: an unreadable channel file counts as a channel). The
+//   main agent is the owner's channel agent: true by design (its channel
+//   state is resolved by channelStateDir, env and home dependent, which this
+//   module does not mirror). The heartbeat worker owns no channel: false.
 // - ASSUMED (not rendered): profile.id, capabilities.emailSend, browser,
 //   thinChief, tokenPath. botName falls back to the code default "Marveen",
 //   which is config.ts's own default, so that is a source, not an assumption.
@@ -83,6 +89,7 @@ import { homedir, platform } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { parseEnvContent } from '../../env-parse.js'
 import { isAgentName } from './agent-name.js'
+import { agentHasChannel } from './channel.js'
 import { HOOK_IDS, type AgentDocContext, type AgentRole, type AutonomyLevel, type HookId } from './context.js'
 import { HOOK_SPECS, hooksFromSettings } from './hooks-from-settings.js'
 
@@ -136,7 +143,7 @@ export interface LiveContext {
 // test reads them out of the source). A rendered field must never be an
 // assumption on a real write.
 export const RENDERED_FIELDS = [
-  'capabilities.federation', 'capabilities.kanbanWrite', 'hooks', 'mainAgentId', 'name',
+  'capabilities.channel', 'capabilities.federation', 'capabilities.kanbanWrite', 'hooks', 'mainAgentId', 'name',
   'owner.chatId', 'owner.name', 'profile.helperAllowed', 'profile.strict', 'projectRoot', 'role', 'roster', 'team',
 ] as const
 
@@ -452,6 +459,7 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
       browser: false,
       federation: federationEnabled(root),
       thinChief: false,
+      channel: role === 'main' ? true : role === 'heartbeat' ? false : agentHasChannel(agentDir),
     },
     autonomy: readAutonomy(root),
     team: { reportsTo, directReports },

@@ -266,6 +266,14 @@ export function formatText(result: DryRunResult, opts: FormatOptions = {}): stri
           ? `${a.after.removedBlocks.length} block(s) removed (${a.after.removedBlocks.join(', ')}), content not compared to the old template`
           : 'no block removed'}`)
     }
+    if (a.headless) {
+      const { candidates, domain } = a.headless
+      const sum = (ps: { chars: number }[]) => ps.reduce((n, p) => n + p.chars, 0)
+      out.push(`  headless (no channel): ${candidates.length} shortening candidate(s), ${sum(candidates)} chars; `
+        + `${domain.length} domain part(s), ${sum(domain)} chars`)
+      for (const p of candidates) out.push(`    candidate ${a.file}:${p.start}-${p.end} (${p.chars} chars): ${p.category} [${(p.patterns ?? []).join(', ')}]`)
+      for (const p of domain) out.push(`    domain ${a.file}:${p.start}-${p.end} (${p.chars} chars)${p.heading ? '' : ', before the first heading'}`)
+    }
     if (a.diff !== undefined) {
       out.push('  diff (3 context lines, owner text verbatim, each removed generated block as one placeholder line):')
       out.push(a.diff.replace(/\n$/, '') || '  (no change)')

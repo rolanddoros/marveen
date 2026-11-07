@@ -1140,6 +1140,12 @@ export function enforceStrictPermissionMode(
 // path is appended once; every entry already there stays (an owner's own, or
 // the same path written by hand), and a value that is not an array is left as
 // the owner wrote it. The main agent is untouched: the root file is its own.
+// Silent cases, on purpose (Ron 13273; no log line: this runs on every spawn):
+// a value that is not an array (null, an object, a string) stays exactly as it
+// is and gets no entry, since it is the owner's to fix; an own entry spelled
+// differently (`<root>//CLAUDE.md`, a symlinked path) is not recognised, so
+// the canonical path is appended next to it; and after the install root moves,
+// the old root's entry stays and the new one is appended.
 // Returns whether it changed anything. Pure: unit-tested directly.
 export function injectClaudeMdExcludes(
   name: string,

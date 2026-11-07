@@ -48,7 +48,7 @@ import {
   DASHBOARD_PUBLIC_URL,
   AGENT_API_ORIGIN,
 } from '../config.js'
-import { resolveDashboardOrigin } from './agent-scaffold.js'
+import { injectClaudeMdExcludes, resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { HB_METRICS_BLOCK_MARKER } from './heartbeat-metrics-inject.js'
@@ -300,12 +300,16 @@ function renderAgentConfigJson(): string {
 // while every test stayed green. Only the key this scaffold OWNS
 // (enabledPlugins) is enforced; everything else (hooks, permissions) is
 // preserved. Exported pure so the wiring test can pin the contract.
+// C1 PR 11a-2 (Ron 13273): its cwd is under PROJECT_ROOT too, so it gets the
+// same claudeMdExcludes entry for the main agent's root CLAUDE.md as every
+// sub (writeAgentSettingsFromProfile does not write this file).
 export function mergeClaudeSettingsJson(existingRaw: string | null): string {
   let existing: Record<string, unknown> = {}
   if (existingRaw) {
     try { existing = JSON.parse(existingRaw) as Record<string, unknown> } catch { existing = {} }
   }
   existing.enabledPlugins = CHANNEL_PLUGIN_DISABLES
+  injectClaudeMdExcludes(HEARTBEAT_AGENT_NAME, existing)
   return JSON.stringify(existing, null, 2) + '\n'
 }
 

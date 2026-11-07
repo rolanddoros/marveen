@@ -7,51 +7,44 @@ import { logger } from '../logger.js'
 import { agentDir, readFileOr, findAvatarForAgent } from './agent-config.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 import { markIfTestRun } from '../test-run-marker.js'
+import { CHANNEL_ENV_KEYS, channelEnvPath, envKeySet } from './claude-md/channel.js'
 
 export function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
-  const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
+  const envPath = channelEnvPath(agentDir(name), 'telegram')
   if (!existsSync(envPath)) return { hasTelegram: false }
-  const content = readFileOr(envPath, '')
-  const tokenMatch = content.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  if (!tokenMatch || !tokenMatch[1].trim()) return { hasTelegram: false }
+  if (!envKeySet(readFileOr(envPath, ''), CHANNEL_ENV_KEYS.telegram)) return { hasTelegram: false }
   // We don't call the API here to keep listing fast; username comes from test endpoint
   return { hasTelegram: true }
 }
 
 export function readAgentDiscordConfig(name: string): { hasDiscord: boolean; botUsername?: string } {
-  const envPath = join(agentDir(name), '.claude', 'channels', 'discord', '.env')
+  const envPath = channelEnvPath(agentDir(name), 'discord')
   if (!existsSync(envPath)) return { hasDiscord: false }
-  const content = readFileOr(envPath, '')
-  const tokenMatch = content.match(/DISCORD_BOT_TOKEN=(.+)/)
-  if (!tokenMatch || !tokenMatch[1].trim()) return { hasDiscord: false }
+  if (!envKeySet(readFileOr(envPath, ''), CHANNEL_ENV_KEYS.discord)) return { hasDiscord: false }
   return { hasDiscord: true }
 }
 
 export function readAgentSlackConfig(name: string): { hasSlack: boolean } {
-  const envPath = join(agentDir(name), '.claude', 'channels', 'slack', '.env')
+  const envPath = channelEnvPath(agentDir(name), 'slack')
   if (!existsSync(envPath)) return { hasSlack: false }
-  const content = readFileOr(envPath, '')
-  const tokenMatch = content.match(/SLACK_BOT_TOKEN=(.+)/)
-  if (!tokenMatch || !tokenMatch[1].trim()) return { hasSlack: false }
+  if (!envKeySet(readFileOr(envPath, ''), CHANNEL_ENV_KEYS.slack)) return { hasSlack: false }
   return { hasSlack: true }
 }
 
 // Google Chat is creds-based (no bot token): a configured agent has
 // GOOGLECHAT_PROJECT_ID in its channel .env (see channel-provider readChannelToken).
 export function readAgentGooglechatConfig(name: string): { hasGooglechat: boolean } {
-  const envPath = join(agentDir(name), '.claude', 'channels', 'googlechat', '.env')
+  const envPath = channelEnvPath(agentDir(name), 'googlechat')
   if (!existsSync(envPath)) return { hasGooglechat: false }
-  const m = readFileOr(envPath, '').match(/GOOGLECHAT_PROJECT_ID=(.+)/)
-  return { hasGooglechat: !!m?.[1]?.trim() }
+  return { hasGooglechat: envKeySet(readFileOr(envPath, ''), CHANNEL_ENV_KEYS.googlechat) }
 }
 
 export function readAgentTeamsConfig(name: string): { hasTeams: boolean } {
   // Teams has no single bot token; TEAMS_BOT_APP_ID standing in the .env signals
   // the channel is configured (mirrors readChannelToken's teams branch).
-  const envPath = join(agentDir(name), '.claude', 'channels', 'teams', '.env')
+  const envPath = channelEnvPath(agentDir(name), 'teams')
   if (!existsSync(envPath)) return { hasTeams: false }
-  const m = readFileOr(envPath, '').match(/TEAMS_BOT_APP_ID=(.+)/)
-  return { hasTeams: !!m?.[1]?.trim() }
+  return { hasTeams: envKeySet(readFileOr(envPath, ''), CHANNEL_ENV_KEYS.teams) }
 }
 
 // Marveen's channel state is resolved by channelStateDir (#915): env

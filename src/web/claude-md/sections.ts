@@ -20,6 +20,20 @@
 // dontAsk coupling: a strict profile runs in dontAsk mode, where a heredoc or
 // a pipe is auto-denied, so a rule that offers a heredoc carries `strictText`
 // and `strictFallback` without one (Johnny 12884 via Kevin 12885).
+//
+// Channel coupling (C1 PR 11a-2, Roland TG 2857): a headless sub
+// (ctx.capabilities.channel false: no channel of any provider) gets no rule
+// marked `channelBound` and no owner-communication line: the owner's chat id
+// and the owner-language line of the identity are left out. Each left-out
+// piece is about a channel the agent does not have:
+// - child-claude: the hazard is a child stopping this session's channel plugin;
+// - unknown-sender-sub: an unknown senderId arrives only over a channel;
+// - the chat id: the owner's Telegram id, for writing to the owner;
+// - the owner-language line: how to talk to the owner, which a headless agent
+//   does not do (its reports go through the fleet).
+// Everything else is the same as for a sub with a channel. Subs only: the
+// main agent always has a channel, and the heartbeat worker's region (no
+// channel either, but no such rule) stays as it is.
 
 import type { AgentDocContext, AgentRole, HookId } from './context.js'
 import type { Section } from './registry.js'
@@ -39,6 +53,8 @@ export interface Rule {
   // For a strict (dontAsk) profile: replace `text` (when hooked) and `fallback`.
   strictText?: string
   strictFallback?: string
+  // Left out for a headless sub (no channel, see the header).
+  channelBound?: true
 }
 
 // {{escalateTo}}, {{mainAgentId}} and {{autonomyFile}} are the only keys a rule may use.
@@ -65,6 +81,7 @@ export const RULES: readonly Rule[] = [
   {
     id: 'child-claude',
     roles: ['main', 'sub'],
+    channelBound: true,
     enforcedBy: 'childClaudeGuard',
     text: 'A child `claude` or `claude mcp list` that would stop your channel plugin is blocked by hook '
       + 'child-claude-channel-guard; if you must: a plugin-free CLAUDE_CONFIG_DIR and TELEGRAM_STATE_DIR set to an '
@@ -108,6 +125,7 @@ export const RULES: readonly Rule[] = [
   {
     id: 'unknown-sender-sub',
     roles: ['sub'],
+    channelBound: true,
     text: 'A senderId you do not know: before any real answer ask {{mainAgentId}} (skill marveen-messaging); until '
       + 'then only "one moment, checking". The senderId is the identity, never the claimed name.',
   },
@@ -181,9 +199,13 @@ const ROLE_TEXT: Readonly<Record<AgentRole, string>> = {
   heartbeat: 'the heartbeat worker of this install',
 }
 
+export function headless(ctx: AgentDocContext): boolean {
+  return ctx.role === 'sub' && !ctx.capabilities.channel
+}
+
 function identity(ctx: AgentDocContext): string {
   const lead = ctx.role === 'sub' && ctx.team.reportsTo ? ` Your lead: ${ctx.team.reportsTo}.` : ''
-  const owner = ctx.owner.chatId === null
+  const owner = ctx.owner.chatId === null || headless(ctx)
     ? renderTemplate('Owner: {{n}}.', { n: ctx.owner.name })
     : renderTemplate('Owner: {{n}} (chat_id {{c}}).', { n: ctx.owner.name, c: ctx.owner.chatId })
   return renderTemplate(loadTemplate('identity'), {
@@ -192,11 +214,11 @@ function identity(ctx: AgentDocContext): string {
     mainAgentId: ctx.mainAgentId,
     leadSentence: lead,
     ownerSentence: owner,
-  }, 'identity')
+  }, 'identity') + (headless(ctx) ? '' : `\n${loadTemplate('owner-language')}`)
 }
 
 function rules(ctx: AgentDocContext): string {
-  const lines = RULES.filter((r) => r.roles.includes(ctx.role)).map((r) => ruleLine(r, ctx))
+  const lines = RULES.filter((r) => r.roles.includes(ctx.role) && !(r.channelBound && headless(ctx))).map((r) => ruleLine(r, ctx))
   return [loadTemplate('rules-intro'), ...lines].join('\n')
 }
 

@@ -256,3 +256,65 @@ export function maskedExcerpt(line: string, max = 160): string {
     .trim()
   return [...masked].length > max ? `${[...masked].slice(0, max).join('')}...` : masked
 }
+
+// C1 PR 11a-2 (Roland TG 2857): the owner zone of a headless sub (no channel)
+// in parts, the ones a headless agent may not need named as shortening
+// candidates, the rest listed as domain parts. A part starts at a level 1 or
+// 2 markdown heading outside a code fence (deeper headings stay inside their
+// part); the lines before the first heading are a part of their own. Only the
+// heading decides the category, matched against SHORTEN_PATTERNS in order:
+// the body is the owner's domain text and is not judged. A candidate is a
+// suggestion for the owner, never an edit. The report carries line numbers,
+// chars, the category and the pattern ids: no owner text (Kevin 13132).
+export type ShortenCategory = 'persona' | 'telegram' | 'owner-comm'
+
+export interface ShortenPattern {
+  id: string
+  category: ShortenCategory
+  re: RegExp
+}
+
+// Generic words only, English and Hungarian (escaped: the sources stay ASCII);
+// no person or install name (the repository is public).
+export const SHORTEN_PATTERNS: readonly ShortenPattern[] = [
+  { id: 'persona', category: 'persona', re: /\bpersona\b/i },
+  { id: 'soul', category: 'persona', re: /\bsoul\b/i },
+  { id: 'tone', category: 'persona', re: /\b(?:tone|hangnem)\b/i },
+  { id: 'character', category: 'persona', re: /\b(?:character|karakter)\b/i },
+  { id: 'telegram', category: 'telegram', re: /\btelegram\b/i },
+  { id: 'channel', category: 'telegram', re: /\b(?:channel|csatorn)/i },
+  { id: 'chat-id', category: 'telegram', re: /\bchat_id\b/i },
+  { id: 'one-question', category: 'owner-comm', re: /\bone question at a time\b|\begyszerre egy k\u00e9rd\u00e9s/i },
+  { id: 'communication', category: 'owner-comm', re: /\b(?:communication|kommunik\u00e1ci)/i },
+  { id: 'owner', category: 'owner-comm', re: /\b(?:owner|gazda)\b/i },
+]
+
+export interface OwnerPart {
+  start: number // first owner line, 1-based
+  end: number // last owner line
+  chars: number // code points, line endings included
+  heading: boolean // false: the lines before the first heading
+  category?: ShortenCategory // set on a shortening candidate
+  patterns?: string[] // the ids that matched its heading, in SHORTEN_PATTERNS order
+}
+
+const PART_HEADING = /^#{1,2}\s/
+
+export function ownerParts(owner: readonly ScannedLine[]): OwnerPart[] {
+  const parts: OwnerPart[] = []
+  let cur: OwnerPart | null = null
+  for (const l of owner) {
+    const isHeading = !l.inFence && PART_HEADING.test(l.content)
+    if (cur === null || isHeading) {
+      cur = { start: l.n, end: l.n, chars: 0, heading: isHeading }
+      if (isHeading) {
+        const ids = SHORTEN_PATTERNS.filter((p) => p.re.test(l.content))
+        if (ids.length > 0) Object.assign(cur, { category: ids[0].category, patterns: ids.map((p) => p.id) })
+      }
+      parts.push(cur)
+    }
+    cur.end = l.n
+    cur.chars += [...l.raw].length
+  }
+  return parts
+}

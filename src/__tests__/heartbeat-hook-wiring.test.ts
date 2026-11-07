@@ -36,7 +36,7 @@ function runSeedChain(name: string): void {
   ensureGovernanceGateCommands(name)
   writeAgentSettingsFromProfile(name, loadProfileTemplate('default'))
 }
-import { HEARTBEAT_AGENT_ID } from '../config.js'
+import { HEARTBEAT_AGENT_ID, PROJECT_ROOT } from '../config.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SETTINGS = agentSettingsPath(HEARTBEAT_AGENT_ID)
@@ -78,6 +78,16 @@ describe('mergeClaudeSettingsJson (pure contract)', () => {
   it('tolerates null and corrupt input', () => {
     expect(() => JSON.parse(mergeClaudeSettingsJson(null))).not.toThrow()
     expect(() => JSON.parse(mergeClaudeSettingsJson('not-json{{'))).not.toThrow()
+  })
+  // C1 PR 11a-2 (Ron 13273): the heartbeat worker's cwd is under PROJECT_ROOT too
+  it('excludes the main agent\'s root CLAUDE.md once, next to the entries already there', () => {
+    const root = join(PROJECT_ROOT, 'CLAUDE.md')
+    const first = JSON.parse(mergeClaudeSettingsJson(null))
+    expect(first.claudeMdExcludes).toEqual([root])
+    expect(JSON.parse(mergeClaudeSettingsJson(JSON.stringify(first))).claudeMdExcludes).toEqual([root])
+    const kept = JSON.parse(mergeClaudeSettingsJson(JSON.stringify({ claudeMdExcludes: ['**/vendor/**/CLAUDE.md'], hooks: { X: [] } })))
+    expect(kept.claudeMdExcludes).toEqual(['**/vendor/**/CLAUDE.md', root])
+    expect(kept.hooks).toEqual({ X: [] })
   })
 })
 

@@ -27,8 +27,9 @@ import { parseEnvContent } from '../../env-parse.js'
 import { ComposeError, composeClaudeMd, scanClaudeMd, type ScannedLine } from './compose.js'
 import { type DiffLine, splitRaw, unifiedDiff } from './line-diff.js'
 import { LiveContextError, RENDERED_FIELDS, buildLiveContext, type HookNotWired } from './live-context.js'
-import { ownerZoneFindings, retiredSectionFindings, type Finding } from './owner-zone.js'
+import { ownerParts, ownerZoneFindings, retiredSectionFindings, type Finding, type OwnerPart } from './owner-zone.js'
 import { renderRegion } from './registry.js'
+import { headless } from './sections.js'
 import { TemplateError } from './render.js'
 
 export type AgentRole = 'main' | 'sub' | 'heartbeat'
@@ -67,6 +68,10 @@ export interface AgentReport {
     overBudget: boolean
     removedBlocks: string[]
   }
+  // C1 PR 11a-2, a headless sub only (no channel, sections.ts headless): its
+  // owner zone in parts (owner-zone.ts ownerParts), the shortening candidates
+  // apart from the domain parts. Line numbers and chars only, no owner text.
+  headless?: { candidates: OwnerPart[]; domain: OwnerPart[] }
   // The unified diff, today's file -> what composeClaudeMd would write
   // (PlanOptions decide how much owner text it shows).
   diff?: string
@@ -348,6 +353,10 @@ export function blockPlaceholders(lines: readonly ScannedLine[]): Map<number, st
   return out
 }
 
+function splitParts(parts: OwnerPart[]): { candidates: OwnerPart[]; domain: OwnerPart[] } {
+  return { candidates: parts.filter((p) => p.category !== undefined), domain: parts.filter((p) => p.category === undefined) }
+}
+
 function valueAt(obj: unknown, path: string): unknown {
   return path.split('.').reduce<unknown>((o, k) => (o !== null && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), obj)
 }
@@ -419,6 +428,7 @@ export function planRegion(report: AgentReport, text: string, root: string, opts
       overBudget: isOverBudget(region.length),
       removedBlocks: composed.removed,
     },
+    ...(headless(live.ctx) ? { headless: splitParts(ownerParts(scanned.filter((l) => l.kind === 'owner'))) } : {}),
     ...(diff !== undefined ? { diff } : {}),
   }
 }
