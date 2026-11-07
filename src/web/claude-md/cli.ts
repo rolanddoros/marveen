@@ -48,6 +48,10 @@
 //      or region could not be built (status "error"); the report still covers
 //      every other agent;
 //   2  usage error (arguments, --root, unknown agent).
+// A crash (an uncaught error, e.g. a read outside the --permission grant)
+// also exits 1, with EMPTY stdout and the error on stderr. A caller must
+// treat an empty stdout as a failed run, never as "refused" or as "no
+// findings" (Ron, 8a review 13073).
 
 import { runCli } from './dry-run-cli.js'
 

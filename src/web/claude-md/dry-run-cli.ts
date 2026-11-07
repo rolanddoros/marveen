@@ -95,6 +95,8 @@ export function codeVersion(stamp = join(dirname(fileURLToPath(import.meta.url))
 // name counts only as a whole word. The configured OWNER_NAME and BOT_NAME
 // (DryRunResult.identity) become <OWNER> and <BOT> at every occurrence, also
 // inside a word (a Hungarian suffix is glued on: "Rolandnak") (Kevin 13039).
+// Names match in any letter case ("Dennis" in owner text is the agent dennis;
+// Ron, 8a review 13073); the root is a path and matches exactly.
 export interface Redactor {
   name(n: string): string
   text(s: string): string
@@ -105,6 +107,7 @@ const IDENTITY: Redactor = { name: (n) => n, text: (s) => s }
 export function makeRedactor(result: DryRunResult): Redactor {
   const width = Math.max(2, String(result.listed.length).length)
   const map = new Map(result.listed.map((n, i) => [n, `agent-${String(i + 1).padStart(width, '0')}`]))
+  const byLower = new Map([...map].map(([n, tag]) => [n.toLowerCase(), tag]))
   const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   // Longest first, so a name that contains another is replaced whole.
   const words = [...map.keys()].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
@@ -113,13 +116,13 @@ export function makeRedactor(result: DryRunResult): Redactor {
   if (result.identity.owner) people.push([result.identity.owner, '<OWNER>'])
   if (result.identity.bot) people.push([result.identity.bot, '<BOT>'])
   people.sort((a, b) => b[0].length - a[0].length)
-  const re = words.length > 0 ? new RegExp(`(?<![A-Za-z0-9_-])(?:${words.map(escapeRe).join('|')})(?![A-Za-z0-9_-])`, 'g') : null
+  const re = words.length > 0 ? new RegExp(`(?<![A-Za-z0-9_-])(?:${words.map(escapeRe).join('|')})(?![A-Za-z0-9_-])`, 'gi') : null
   return {
     name: (n) => map.get(n) ?? n,
     text: (s) => {
       const rooted = s.split(result.root).join('<ROOT>')
-      const named = re ? rooted.replace(re, (w) => map.get(w) ?? w) : rooted
-      return people.reduce((t, [v, ph]) => t.split(v).join(ph), named)
+      const named = re ? rooted.replace(re, (w) => byLower.get(w.toLowerCase()) ?? w) : rooted
+      return people.reduce((t, [v, ph]) => t.replace(new RegExp(escapeRe(v), 'gi'), ph), named)
     },
   }
 }

@@ -359,9 +359,11 @@ describe('read-only: started through a symlinked path', () => {
     expect(manifest(root)).toEqual(before)
   })
 
+  // Exit 1 like a refused file, but with an empty stdout: the cli.ts header
+  // tells the caller to read an empty stdout as a failed run (Ron 13073).
   it('under --permission without a grant for the link path, Node refuses loudly (no silent empty run)', () => {
     const r = sandboxed(linked(), ['--dry-run', '--root', root, '--home', home, '--all'])
-    expect(r.code).not.toBe(0)
+    expect(r.code).toBe(1)
     expect(r.stdout).toBe('')
     expect(r.stderr).toContain('ERR_ACCESS_DENIED')
   })

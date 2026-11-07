@@ -401,7 +401,9 @@ describe('--redact-names', () => {
     // with a Hungarian suffix glued on. The quotes keep the spaces (env-parse.ts);
     // live-context.ts trims them, so the redactor must too.
     writeFileSync(join(r3, '.env'), 'MAIN_AGENT_ID=chiefsentinelxq\nOWNER_NAME=" ownersentinelxq "\nBOT_NAME=botsentinelxq\n')
-    writeFileSync(join(r3, 'CLAUDE.md'), `# chief\n\nAsk zzsentinelagent or botsentinelxq for ownersentinelxqnak \`curl -s ${r3}/x http://h/api/x\`\n`)
+    // ...and in any letter case (Ron 13073); the diff context shows this line.
+    writeFileSync(join(r3, 'CLAUDE.md'), `# chief\n\nAsk zzsentinelagent or botsentinelxq for ownersentinelxqnak \`curl -s ${r3}/x http://h/api/x\`\n`
+      + 'Also ZZSENTINELAGENT, Botsentinelxq, OWNERSENTINELXQ and ChiefSentinelXQ.\n')
     writeFileSync(join(r3, 'agents', 'zzsentinelagent', 'CLAUDE.md'), '# zz\n```\nopen fence\n')
     writeFileSync(join(r3, 'agents', 'aasentinelagent', 'CLAUDE.md'), '# aa\n')
   })
@@ -409,7 +411,7 @@ describe('--redact-names', () => {
 
   it.each([[[]], [['--json']], [['--excerpts']], [['--json', '--excerpts']]])('%j: no agent name and no root path', (extra) => {
     const { out } = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--redact-names', ...(extra as string[]))
-    for (const s of SENT) expect(out, s).not.toContain(s)
+    for (const s of SENT) expect(out.toLowerCase(), s).not.toContain(s)
     expect(out).toContain('agent-03')
     // the region diff was there to leak from: its identity line
     expect(out).toContain('Owner: <OWNER>.')
@@ -433,6 +435,7 @@ describe('--redact-names', () => {
     expect(t).toContain('      | Ask agent-03 or <BOT> for <OWNER>nak `curl -s <ROOT>/x http://h/api/x`\n')
     // the verbatim diff context carries the same owner line, redacted the same way
     expect(t).toContain('\n Ask agent-03 or <BOT> for <OWNER>nak `curl -s <ROOT>/x http://h/api/x`\n')
+    expect(t).toContain('\n Also agent-03, <BOT>, <OWNER> and agent-01.\n')
   })
 
   it('without the flag the names are printed (the local report)', () => {
@@ -452,8 +455,8 @@ describe('--redact-names', () => {
     const j = formatJson(result, { redactNames: true })
     const t = formatText(result, { redactNames: true })
     for (const s of SENT) {
-      expect(j, s).not.toContain(s)
-      expect(t, s).not.toContain(s)
+      expect(j.toLowerCase(), s).not.toContain(s)
+      expect(t.toLowerCase(), s).not.toContain(s)
     }
     expect(JSON.parse(j).agents[0].context.assumedRendered).toEqual({ projectRoot: '<ROOT>', roster: ['agent-03', '<BOT>'], 'owner.name': '<OWNER>' })
   })
@@ -467,6 +470,11 @@ describe('code version (Ron S3)', () => {
     writeFileSync(join(d, 'bad'), 'not a sha\n')
     expect(codeVersion(join(d, 'ok'))).toBe('ab'.repeat(20))
     expect(codeVersion(join(d, 'bad'))).toBe('unknown')
+    // hex, but not 40 lowercase digits (Ron 13073: a {4,} mutant survived)
+    for (const [f, v] of [['short', 'abcd'], ['h39', 'a'.repeat(39)], ['h41', 'a'.repeat(41)], ['upper', 'AB'.repeat(20)]]) {
+      writeFileSync(join(d, f), `${v}\n`)
+      expect(codeVersion(join(d, f)), f).toBe('unknown')
+    }
     expect(codeVersion(join(d, 'missing'))).toBe('unknown')
   })
 })
