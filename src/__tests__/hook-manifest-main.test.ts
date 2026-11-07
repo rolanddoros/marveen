@@ -14,7 +14,10 @@ import { fileURLToPath } from 'node:url'
 import {
   HOOK_MANIFEST,
   renderHooks,
+  specFor,
   validateManifest,
+  type FailMode,
+  type HookEvent,
   type HookManifest,
   type HookManifestEntry,
 } from '../web/hooks/manifest.js'
@@ -55,6 +58,57 @@ describe('hook manifest, main scope', () => {
 
   it('the sub-agent render is not part of C3-1a', () => {
     expect(() => renderHooks(HOOK_MANIFEST, 'sub')).toThrow(/C3-1b/)
+  })
+})
+
+// The fail mode a command's own text gives it, read from the tracked file and
+// independent of the manifest's wrapper field (Ron N1: failMode is data that
+// nothing else reads, so it is pinned here against what the wrapper does).
+const FAIL_CLOSED_TAIL = /rc=\$\?; \[ "\$rc" = 0 \] \|\| \[ "\$rc" = 2 \] \|\| \{ echo "[^"]*" >&2; exit 2; \}; exit "\$rc"$/
+const CLOSED_WHILE_FROZEN = /\[ -e "[^"]*\/store\/fleet-freeze\.json" \] && \{ echo "[^"]*" >&2; exit 2; \}; exit 0'$/
+
+function failModeFromText(hook: { type: string; command?: string }): FailMode {
+  if (hook.type !== 'command') return 'advisory'
+  const cmd = hook.command ?? ''
+  // Not wrapped in bash -c, every status other than 0 and 2 becomes exit 2.
+  if (!cmd.startsWith("bash -c '") && FAIL_CLOSED_TAIL.test(cmd)) return 'closed'
+  if (cmd.startsWith("bash -c '[ -f ") && cmd.endsWith("; exit 0'")) {
+    // A missing script falls through to exit 0, unless the frozen marker turns it into exit 2.
+    return CLOSED_WHILE_FROZEN.test(cmd) ? 'closed' : 'open'
+  }
+  throw new Error(`unclassified wrapper: ${cmd.slice(0, 120)}`)
+}
+
+describe('hook manifest failMode, main scope', () => {
+  it('each entry records the fail mode its wrapper text has in the tracked file', () => {
+    const file = trackedHooks() as Record<string, Array<{ hooks: Array<{ type: string; command?: string }> }>>
+    const byId = new Map(HOOK_MANIFEST.entries.map((e) => [e.id, e] as const))
+    const mismatches: string[] = []
+    let checked = 0
+    for (const [event, slots] of Object.entries(HOOK_MANIFEST.layout.main ?? {}) as Array<[HookEvent, ReadonlyArray<string | readonly string[]>]>) {
+      let groupIndex = 0
+      for (const slot of slots) {
+        const ids = typeof slot === 'string' ? [slot] : [...slot]
+        const first = specFor(byId.get(ids[0])!, 'main')
+        const groupCount = Array.isArray(first.matcher) ? first.matcher.length : 1
+        for (let g = 0; g < groupCount; g++, groupIndex++) {
+          ids.forEach((id, h) => {
+            const actual = failModeFromText(file[event][groupIndex].hooks[h])
+            const recorded = specFor(byId.get(id)!, 'main').failMode
+            checked++
+            if (actual !== recorded) mismatches.push(`${event}[${groupIndex}] ${id}: wrapper says ${actual}, manifest says ${recorded}`)
+          })
+        }
+      }
+    }
+    expect(checked).toBe(56)
+    expect(mismatches).toEqual([])
+  })
+
+  it('counts 5 closed, 36 open, 0 advisory', () => {
+    const counts = { closed: 0, open: 0, advisory: 0 }
+    for (const e of HOOK_MANIFEST.entries) counts[specFor(e, 'main').failMode]++
+    expect(counts).toEqual({ closed: 5, open: 36, advisory: 0 })
   })
 })
 

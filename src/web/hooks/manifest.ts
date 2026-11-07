@@ -40,6 +40,12 @@ export type HookScope = 'main' | 'sub'
  *   closed   -- the failure blocks the call (exit 2)
  *   open     -- the failure lets the call through
  *   advisory -- the hook never blocks (a prompt-type hook)
+ *
+ * One named case: the main agent's fleet-freeze-gate is recorded `closed`,
+ * but its wrapper lets a missing script through while the fleet runs and
+ * blocks only while store/fleet-freeze.json exists, the one state in which
+ * the gate stops anything. So `closed` there means "closed while frozen", not
+ * the failClosedRun behaviour (any broken gate blocks, always).
  */
 export type FailMode = 'closed' | 'open' | 'advisory'
 
