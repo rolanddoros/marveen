@@ -38,7 +38,9 @@ describe('hook manifest, main scope', () => {
   it('reads the settings of its own checkout, never the live install', () => {
     expect(REPO_ROOT).not.toBe(LIVE_INSTALL_ROOT)
     expect(realpathSync(REPO_ROOT)).not.toBe(LIVE_INSTALL_ROOT)
-    expect(realpathSync(SETTINGS_PATH).startsWith(`${LIVE_INSTALL_ROOT}/`)).toBe(false)
+    // Exact, not a prefix: a sealed copy under /root/marveen/store/... is a
+    // checkout of its own; a symlink onto the live settings file is not.
+    expect(realpathSync(SETTINGS_PATH)).not.toBe(`${LIVE_INSTALL_ROOT}/.claude/settings.json`)
   })
 
   it('renders exactly the hooks object of the tracked .claude/settings.json', () => {
