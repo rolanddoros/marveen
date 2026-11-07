@@ -28,6 +28,7 @@ import { defaultSkillInstallPaths } from '../web/claude-md/skill-install.js'
 import { PRODUCT_SKILLS } from '../web/claude-md/skills.js'
 import { REGION_BEGIN, REGION_END } from '../web/claude-md/render.js'
 import type { ProfileTemplate } from '../web/profiles.js'
+import { reloadFederationForTest } from '../web/federation/config.js'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PROFILE = { permissionMode: 'permissive' } as unknown as ProfileTemplate
@@ -63,6 +64,8 @@ function fixture(): void {
   put('.env', 'MAIN_AGENT_ID=boss\n')
   put('agents/kevin/CLAUDE.md', '# Kevin\n\n<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->\nold\n<!-- END GENERATED: autonomy-wiring -->\n')
   put('agents/kevin/agent-config.json', JSON.stringify({ team: { reportsTo: 'boss' } }))
+  // the federation config is cached (federation/config.ts); a test that writes store/federation.json reloads it
+  reloadFederationForTest()
 }
 
 beforeEach(fixture)
@@ -188,7 +191,6 @@ const KEVIN = join(ROOT, 'agents', 'kevin', 'CLAUDE.md')
 const deps = (over: Partial<WireDeps> = {}): WireDeps => ({
   ...defaultWireDeps(),
   skillPaths: defaultSkillInstallPaths(ROOT, join(ROOT, 'store'), join(ROOT, 'home')),
-  federationEnabled: () => false,
   helperAllowed: () => true,
   strict: () => false,
   now: () => NOW,
@@ -261,7 +263,6 @@ describe('flag on, refused: the legacy sequence runs, nothing is written', () =>
     expect(applySubClaudeMdV2(name, profile, d)).toBe(false)
     expect(snapshot()).toEqual(before)
   }
-  it('federation enabled', () => { flagKevin(); refused(deps({ federationEnabled: () => true })) })
   it('a helper-denied agent', () => { flagKevin(); refused(deps({ helperAllowed: () => false })) })
   it('a thin-chief profile', () => { flagKevin(); refused(deps(), 'kevin', { permissionMode: 'permissive', thinChiefHandoff: true } as unknown as ProfileTemplate) })
   // C1 PR 12a: no longer a refusal. The heartbeat worker's flag is .env CLAUDE_MD_BUILDER_HEARTBEAT
@@ -325,11 +326,18 @@ describe('flag on, the main agent', () => {
     expect(read(join(ROOT, 'CLAUDE.md'))).toContain('Owner text with $& and $1, ékezet.')
     expect(existsSync(join(ROOT, 'store', 'claude-md-backup', '20261106-234300', 'boss', 'CLAUDE.md'))).toBe(true)
   })
-  it('refused with federation enabled', () => {
+  // C1 PR 12b: federation enabled is no refusal any more (claude-md-federation-v2.test.ts has the rest).
+  it('federation enabled: the region with its federation section, the policy seed in the owner zone before it', () => {
     put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
-    const before = snapshot()
-    expect(applyMainClaudeMdV2(deps({ federationEnabled: () => true }))).toBe(false)
-    expect(snapshot()).toEqual(before)
+    put('store/federation.json', JSON.stringify({ enabled: true, peers: [] }))
+    reloadFederationForTest()
+    expect(applyMainClaudeMdV2(deps())).toBe(true)
+    const text = read(join(ROOT, 'CLAUDE.md'))
+    expect(count(text, REGION_BEGIN)).toBe(1)
+    expect(text.slice(text.indexOf(REGION_BEGIN))).toContain('### Federation\n')
+    expect(text.indexOf('<!-- MARVEEN-FEDERATION:POLICY -->')).toBeGreaterThan(-1)
+    expect(text.indexOf('<!-- MARVEEN-FEDERATION:POLICY -->')).toBeLessThan(text.indexOf(REGION_BEGIN))
+    expect(text).not.toContain('MARVEEN-FEDERATION:BEGIN')
   })
 })
 
@@ -438,9 +446,9 @@ describe('E: the flag off (or refused) on a file that still has its region: the 
     expect(read(join(ROOT, 'store', 'claude-md-backup', '20261107-110000', 'boss', 'CLAUDE.md'))).toBe(v2)
   })
 
-  it('refused while the file has its region (federation enabled later): the region goes too, legacy runs', () => {
+  it('refused while the file has its region (the helper denied later): the region goes too, legacy runs', () => {
     v2Kevin()
-    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => LATER, federationEnabled: () => true }))).toBe(false)
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ now: () => LATER, helperAllowed: () => false }))).toBe(false)
     expect(read(KEVIN)).toBe('# Kevin\n')
   })
 
@@ -468,7 +476,7 @@ describe('E: the flag off (or refused) on a file that still has its region: the 
     put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
     expect(applyMainClaudeMdV2(deps())).toBe(true)
     const main = read(join(ROOT, 'CLAUDE.md'))
-    expect(applyMainClaudeMdV2(deps({ federationEnabled: () => { throw new Error('federation config failed') } }))).toBe(true)
+    expect(applyMainClaudeMdV2(deps({ helperAllowed: () => { throw new Error('helper lookup failed') } }))).toBe(true)
     expect(read(join(ROOT, 'CLAUDE.md'))).toBe(main)
     // without a region the same failure lets the legacy sequence run, as before
     put('agents/kevin/CLAUDE.md', '# Kevin\n')

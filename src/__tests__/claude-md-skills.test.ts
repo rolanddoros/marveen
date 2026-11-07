@@ -32,6 +32,7 @@ const PINNED_SHA256: Record<string, string> = {
   'marveen-approvals': 'd5c54ecdaf2e42b18c2814fd0945f8dbf18cdb8df275a3f5fe15a274ef4c756c',
   'marveen-messaging': '58c2687c076eb0a22dd3f74adf6cee9f91acf1e8e5f07e3982cb5514e4097e8c',
   'marveen-directive-auth': 'adcb6742dfaf73db50a485a7f41264410164d92ad0343ba13b10b9a9d8cfce9c',
+  'marveen-federation': 'c1a7da904b161521061b95b55afaef00c0c5f1e49371b6374a1bc3548ded29dc',
 }
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf-8').digest('hex')

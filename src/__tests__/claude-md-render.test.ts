@@ -34,6 +34,7 @@ const ctx: AgentDocContext = {
   team: { reportsTo: 'kevin', directReports: [] },
   roster: [{ name: 'kevin' }],
   hooks: { directiveVerify: false, childClaudeGuard: true, shellRescan: false },
+  federation: { routingMode: 'catalog-first', peers: [] },
 }
 
 describe('renderTemplate', () => {

@@ -20,16 +20,16 @@
 //   rewrites that file from its constants on every boot.
 // Only the exact string "v2" is on. Anything else (absent, "V2", true, "v3")
 // is off; a present value other than "v2" is warned about once per value.
-// The flag acts only on these two paths and on the heartbeat scaffold (see
-// below): the federation routes and agents.ts keep calling their own writers.
+// The flag acts on these two paths, on the heartbeat scaffold and on the
+// federation reconcile (both below). agents.ts keeps calling its own writers.
 //
 // Flag on, the v2 path (writeV2), in this order, each step fail-closed:
-// 1. Refusals (warn-log, the legacy sequence runs): federation enabled (two
-//    writers would flip the file, PR 12b), a thin-chief profile (the region
-//    does not carry that block), a
-//    helper-denied agent (its v2 recipes need a skill that does not exist
-//    yet, Kevin 12997). A refused agent whose file already has a v2 region is
-//    taken BACK to legacy: the rollback below runs first.
+// 1. Refusals (warn-log, the legacy sequence runs): a thin-chief profile (the
+//    region does not carry that block), a helper-denied agent (its v2 recipes
+//    need a skill that does not exist yet, Kevin 12997). Federation is no
+//    refusal since C1 PR 12b (the region has its federation section). A
+//    refused agent whose file already has a v2 region is taken BACK to
+//    legacy: the rollback below runs first.
 // 2. The owner-zone writers that also run today: a sub's
 //    ensureProjectRootInClaudeMd + ensureSkillSectionCurrent, the main agent's
 //    ensureFederationClaudeMdSection (it also cleans the sub files).
@@ -75,6 +75,16 @@
 // v2 write), and the start right after it then finds nothing to change. With
 // the flag off the scaffold writes the prose exactly as before, which also
 // drops a region an earlier flag left (the file is code-owned: no backup).
+//
+// Federation (C1 PR 12b): the region carries the federation section (main and
+// subs), and federation/onboarding.ts writes no managed block into a file that
+// has the region. Its reconcile (boot, the eight federation routes, agents.ts)
+// then calls refreshFederationRegions, registered below: every agent on v2
+// whose file already has its region gets the region re-rendered (writeV2: no
+// backup, no write when unchanged), so a peer or mode change reaches it before
+// the next start. A file without a region is left to its next start. The main
+// agent's step 2 calls the reconcile too: its refresh renders the same region
+// the write right after it would, so that write then finds nothing to change.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -85,14 +95,14 @@ import { logger } from '../../logger.js'
 import { agentDir, listAllAgentNames } from '../agent-config.js'
 import { agentRunsStrict, agentUsesApiHelper, ensureProjectRootInClaudeMd, ensureSkillSectionCurrent, resolveDashboardOrigin } from '../agent-scaffold.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { getFederationConfig } from '../federation/config.js'
-import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
+import { ensureFederationClaudeMdSection, setFederationV2Refresher } from '../federation/onboarding.js'
 import { profileWantsThinChiefHandoff, resolveProfileTemplate, type ProfileTemplate } from '../profiles.js'
 import { resolveAgentSecurityProfile } from '../agent-team.js'
 import { backupClaudeMd } from './backup.js'
 import { composeClaudeMd, stripV2Region } from './compose.js'
 import { buildLiveContext, defaultManagedSettingsPath, RENDERED_FIELDS } from './live-context.js'
 import { renderRegion } from './registry.js'
+import { renderablePeerId } from './sections.js'
 import { REGION_BEGIN } from './render.js'
 import { defaultSkillInstallPaths, installProductSkills, productSkillsInstalled, removeProductSkills, type SkillInstallPaths } from './skill-install.js'
 import { PRODUCT_SKILLS, type SkillContext } from './skills.js'
@@ -155,7 +165,6 @@ export interface WireDeps {
   mainAgentId: string
   skillPaths: SkillInstallPaths
   skillCtx: () => SkillContext
-  federationEnabled: () => boolean
   helperAllowed: (name: string) => boolean
   strict: (name: string, profile?: ProfileTemplate) => boolean
   now: () => Date
@@ -173,7 +182,6 @@ export function defaultWireDeps(): WireDeps {
     mainAgentId: MAIN_AGENT_ID,
     skillPaths: defaultSkillInstallPaths(PROJECT_ROOT, STORE_DIR),
     skillCtx: () => ({ projectRoot: PROJECT_ROOT, mainAgentId: MAIN_AGENT_ID, dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN) }),
-    federationEnabled: () => getFederationConfig().enabled,
     helperAllowed: (name) => agentUsesApiHelper(name),
     strict: (name, profile) => agentRunsStrict(name, profile),
     now: () => new Date(),
@@ -231,7 +239,6 @@ function anyRegionLeft(deps: WireDeps): boolean {
 }
 
 function refusal(deps: WireDeps, name: string, profile: ProfileTemplate | null): string | null {
-  if (deps.federationEnabled()) return 'federation is enabled (its onboarding block has a second writer until C1 PR 12b)'
   if (profile !== null && profileWantsThinChiefHandoff(profile)) return 'a thin-chief profile: the v2 region does not carry that block'
   if (!deps.helperAllowed(name)) return 'the agent settings deny the API helper: its v2 recipes need a skill that does not exist yet'
   return null
@@ -290,6 +297,9 @@ function renderV2Region(deps: WireDeps, name: string, strict: boolean): string {
   const assumedRendered = assumptions.filter((a) => (RENDERED_FIELDS as readonly string[]).includes(a))
   if (assumedRendered.length > 0) throw new Error(`rendered fields without a real source: ${assumedRendered.join(', ')}`)
   if (ctx.mainAgentId !== deps.mainAgentId) throw new Error(`.env MAIN_AGENT_ID ${ctx.mainAgentId} is not the running main id ${deps.mainAgentId}`)
+  // The region never writes such an id (sections.ts peerList); the count only, not the id (external data).
+  const unrenderable = ctx.federation.peers.filter((p) => !renderablePeerId(p.id)).length
+  if (unrenderable > 0) logger.warn({ name, unrenderable }, 'CLAUDE.md builder: federation peer ids that fail the validator are not written into the region; they count in "+N more"')
   const region = renderRegion(ctx)
   installProductSkills(deps.skillPaths, deps.skillCtx())
   const refs = regionSkillRefs(region)
@@ -401,3 +411,28 @@ export function applyMainClaudeMdV2(deps: WireDeps = defaultWireDeps()): boolean
     return fileHasV2Region(claudeMdPath)
   }
 }
+
+// The federation reconcile's refresh (see the header). Never throws.
+export function refreshFederationRegions(deps: WireDeps = defaultWireDeps()): void {
+  try {
+    if (mainFlagOn()) refreshRegion(deps, deps.mainAgentId, join(deps.root, 'CLAUDE.md'), null)
+    for (const name of listAllAgentNames()) {
+      if (name === HEARTBEAT_AGENT_ID || !subFlagOn(name)) continue
+      refreshRegion(deps, name, join(agentDir(name), 'CLAUDE.md'), resolveProfileTemplate(resolveAgentSecurityProfile(name)).profile)
+    }
+  } catch (err) {
+    logger.error({ err }, 'CLAUDE.md builder: the federation refresh failed; the regions are left as they were')
+  }
+}
+
+// One agent's region, only when its file already has one and v2 would not refuse it now (the next start decides).
+function refreshRegion(deps: WireDeps, name: string, claudeMdPath: string, profile: ProfileTemplate | null): void {
+  try {
+    if (!fileHasV2Region(claudeMdPath) || refusal(deps, name, profile) !== null) return
+    writeV2(deps, name, claudeMdPath, profile === null ? false : deps.strict(name, profile), readFileSync(claudeMdPath))
+  } catch (err) {
+    logger.error({ err, name }, 'CLAUDE.md builder: the federation refresh of this region failed')
+  }
+}
+
+setFederationV2Refresher(() => refreshFederationRegions())

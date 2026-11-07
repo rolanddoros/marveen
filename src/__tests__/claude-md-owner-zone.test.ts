@@ -217,7 +217,8 @@ describe('parity with the legacy writers', () => {
     expect(onboarding).toContain("const INTERAGENT_HEADING = '## Inter-agent kommunikáció'")
     expect(onboarding).toContain('lines.findIndex((l) => l.trim() === INTERAGENT_HEADING)')
     expect(onboarding).toContain("export const FEDERATION_POLICY_ANCHOR = '<!-- MARVEEN-FEDERATION:POLICY -->'")
-    expect(onboarding).toContain('!working.includes(FEDERATION_POLICY_ANCHOR)')
+    // C1 PR 12b: the seed moved into seedFederationPolicy, the same anchor check
+    expect(onboarding).toContain('if (content.includes(FEDERATION_POLICY_ANCHOR)) return null')
   })
 
   it('the token-on-argv rules are the product-skill argv ban (C1 PR 9b)', () => {

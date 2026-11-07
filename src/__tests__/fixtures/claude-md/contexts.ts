@@ -6,6 +6,13 @@ const NO_HOOKS = { directiveVerify: false, childClaudeGuard: false, shellRescan:
 const ALL_HOOKS = { directiveVerify: true, childClaudeGuard: true, shellRescan: true }
 const FLEET = ['main', 'pm', 'dev-a', 'dev-b', 'reviewer']
 const rosterWithout = (self: string) => FLEET.filter((n) => n !== self).map((name) => ({ name }))
+// C1 PR 12b: federation off, or on without a peer, in the default mode.
+const NO_FED: AgentDocContext['federation'] = { routingMode: 'catalog-first', peers: [] }
+// two peers, one still pairing (synthetic ids)
+const TWO_PEERS: AgentDocContext['federation'] = {
+  routingMode: 'strong',
+  peers: [{ id: 'north', paired: true }, { id: 'south-lab', paired: false }],
+}
 const CAPS = {
   kanbanWrite: false, scheduleWrite: false, emailSend: 'none' as const, browser: false, federation: false, thinChief: false,
   channel: true,
@@ -25,6 +32,7 @@ const base: AgentDocContext = {
   team: { reportsTo: null, directReports: ['pm'] },
   roster: rosterWithout('main'),
   hooks: ALL_HOOKS,
+  federation: NO_FED,
 }
 
 const sub = (name: string, over: Partial<AgentDocContext> = {}): AgentDocContext => ({
@@ -45,6 +53,10 @@ export const FIXTURES: Readonly<Record<string, AgentDocContext>> = {
   // today's main: no hook of the three wired, chat id not paired yet
   'main-no-hooks': { ...base, owner: { name: 'Owner', chatId: null }, hooks: NO_HOOKS },
   'main-with-federation': { ...base, capabilities: { ...base.capabilities, federation: true }, hooks: NO_HOOKS },
+  // C1 PR 12b: the peer list and a routing mode other than the default
+  'main-with-federation-peers': { ...base, capabilities: { ...base.capabilities, federation: true }, hooks: NO_HOOKS, federation: TWO_PEERS },
+  // C1 PR 12b: a sub with federation on: the section for a task a peer sends in
+  'sub-with-federation': sub('dev-a', { capabilities: { ...CAPS, federation: true }, federation: TWO_PEERS }),
   // today's sub shape: only the child-claude guard wired
   'sub-permissive': sub('dev-a'),
   'sub-strict': sub('reviewer', { profile: { id: 'developer-junior', strict: true, helperAllowed: true } }),

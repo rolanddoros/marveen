@@ -1,14 +1,14 @@
 // C1 PR 12a: the heartbeat worker's CLAUDE.md through the v2 builder (src/web/claude-md/wire.ts
 // writeHeartbeatClaudeMdV2, heartbeatFlagOn; src/web/heartbeat-agent-scaffold.ts ensureHeartbeatAgent).
 // Every file operation runs in a temp install root: config.js (PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID), env.ts
-// (CLAUDECLAW_ENV_DIR) and HOME point at it; the federation config is a stub the tests switch.
+// (CLAUDECLAW_ENV_DIR) and HOME point at it.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const { ROOT, HOME_BEFORE, FED } = vi.hoisted(() => {
+const { ROOT, HOME_BEFORE } = vi.hoisted(() => {
   const fs = require('node:fs') as typeof import('node:fs')
   const os = require('node:os') as typeof import('node:os')
   const path = require('node:path') as typeof import('node:path')
@@ -16,7 +16,7 @@ const { ROOT, HOME_BEFORE, FED } = vi.hoisted(() => {
   process.env.CLAUDECLAW_ENV_DIR = root
   const homeBefore = process.env.HOME
   process.env.HOME = path.join(root, 'home')
-  return { ROOT: root, HOME_BEFORE: homeBefore, FED: { enabled: false } }
+  return { ROOT: root, HOME_BEFORE: homeBefore }
 })
 
 vi.mock('../config.js', async (importOriginal) => ({
@@ -24,11 +24,6 @@ vi.mock('../config.js', async (importOriginal) => ({
   PROJECT_ROOT: ROOT,
   STORE_DIR: `${ROOT}/store`,
   MAIN_AGENT_ID: 'boss',
-}))
-
-vi.mock('../web/federation/config.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../web/federation/config.js')>()),
-  getFederationConfig: () => ({ enabled: FED.enabled, peers: [] }),
 }))
 
 import { applySubClaudeMdV2, defaultWireDeps, heartbeatFlagOn, writeHeartbeatClaudeMdV2, type WireDeps } from '../web/claude-md/wire.js'
@@ -83,7 +78,6 @@ beforeEach(() => {
   rmSync(ROOT, { recursive: true, force: true })
   mkdirSync(join(ROOT, 'home'), { recursive: true })
   env()
-  FED.enabled = false
 })
 afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true })
@@ -178,10 +172,11 @@ describe('flag on: the scaffold writes the prose with the v2 region after it', (
 })
 
 describe('flag on, refused or failed: the prose alone, as with the flag off', () => {
-  it('federation enabled: refused, the prose is written, no region, no backup, no skills; the start runs the legacy sequence', () => {
+  // C1 PR 12b: federation is no refusal any more; the helper denied in the heartbeat's settings still is.
+  it('the helper denied: refused, the prose is written, no region, no backup, no skills; the start runs the legacy sequence', () => {
     put('agents/heartbeat/CLAUDE.md', `${prose()}\n${LEGACY_BLOCK}`)
+    put('agents/heartbeat/.claude/settings.json', JSON.stringify({ permissions: { deny: ['Bash(bash *marveen-api.sh*)'] } }))
     flagOn()
-    FED.enabled = true
     ensureHeartbeatAgent()
     expect(read(HB_MD)).toBe(prose())
     expect(backups()).toEqual([])
@@ -193,7 +188,7 @@ describe('flag on, refused or failed: the prose alone, as with the flag off', ()
     flagOn()
     put('agents/heartbeat/CLAUDE.md', '# hb\n')
     const before = snapshot()
-    const deps: WireDeps = { ...defaultWireDeps(), federationEnabled: () => true }
+    const deps: WireDeps = { ...defaultWireDeps(), helperAllowed: () => false }
     expect(writeHeartbeatClaudeMdV2(HB_MD, prose(), deps)).toBe(false)
     expect(snapshot()).toEqual(before)
   })

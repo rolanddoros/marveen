@@ -36,6 +36,7 @@ export const PRODUCT_SKILLS = [
   'marveen-approvals',
   'marveen-messaging',
   'marveen-directive-auth',
+  'marveen-federation',
 ] as const
 
 export type ProductSkillName = (typeof PRODUCT_SKILLS)[number]

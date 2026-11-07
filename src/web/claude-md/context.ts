@@ -14,6 +14,10 @@
 //   by widening the type, and every exhaustive switch over it stops compiling
 //   until it handles the new id.
 // - `roster` carries names only (PR 7b, Kevin 12773); see the field.
+// - `federation` carries the peer list and the routing mode (C1 PR 12b); see
+//   the field.
+
+import type { FederationRoutingMode } from '../federation/validate.js'
 
 // A hook whose presence lets a rule drop its prose and render as one line
 // ("enforced by hook X"). Which settings entry counts as "wired" for each id is
@@ -64,4 +68,11 @@ export interface AgentDocContext {
   // `team`.
   roster: { name: string }[]
   hooks: Record<HookId, boolean>
+  // C1 PR 12b: store/federation.json as the bridge validates it
+  // (federation/validate.ts). Rendered only when capabilities.federation is
+  // on; off (or an invalid file) leaves no peers and the default mode. No
+  // token reaches the ctx: `paired` says only whether the peer's outbound
+  // token is set (empty = pairing pending, not addressable yet). Peer ids are
+  // the validator's: [a-z0-9][a-z0-9_-]{0,63}, lower-cased.
+  federation: { routingMode: FederationRoutingMode; peers: { id: string; paired: boolean }[] }
 }
