@@ -549,6 +549,18 @@ describe('Ron 10b J1: the product skills go only once no CLAUDE.md carries a reg
   })
 })
 
+describe('Ron 10b J1, the main agent: its region counts too', () => {
+  it('main flagged off but not restarted, kevin starts: the skills stay; the main agent boots (rollback): they go', () => {
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
+    expect(applyMainClaudeMdV2(deps())).toBe(true)
+    put('.env', 'MAIN_AGENT_ID=boss\n')
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps())).toBe(false)
+    for (const n of PRODUCT_SKILLS) expect(existsSync(join(ROOT, '.claude', 'skills', n, 'SKILL.md')), n).toBe(true)
+    expect(applyMainClaudeMdV2(deps({ now: () => new Date('2026-11-07T10:00:00Z') }))).toBe(false)
+    for (const n of PRODUCT_SKILLS) expect(existsSync(join(ROOT, '.claude', 'skills', n)), n).toBe(false)
+  })
+})
+
 describe('Ron 10b J3: the first-transition backup is the file before the owner-zone writers ran', () => {
   it('a foreign install path that step 2 re-anchors: the written file has the new root, the backup the old bytes', () => {
     const original = '# Kevin\n\nToken: $(cat /oldhost/fleet/store/.dashboard-token)\n'
