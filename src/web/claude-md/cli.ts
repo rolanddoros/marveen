@@ -41,7 +41,8 @@
 // Support/ClaudeCode/managed-settings.json. Without its grant every agent reads
 // status "error": the highest layer is unknown, and the run says so.)
 // A hook script outside the allowed paths reads as not wired (fail-closed: a
-// longer region, never a dropped rule). claude-md-dry-run-readonly.test.ts runs
+// longer region, never a dropped rule), and the report names it on the agent's
+// "hooks not wired" line (Ron 13122 J1). claude-md-dry-run-readonly.test.ts runs
 // this shape on a fixture tree, also through a symlinked path. What
 // --permission closes: file writes, child processes and workers. What it does
 // NOT close: the network (the code makes no network call; the test's guard

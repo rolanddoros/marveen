@@ -200,7 +200,13 @@ function view(result: DryRunResult, opts: FormatOptions) {
         ...a.ownerZone,
         findings: a.ownerZone.findings.map((x) => (opts.excerpts ? { ...x, excerpt: maskedExcerpt(r.text(rawLine(result.root, a, x.line))) } : x)),
       },
-      ...(a.context ? { context: { ...a.context, assumedRendered: redactValues(r, a.context.assumedRendered) } } : {}),
+      ...(a.context ? {
+        context: {
+          ...a.context,
+          assumedRendered: redactValues(r, a.context.assumedRendered),
+          hooksNotWired: a.context.hooksNotWired.map((h) => ({ ...h, path: h.path === null ? null : r.text(h.path) })),
+        },
+      } : {}),
       ...(a.diff !== undefined ? { diff: r.text(a.diff) } : {}),
     })),
   }
@@ -241,6 +247,9 @@ export function formatText(result: DryRunResult, opts: FormatOptions = {}): stri
       const other = ctx.assumptions.filter((f) => !(f in ctx.assumedRendered))
       out.push(`  assumed, rendered: ${rendered.length > 0 ? rendered.join('; ') : 'none'}`)
       out.push(`  assumed, not rendered: ${other.length > 0 ? other.join(', ') : 'none'}`)
+      // Ron 13122 J1: a hook that reads false although it may be wired is named, never silent.
+      const notWired = ctx.hooksNotWired.map((h) => `${h.id}${h.path === null ? '' : ` ${h.path}`} (${h.reason})`)
+      out.push(`  hooks not wired: ${notWired.length > 0 ? notWired.join('; ') : 'none'}`)
     }
     if (a.after) {
       out.push(`  after: file ${a.after.file}, region ${a.after.region} chars (${a.after.regionLength} of the ${REGION_BUDGET} budget`

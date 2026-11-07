@@ -31,7 +31,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { writeDryRunTree } from './fixtures/claude-md/dry-run-tree.js'
-import { defaultManagedSettingsPath } from '../web/claude-md/live-context.js'
+import { buildLiveContext, defaultManagedSettingsPath } from '../web/claude-md/live-context.js'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CLI_SRC = join(REPO, 'src', 'web', 'claude-md', 'cli.ts')
@@ -328,6 +328,26 @@ describe('read-only: runtime under node --permission (read access only)', () => 
       expect(a.after.regionLength).toBeGreaterThan(1000)
       expect(a.diff).toContain('+<!-- END MARVEEN GENERATED v2 -->')
       expect(a.context.assumptions).toContain('profile.helperAllowed')
+    }
+  })
+
+  // Ron 13122 J1, Kevin's own measurement: a hook script outside the --permission grant read as not wired, and the
+  // region came out longer with nothing said. Now the sandboxed report names it; in-process the same hook is wired.
+  it('J1: a hook script outside the grant is named "not readable" in the sandbox; in-process it is wired', () => {
+    const script = join(base, 'outside-grant', 'scripts', 'hooks', 'shell-rescan-guard.py')
+    mkdirSync(dirname(script), { recursive: true })
+    writeFileSync(script, '# hook\n')
+    const settings = join(root, 'agents', 'alpha', '.claude', 'settings.json')
+    mkdirSync(dirname(settings), { recursive: true })
+    writeFileSync(settings, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 ${script}` }] }] } }))
+    try {
+      const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, '--agent', 'alpha', '--json'])
+      expect(r.stderr).toBe('')
+      const alpha = JSON.parse(r.stdout).agents[0]
+      expect(alpha.context.hooksNotWired).toEqual([{ id: 'shellRescan', path: script, reason: 'not readable' }])
+      expect(buildLiveContext(root, 'alpha', { homeDir: home }).hooksNotWired).toEqual([])
+    } finally {
+      rmSync(join(root, 'agents', 'alpha', '.claude'), { recursive: true, force: true })
     }
   })
 

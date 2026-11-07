@@ -232,7 +232,7 @@ describe('usage', () => {
 // ---- C1 PR 8b: context, region, diff -------------------------------------
 
 type Report = ReturnType<typeof agentOf> & {
-  context?: { assumptions: string[]; assumedRendered: Record<string, unknown> }
+  context?: { assumptions: string[]; assumedRendered: Record<string, unknown>; hooksNotWired: { id: string; path: string | null; reason: string }[] }
   after?: { file: number; region: number; regionLength: number; overBudget: boolean; removedBlocks: string[] }
   diff?: string
 }
@@ -623,5 +623,51 @@ describe('a hand-edited generated block', () => {
     const { out } = cli('--dry-run', '--root', r6, '--home', HOME_FIX(), '--agent', 'kay', ...(extra as string[]))
     expect(out).not.toContain('HANDEDITSENTINEL')
     expect(out).toContain(`-${placeholder()}`)
+  })
+})
+
+// Ron 13122 J1 (Kevin 13130): a hook that reads false although it is wired is named on the agent's report, never
+// silent (the same install gave a 4328-char region outside --permission and 4521 inside, with nothing said).
+describe('J1: hooks not wired, per agent, never silent', () => {
+  let r4: string
+  let script: string
+  beforeAll(() => {
+    r4 = join(base, 'rootsentinelj1', 'install')
+    mkdirSync(join(r4, 'agents', 'kaysentinelj1', '.claude'), { recursive: true })
+    writeFileSync(join(r4, '.env'), 'MAIN_AGENT_ID=chiefsentinelj1\n')
+    writeFileSync(join(r4, 'CLAUDE.md'), '# chief\n')
+    writeFileSync(join(r4, 'agents', 'kaysentinelj1', 'CLAUDE.md'), '# Kay\n')
+    // wired, but the script is not there
+    script = join(r4, 'agents', 'kaysentinelj1', 'scripts', 'hooks', 'shell-rescan-guard.py')
+    writeFileSync(join(r4, 'agents', 'kaysentinelj1', '.claude', 'settings.json'), JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 ${script}` }] }] },
+    }))
+  })
+
+  it('the report carries the entries buildLiveContext names; an agent without one says none', () => {
+    const { data } = json('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all')
+    expect(report(data, 'kaysentinelj1').context?.hooksNotWired).toEqual([{ id: 'shellRescan', path: script, reason: 'missing' }])
+    expect(report(data, 'kaysentinelj1').context?.hooksNotWired).toEqual(buildLiveContext(r4, 'kaysentinelj1', { homeDir: HOME_FIX() }).hooksNotWired)
+    expect(report(data, 'chiefsentinelj1').context?.hooksNotWired).toEqual([])
+    const out = cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all').out
+    expect(out).toContain(`\n  hooks not wired: shellRescan ${script} (missing)\n`)
+    expect(out).toContain('\n  hooks not wired: none\n')
+  })
+
+  it('an "all" entry without a path prints its reason alone', () => {
+    const result = dryRun(r4, 'kaysentinelj1', { homeDir: HOME_FIX() })
+    result.agents[0].context!.hooksNotWired = [{ id: 'all', path: null, reason: 'config root is not the session\'s' }]
+    expect(formatText(result)).toContain('\n  hooks not wired: all (config root is not the session\'s)\n')
+  })
+
+  it('--redact-names: the path is redacted like the rest, in the text and in the JSON', () => {
+    for (const extra of [[], ['--json']]) {
+      const out = cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all', '--redact-names', ...extra).out
+      for (const s of ['rootsentinelj1', 'kaysentinelj1', 'chiefsentinelj1']) expect(out, `${extra} ${s}`).not.toContain(s)
+    }
+    expect(cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all', '--redact-names').out)
+      .toContain('\n  hooks not wired: shellRescan <ROOT>/agents/agent-02/scripts/hooks/shell-rescan-guard.py (missing)\n')
+    const j = JSON.parse(cli('--dry-run', '--root', r4, '--home', HOME_FIX(), '--all', '--redact-names', '--json').out)
+    expect(report(j, 'agent-02').context?.hooksNotWired).toEqual([{ id: 'shellRescan', path: '<ROOT>/agents/agent-02/scripts/hooks/shell-rescan-guard.py', reason: 'missing' }])
   })
 })

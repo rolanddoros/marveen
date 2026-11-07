@@ -62,6 +62,16 @@
 //   main agent with MAIN_AGENT_CONFIG_DIR or MAIN_AGENT_ISOLATED_CONFIG, or a
 //   managed file that does not parse), hooks are all false and ASSUMED, so the
 //   write gate stops.
+// - hooksNotWired (Ron 13122 J1, Kevin 13130): a hook reads false SILENTLY
+//   when its wiring is there but the script fails the J4 check (one install
+//   gave a 4328-char region without --permission and 4521 under it: the hook
+//   script was outside the grant). So every such false is named, next to the
+//   ctx: {id, path, reason "missing" | "not readable"} for a wired hook whose
+//   script path is absent / exists but cannot be read as a regular file, and
+//   one entry {id "all"} for the cases that make every hook false: the S1
+//   ones above, and a project or user layer that does not parse. A hook that
+//   no layer wires at all is not listed (that is configuration, not a fault),
+//   nor are the explicit switches disableAllHooks and allowManagedHooksOnly.
 // - ASSUMED (not rendered): profile.id, capabilities.emailSend, browser,
 //   thinChief, tokenPath. botName falls back to the code default "Marveen",
 //   which is config.ts's own default, so that is a source, not an assumption.
@@ -71,8 +81,8 @@ import { homedir, platform } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { parseEnvContent } from '../../env-parse.js'
 import { isAgentName } from './agent-name.js'
-import type { AgentDocContext, AgentRole, AutonomyLevel } from './context.js'
-import { hooksFromSettings } from './hooks-from-settings.js'
+import { HOOK_IDS, type AgentDocContext, type AgentRole, type AutonomyLevel, type HookId } from './context.js'
+import { HOOK_SPECS, hooksFromSettings } from './hooks-from-settings.js'
 
 export class LiveContextError extends Error {
   constructor(message: string) {
@@ -98,10 +108,26 @@ export function defaultManagedSettingsPath(os: string = platform()): string {
   return os === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json' : '/etc/claude-code/managed-settings.json'
 }
 
+export type HookNotWiredReason =
+  | 'missing' // the script path a layer wires does not exist
+  | 'not readable' // it exists, but is not a regular file that can be read here (a permission grant, a mode)
+  | 'config root is not the session\'s' // Ron S1: the main agent on MAIN_AGENT_CONFIG_DIR / MAIN_AGENT_ISOLATED_CONFIG
+  | 'managed settings do not parse' // Ron S1: the highest layer is unknown
+  | 'settings layer does not parse' // a project or user layer: hooksFromSettings reads every hook false
+
+// A hook that reads false although its wiring may be there. id "all": every hook reads false for this reason.
+export interface HookNotWired {
+  id: HookId | 'all'
+  path: string | null // the script, or the settings file; null when there is no one file
+  reason: HookNotWiredReason
+}
+
 export interface LiveContext {
   ctx: AgentDocContext
   // ctx field paths whose value has no real source, sorted.
   assumptions: string[]
+  // Why a hook reads false where its wiring may be there (never silent, Ron 13122 J1), sorted by id, then path.
+  hooksNotWired: HookNotWired[]
 }
 
 // The ctx fields the v2 region renders (sections.ts / registry.ts; a parity
@@ -140,14 +166,29 @@ function readJsonObject(path: string): Record<string, unknown> | null | undefine
   }
 }
 
-function isUsableFile(absPath: string): boolean {
+// The J4 file check, with its reason: null = an existing, readable regular file. A path that does not exist
+// (ENOENT, or a parent that is not a directory) is 'missing'; anything else that stops the read (not a regular
+// file, no read permission, a symlink loop, a path outside a Node --permission grant) is 'not readable'.
+function hookFileProblem(absPath: string): 'missing' | 'not readable' | null {
+  let isFile: boolean
   try {
-    if (!statSync(absPath).isFile()) return false
-    accessSync(absPath, constants.R_OK)
-    return true
-  } catch {
-    return false
+    isFile = statSync(absPath).isFile()
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'not readable'
   }
+  if (!isFile) return 'not readable'
+  try {
+    accessSync(absPath, constants.R_OK)
+  } catch {
+    return 'not readable'
+  }
+  return null
+}
+
+// The hook whose script a path names (the script names are distinct).
+function hookOfScript(absPath: string): HookId | null {
+  return HOOK_IDS.find((id) => absPath.endsWith(`/scripts/hooks/${HOOK_SPECS[id].script}`)) ?? null
 }
 
 // agent-config.ts listAllAgentNames + listAgentNames, against `root`.
@@ -326,20 +367,41 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
   // Highest first: managed, then local project, shared project, user scope.
   const layers = [...managed, ...projectLayers]
   const values = layers.map((l) => l.value)
-  const check = { projectDir: agentDir, usable: isUsableFile }
+  // The J4 check, recording each script path it turns down (hooksFromSettings itself stays unchanged).
+  const turnedDown = new Map<string, 'missing' | 'not readable'>()
+  const check = {
+    projectDir: agentDir,
+    usable: (absPath: string): boolean => {
+      const problem = hookFileProblem(absPath)
+      if (problem !== null) turnedDown.set(absPath, problem)
+      return problem === null
+    },
+  }
   // allowManagedHooksOnly: only the managed layer's hooks run. Anything but an absent or false value reads as on.
   const managedTop = managed.length > 0 ? managed[0].value : undefined
   const managedOnly = managedTop !== undefined && managedTop !== null
     && managedTop.allowManagedHooksOnly !== undefined && managedTop.allowManagedHooksOnly !== false
   let hooks = hooksFromSettings(managedOnly ? [managedTop] : values, check)
+  let hooksNotWired: HookNotWired[] = []
+  for (const [path, reason] of turnedDown) {
+    const id = hookOfScript(path)
+    if (id !== null && !hooks[id]) hooksNotWired.push({ id, path, reason })
+  }
+  if (!managedOnly) {
+    for (const l of projectLayers) if (l.value === null) hooksNotWired.push({ id: 'all', path: l.file, reason: 'settings layer does not parse' })
+  }
   // Ron S1: a false "wired" drops a rule's prose while its hook does not run. Where the layers read here are not
   // the ones the session loads, the hooks have no real source: all false and ASSUMED, so the write gate stops.
   // - The main agent on another config root (MAIN_AGENT_CONFIG_DIR, or MAIN_AGENT_ISOLATED_CONFIG on): its user
   //   layer is not <home>/.claude/settings.json.
   // - A managed file that does not parse: the highest layer is unknown.
-  if ((role === 'main' && mainOnOtherConfigRoot(root, env)) || managedTop === null) {
+  const otherRoot = role === 'main' && mainOnOtherConfigRoot(root, env)
+  if (otherRoot || managedTop === null) {
     hooks = hooksFromSettings([null], check)
     assumptions.push('hooks')
+    hooksNotWired = []
+    if (otherRoot) hooksNotWired.push({ id: 'all', path: null, reason: 'config root is not the session\'s' })
+    if (managedTop === null) hooksNotWired.push({ id: 'all', path: managedFile, reason: 'managed settings do not parse' })
   }
   let strict: boolean
   if (role === 'main') {
@@ -385,5 +447,7 @@ export function buildLiveContext(root: string, name: string, opts: LiveContextOp
     roster: names.filter((n) => n !== name).map((n) => ({ name: n })),
     hooks,
   }
-  return { ctx, assumptions: [...new Set(assumptions)].sort() }
+  const order = (h: HookNotWired) => `${h.id === 'all' ? '' : h.id}\u0000${h.path ?? ''}\u0000${h.reason}`
+  hooksNotWired.sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0))
+  return { ctx, assumptions: [...new Set(assumptions)].sort(), hooksNotWired }
 }

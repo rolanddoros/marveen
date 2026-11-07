@@ -2,7 +2,7 @@
 // A false "wired" is the dangerous error (the rule's prose is dropped while its hook does not run), so where the
 // layers are not known, hooks are all false and ASSUMED, and the 10b write gate stops by itself.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { buildLiveContext, defaultManagedSettingsPath, RENDERED_FIELDS } from '../web/claude-md/live-context.js'
@@ -136,5 +136,95 @@ describe('the main agent on another config root', () => {
     const r = build('kevin')
     expect(r.ctx.hooks.shellRescan).toBe(true)
     expect(r.assumptions).not.toContain('hooks')
+  })
+})
+
+// Ron 13122 J1 (Kevin 13130): a hook that reads false although its wiring is there is named, never silent.
+// The tests run as root on the host, where a mode-000 file still reads: "not readable" is made with a directory
+// and with a symlink loop, which no uid can read as a file (and an ERR_ACCESS_DENIED under --permission takes the
+// same branch: any error other than ENOENT / ENOTDIR).
+describe('hooksNotWired (Ron 13122 J1): why a wired hook reads false', () => {
+  const SCRIPT = () => join(root, 'scripts', 'hooks', 'shell-rescan-guard.py')
+
+  it('wired and the script there: no entry', () => {
+    put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
+    const r = build('kevin')
+    expect(r.ctx.hooks.shellRescan).toBe(true)
+    expect(r.hooksNotWired).toEqual([])
+  })
+
+  it('a hook no layer wires is not listed (configuration, not a fault)', () => {
+    expect(build('kevin').hooksNotWired).toEqual([])
+  })
+
+  it('the script missing: one entry, reason "missing", with the resolved path', () => {
+    put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
+    rmSync(SCRIPT())
+    const r = build('kevin')
+    expect(r.ctx.hooks.shellRescan).toBe(false)
+    expect(r.hooksNotWired).toEqual([{ id: 'shellRescan', path: SCRIPT(), reason: 'missing' }])
+  })
+
+  it('the script there but not readable as a file (a directory, a symlink loop): reason "not readable"', () => {
+    put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
+    rmSync(SCRIPT())
+    mkdirSync(SCRIPT())
+    expect(build('kevin').hooksNotWired).toEqual([{ id: 'shellRescan', path: SCRIPT(), reason: 'not readable' }])
+    rmSync(SCRIPT(), { recursive: true })
+    symlinkSync(SCRIPT(), SCRIPT())
+    expect(build('kevin').hooksNotWired).toEqual([{ id: 'shellRescan', path: SCRIPT(), reason: 'not readable' }])
+  })
+
+  it('$CLAUDE_PROJECT_DIR resolves to the agent directory, and the entry names that path', () => {
+    put('agents/kevin/.claude/settings.json', JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'python3 "$CLAUDE_PROJECT_DIR"/scripts/hooks/shell-rescan-guard.py' }] }] } }))
+    expect(build('kevin').hooksNotWired).toEqual([{ id: 'shellRescan', path: join(root, 'agents', 'kevin', 'scripts', 'hooks', 'shell-rescan-guard.py'), reason: 'missing' }])
+  })
+
+  it('wired twice, one script missing and one there: the hook is wired, no entry', () => {
+    const missing = join(root, 'elsewhere', 'scripts', 'hooks', 'shell-rescan-guard.py')
+    put('agents/kevin/.claude/settings.local.json', JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 ${missing}` }] }] } }))
+    put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
+    const r = build('kevin')
+    expect(r.ctx.hooks.shellRescan).toBe(true)
+    expect(r.hooksNotWired).toEqual([])
+  })
+
+  it('two hooks with problems: both named, sorted by id', () => {
+    const guard = join(root, 'scripts', 'hooks', 'child-claude-channel-guard.mjs')
+    put('agents/kevin/.claude/settings.json', JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [
+      { type: 'command', command: `python3 ${join(root, 'gone', 'scripts', 'hooks', 'shell-rescan-guard.py')}` },
+      { type: 'command', command: `node ${guard}` },
+    ] }] } }))
+    expect(build('kevin').hooksNotWired).toEqual([
+      { id: 'childClaudeGuard', path: guard, reason: 'missing' },
+      { id: 'shellRescan', path: join(root, 'gone', 'scripts', 'hooks', 'shell-rescan-guard.py'), reason: 'missing' },
+    ])
+  })
+
+  it('a project layer that does not parse: one "all" entry naming the file', () => {
+    put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
+    put('agents/kevin/.claude/settings.local.json', '{broken')
+    const r = build('kevin')
+    expect(r.ctx.hooks).toEqual(NONE)
+    expect(r.hooksNotWired).toEqual([{ id: 'all', path: join(root, 'agents', 'kevin', '.claude', 'settings.local.json'), reason: 'settings layer does not parse' }])
+  })
+
+  it('Ron S1: a managed file that does not parse, and the main agent on another config root: one "all" entry each', () => {
+    put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
+    put('managed-settings.json', '{broken', home)
+    expect(build('kevin').hooksNotWired).toEqual([{ id: 'all', path: managed, reason: 'managed settings do not parse' }])
+    rmSync(managed)
+    put('.env', 'MAIN_AGENT_CONFIG_DIR=/srv/bot\n')
+    put('.claude/settings.json', JSON.stringify(wired()), home)
+    expect(build('marveen').hooksNotWired).toEqual([{ id: 'all', path: null, reason: 'config root is not the session\'s' }])
+  })
+
+  it('the explicit switches are not faults: disableAllHooks and allowManagedHooksOnly give no entry', () => {
+    put('agents/kevin/.claude/settings.json', JSON.stringify({ ...wired(), disableAllHooks: true }))
+    rmSync(SCRIPT())
+    expect(build('kevin').hooksNotWired).toEqual([])
+    put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
+    put('managed-settings.json', JSON.stringify({ allowManagedHooksOnly: true }), home)
+    expect(build('kevin').hooksNotWired).toEqual([])
   })
 })
