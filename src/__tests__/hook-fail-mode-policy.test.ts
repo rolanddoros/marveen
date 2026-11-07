@@ -86,6 +86,8 @@ describe('hook fail-mode policy', () => {
       'memory-frontmatter-gate': 'guard',
       'memory-frontmatter-bash-gate': 'guard',
       'child-claude-channel-guard': 'guard',
+      'shell-rescan-guard': 'guard',
+      'token-argv-guard': 'guard',
       'provenance-gate': 'directive',
       'staleness-guard': 'directive',
       'telegram-reply-guard': 'enforcer',
@@ -169,10 +171,13 @@ describe('gate (sidecar) vs failMode (Ron N5)', () => {
 describe('docs/hook-fail-modes.md', () => {
   const doc = readFileSync(DOC_PATH, 'utf-8')
 
-  it('states the fail mode of every kind as the policy has it', () => {
-    for (const [kind, mode] of Object.entries(FAIL_MODE_POLICY)) {
-      expect(doc, kind).toMatch(new RegExp(`^\\| \`${kind}\` \\| \`${mode}\` \\|`, 'm'))
-    }
+  it('has one rule row per kind, the same kinds as the policy, with the policy\'s fail mode', () => {
+    // Two-way: a kind missing from the doc, an extra or renamed kind row, or a
+    // row with another fail mode all fail. A rule row is `| \`kind\` | \`mode\` |`;
+    // the exception table's second column is a bare scope, so it never matches.
+    const rows = [...doc.matchAll(/^\| `([^`]+)` \| `([^`]+)` \|/gm)].map((m) => [m[1], m[2]] as const)
+    expect(rows.map(([kind]) => kind).sort()).toEqual(Object.keys(FAIL_MODE_POLICY).sort())
+    expect(Object.fromEntries(rows)).toEqual(FAIL_MODE_POLICY)
   })
 
   it('names every exception with its scope', () => {

@@ -70,8 +70,8 @@ one commit.
 A hook's role is what it does, not what it is called.
 
 - `provenance-gate`: flags an input without a provenance envelope, never blocks
-  (`scripts/hooks/provenance-gate.py`, "FLAG, not block", the owner's decision
-  of 2026-07-22). Kind `directive`.
+  (`scripts/hooks/provenance-gate.py:26`, "FLAG, not block -- Viktor's
+  decision, 2026-07-22 (kanban b241f29e)"). Kind `directive`.
 - `staleness-guard`: adds a re-confirm note to a late message, "It NEVER blocks
   the prompt" (`scripts/hooks/staleness-guard.py`). Kind `directive`.
 - `memory-frontmatter-gate` and `memory-frontmatter-bash-gate`: block a memory
@@ -83,8 +83,17 @@ A hook's role is what it does, not what it is called.
 - `child-claude-channel-guard`: "a guard against an accident, not a security
   boundary, and a hook crash must not block every Bash call"
   (`scripts/hooks/child-claude-channel-guard.mjs`, header). Kind `guard`.
-- `token-argv-guard`: warns by default (`TOKEN_ARGV_GUARD=warn`), blocks only
-  when set to `enforce`. Kind `guard`.
+- `shell-rescan-guard`: its docstring calls it a "PreToolUse gate"
+  (`scripts/hooks/shell-rescan-guard.py:2`) and the sidecar locks it
+  (`gate: true`), but its own SAFETY paragraph fails open: "Any internal error
+  -> allow (exit 0): this gate must never be able to wedge an agent"
+  (`scripts/hooks/shell-rescan-guard.py:32`). It stops prose from becoming an
+  executed command by accident, and it has a logged escape (`# rescan-ok:`).
+  Kind `guard`, open in both scopes.
+- `token-argv-guard`: a guard because of its DEFAULT mode: it warns
+  (`TOKEN_ARGV_GUARD=warn`, `scripts/hooks/token-argv-guard.py:28-30`). Set to
+  `enforce` it blocks the call, and the wrapper still fails open in both scopes.
+  Kind `guard` in its default mode.
 - `telegram-reply-guard`: a Stop hook that holds the turn open. Kind `enforcer`.
 
 ## Exceptions
@@ -98,8 +107,7 @@ differs fails the test, so the list cannot outlive the mismatch it names.
 | `fleet-freeze-gate` | sub | `open` | `closed` (while frozen) | The sub-agents get the template's plain fail-open wrapper, so a missing script lets calls through even while frozen. Owner decision 3, taken with the wrapper fix (C3-5). |
 | `child-claude-channel-guard` | sub | `closed` | `open` | Decided per scope: fail-open on the main agent, the scaffold's sub-agent copy stays fail-closed (Kevin 13549 B1, `src/web/agent-scaffold.ts` at `CHILD_CLAUDE_GUARD_SCRIPT`). |
 
-Every other entry, 50 of the 52 ids, follows the policy in every scope it is
-part of (main 41 entries, sub 43 including one recorded but not rendered).
+Every other entry follows the policy in every scope it is part of.
 
 ## `gate` in the sidecar vs the fail mode (Ron N5)
 
