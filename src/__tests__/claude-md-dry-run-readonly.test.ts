@@ -31,6 +31,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { writeDryRunTree } from './fixtures/claude-md/dry-run-tree.js'
+import { defaultManagedSettingsPath } from '../web/claude-md/live-context.js'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CLI_SRC = join(REPO, 'src', 'web', 'claude-md', 'cli.ts')
@@ -39,6 +40,7 @@ const CLI_SRC = join(REPO, 'src', 'web', 'claude-md', 'cli.ts')
 
 const ALLOWED_MODULES = [
   'src/env-parse.ts',
+  'src/web/claude-md/agent-name.ts',
   'src/web/claude-md/cli.ts',
   'src/web/claude-md/compose.ts',
   'src/web/claude-md/context.ts',
@@ -224,7 +226,9 @@ afterAll(() => {
 // `script` is relative to the build, or an absolute path (the symlinked start).
 function sandboxed(script: string, args: string[], extraRead: string[] = []) {
   const r = spawnSync(process.execPath, [
-    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${templates}`, `--allow-fs-read=${root}`, ...extraRead.map((p) => `--allow-fs-read=${p}`),
+    // the managed settings file: Claude Code's highest settings layer, read for the hooks (C1 PR 10b, Ron S1)
+    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${templates}`, `--allow-fs-read=${root}`, `--allow-fs-read=${defaultManagedSettingsPath()}`,
+    ...extraRead.map((p) => `--allow-fs-read=${p}`),
     '--import', join(out, 'guard.mjs'), script.startsWith('/') ? script : join(out, script), ...args,
   ], {
     encoding: 'utf-8',
