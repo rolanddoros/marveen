@@ -45,9 +45,16 @@ import { REGION_BEGIN, REGION_END, checkBody } from './render.js'
 import { LEGACY_MARKERS, type MarkerPair } from './legacy-markers.js'
 
 export class ComposeError extends Error {
-  constructor(message: string) {
+  // The 1-based line the error is about, when there is one: the offending
+  // marker line, or for an unclosed fence the line that opened it (the
+  // dry-run report names it; C1 PR 8). Counted after a leading BOM is set
+  // aside, which does not change line numbers.
+  readonly line: number | undefined
+
+  constructor(message: string, line?: number) {
     super(message)
     this.name = 'ComposeError'
+    this.line = line
   }
 }
 
@@ -113,73 +120,117 @@ export function checkRegion(region: string, markers: readonly MarkerPair[] = LEG
   checkBody(inner.replace(/\n$/, ''))
 }
 
+// One line of a scanned CLAUDE.md, classified the way composeClaudeMd sees it.
+// 'owner': outside every generated block (inside or outside a code fence);
+// 'begin' / 'inner' / 'end': a generated block's BEGIN line, body and END line,
+// with the block's id ('v2' for a previous region).
+export interface ScannedLine {
+  n: number // 1-based
+  raw: string // with its own line ending, if any
+  content: string // without the ending (LF or CRLF)
+  kind: 'owner' | 'begin' | 'inner' | 'end'
+  block?: string
+  inFence?: boolean // owner lines only: inside (or opening/closing) a code fence
+}
+
+export interface ScanResult {
+  bom: boolean
+  lines: ScannedLine[]
+}
+
+// The marker and fence scan that composeClaudeMd runs, as a separate pure
+// function, so a read-only caller (the dry-run report, C1 PR 8) sees exactly
+// the same boundary between the owner zone and the generated blocks. Throws
+// the same ComposeErrors, in the same order, as composeClaudeMd.
+export function scanClaudeMd(fileText: string, legacyMarkers: readonly MarkerPair[] = LEGACY_MARKERS): ScanResult {
+  const pairs = [V2_PAIR, ...legacyMarkers]
+  const beginOf = (c: string) => pairs.find((p) => p.begin === c)
+  const endOf = (c: string) => pairs.find((p) => p.end === c)
+
+  const scanned: ScannedLine[] = []
+  let fence: (Fence & { line: number }) | null = null
+  let open: { pair: MarkerPair; line: number } | null = null
+  let v2Seen = 0
+
+  const bom = fileText.startsWith(BOM)
+  const lines = splitLines(bom ? fileText.slice(BOM.length) : fileText)
+  for (let i = 0; i < lines.length; i++) {
+    const { raw, content } = lines[i]
+    const n = i + 1
+
+    if (open) {
+      if (content === open.pair.end) {
+        scanned.push({ n, raw, content, kind: 'end', block: open.pair.id })
+        open = null
+        continue
+      }
+      const b = beginOf(content)
+      if (b) throw new ComposeError(`line ${n}: BEGIN of "${b.id}" inside the open "${open.pair.id}" block (line ${open.line})`, n)
+      const e = endOf(content)
+      if (e) throw new ComposeError(`line ${n}: END of "${e.id}" inside the open "${open.pair.id}" block (line ${open.line})`, n)
+      scanned.push({ n, raw, content, kind: 'inner', block: open.pair.id })
+      continue
+    }
+
+    if (fence) {
+      if (closesFence(content, fence)) fence = null
+      scanned.push({ n, raw, content, kind: 'owner', inFence: true })
+      continue
+    }
+
+    const b = beginOf(content)
+    if (b) {
+      if (b === V2_PAIR && ++v2Seen > 1) throw new ComposeError(`line ${n}: a second v2 region`, n)
+      open = { pair: b, line: n }
+      scanned.push({ n, raw, content, kind: 'begin', block: b.id })
+      continue
+    }
+    const e = endOf(content)
+    if (e) throw new ComposeError(`line ${n}: END of "${e.id}" without its BEGIN`, n)
+
+    const f = fenceOpener(content)
+    if (f) fence = { ...f, line: n }
+    scanned.push({ n, raw, content, kind: 'owner', inFence: f !== null })
+  }
+  if (open) throw new ComposeError(`line ${open.line}: BEGIN of "${open.pair.id}" without its END`, open.line)
+  // The region goes at EOF; inside an unclosed fence it would be code, and the
+  // next compose would not recognise it and append another one each time.
+  if (fence) throw new ComposeError('unclosed code fence at EOF: the region would land inside it', fence.line)
+  return { bom, lines: scanned }
+}
+
 export function composeClaudeMd(
   fileText: string,
   region: string,
   legacyMarkers: readonly MarkerPair[] = LEGACY_MARKERS,
 ): ComposeResult {
   checkRegion(region, legacyMarkers)
-  const pairs = [V2_PAIR, ...legacyMarkers]
-  const beginOf = (c: string) => pairs.find((p) => p.begin === c)
-  const endOf = (c: string) => pairs.find((p) => p.end === c)
+  const { bom, lines } = scanClaudeMd(fileText, legacyMarkers)
 
-  const out: Line[] = []
+  const out: ScannedLine[] = []
   const removed: string[] = []
-  let fence: Fence | null = null
-  let open: { pair: MarkerPair; line: number } | null = null
   let openedAfterBlank = false
   let dropNextBlank = false
-  let v2Seen = 0
-
-  const bom = fileText.startsWith(BOM) ? BOM : ''
-  const lines = splitLines(fileText.slice(bom.length))
-  for (let i = 0; i < lines.length; i++) {
-    const { content } = lines[i]
-    const n = i + 1
-
-    if (open) {
-      if (content === open.pair.end) {
-        removed.push(open.pair.id)
-        open = null
-        dropNextBlank = openedAfterBlank
-        continue
-      }
-      const b = beginOf(content)
-      if (b) throw new ComposeError(`line ${n}: BEGIN of "${b.id}" inside the open "${open.pair.id}" block (line ${open.line})`)
-      const e = endOf(content)
-      if (e) throw new ComposeError(`line ${n}: END of "${e.id}" inside the open "${open.pair.id}" block (line ${open.line})`)
-      continue
-    }
-
-    if (fence) {
-      if (closesFence(content, fence)) fence = null
-      out.push(lines[i])
-      dropNextBlank = false
-      continue
-    }
-
-    const b = beginOf(content)
-    if (b) {
-      if (b === V2_PAIR && ++v2Seen > 1) throw new ComposeError(`line ${n}: a second v2 region`)
-      open = { pair: b, line: n }
+  for (const line of lines) {
+    if (line.kind === 'begin') {
       openedAfterBlank = out.length === 0 || isBlank(out[out.length - 1].content)
       continue
     }
-    const e = endOf(content)
-    if (e) throw new ComposeError(`line ${n}: END of "${e.id}" without its BEGIN`)
-
+    if (line.kind === 'inner') continue
+    if (line.kind === 'end') {
+      removed.push(line.block as string)
+      dropNextBlank = openedAfterBlank
+      continue
+    }
+    // An owner line. A block can open only outside a fence, so the line right
+    // after its END is outside one too: the separator rule never drops a line
+    // of code.
     if (dropNextBlank) {
       dropNextBlank = false
-      if (isBlank(content)) continue
+      if (isBlank(line.content)) continue
     }
-    const f = fenceOpener(content)
-    if (f) fence = f
-    out.push(lines[i])
+    out.push(line)
   }
-  if (open) throw new ComposeError(`line ${open.line}: BEGIN of "${open.pair.id}" without its END`)
-  // The region goes at EOF; inside an unclosed fence it would be code, and the
-  // next compose would not recognise it and append another one each time.
-  if (fence) throw new ComposeError('unclosed code fence at EOF: the region would land inside it')
 
   let owner = out.map((l) => l.raw).join('')
   let text: string
@@ -191,6 +242,6 @@ export function composeClaudeMd(
     if (!isBlank(last)) owner += '\n'
     text = owner + region
   }
-  text = bom + text
+  text = (bom ? BOM : '') + text
   return { text, changed: text !== fileText, removed }
 }
