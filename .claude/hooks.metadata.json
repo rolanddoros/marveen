@@ -352,6 +352,14 @@
         "gate": true,
         "purpose": "PreToolUse gate: refuse a Bash command whose own TEXT will be re-scanned by the shell, because that is how prose becomes an executed command.",
         "fingerprint": "c2565aa033e00819ea6ce0d400c41df7ebdf6c31af1220b2eccd50fd777610b0"
+      },
+      {
+        "index": 21,
+        "id": "pre-tool-use/token-argv-guard",
+        "hook": "token-argv-guard",
+        "gate": true,
+        "purpose": "PreToolUse hook (matcher: Bash): warn when a command puts the dashboard token on a process argv.",
+        "fingerprint": "bade5914cb94567f4f89d2d0f5ac158c9768944ec6ee617904643fa812d043ba"
       }
     ],
     "Stop": [

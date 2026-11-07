@@ -239,6 +239,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/token-argv-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/token-argv-guard.py; exit 0'",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [

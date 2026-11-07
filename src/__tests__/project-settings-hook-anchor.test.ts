@@ -95,6 +95,9 @@ const EXPECTED: Record<string, string[]> = {
     // in double quotes, $( ) in an inline interpreter payload, ...). Fail-open on
     // any internal error, so it cannot wedge a session.
     'shell-rescan-guard.py @ Bash',
+    // C1 PR 13b: warns (TOKEN_ARGV_GUARD=warn, the default) or blocks (enforce) a Bash command
+    // that puts the dashboard token on a process argv; fail-open wrapper, locked in hook_switches.
+    'token-argv-guard.py @ Bash',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   StopFailure: ['ledger-turn-failure.py'],
