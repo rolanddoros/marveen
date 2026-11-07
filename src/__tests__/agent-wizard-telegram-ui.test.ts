@@ -77,4 +77,42 @@ describe('creation wizard: the Telegram question (C1 PR 11c-2)', () => {
     expect(head).toContain("document.getElementById('agentTelegram').checked = true")
     expect(head).toContain("document.getElementById('wizardSoulGroup').hidden = false")
   })
+
+  // Kevin 13421: the two follow-ons of the new option, in this PR.
+  const createHandler = () => {
+    const start = APP.indexOf("document.getElementById('wizardCreateBtn').addEventListener('click'")
+    expect(start).toBeGreaterThan(0)
+    return APP.slice(start, APP.indexOf('\n})\n', start))
+  }
+  const nextHandler = () => {
+    const start = APP.indexOf("document.getElementById('wizardNextBtn').addEventListener('click'")
+    expect(start).toBeGreaterThan(0)
+    return APP.slice(start, APP.indexOf('\n})\n', start))
+  }
+
+  it('without Telegram: no "connect the channel" toast and no jump to the channel tab; with it, both as before', () => {
+    const h = createHandler()
+    expect(h).toContain("if (wizardTelegram) showToast('Ugynok letrehozva. Kosd be a csatornat a parosatashoz.')")
+    expect(h).toContain("if (wizardTelegram) switchAgentTab('channel')")
+    // nothing outside the condition shows the toast or switches the tab
+    expect(h.split("showToast('Ugynok letrehozva").length - 1).toBe(1)
+    expect(h.split("switchAgentTab('channel')").length - 1).toBe(1)
+    // the new agent's detail still opens for both answers
+    expect(h).toMatch(/\n {6}await openAgentDetail\(name\)\n/)
+  })
+
+  it('without Telegram the step-2 status does not mention SOUL.md (existing key, both languages); with it, as before', () => {
+    const h = nextHandler()
+    const m = h.match(/statusEl\.textContent = t\(telegram \? '([^']+)' : '([^']+)'\)/)
+    expect(m, 'the status after the POST depends on the answer').not.toBeNull()
+    const [, withKey, withoutKey] = m!
+    expect(withKey).toBe('agents.soul_md_generating')
+    expect(withoutKey).toBe('agents.claude_md_generating')
+    for (const lang of [hu, en]) {
+      expect(lang[withoutKey]).toBeTypeOf('string')
+      expect(lang[withoutKey]).not.toMatch(/SOUL/i)
+    }
+    // no unconditional SOUL.md status left in the step-1 handler
+    expect(h.split("'agents.soul_md_generating'").length - 1).toBe(1)
+  })
 })

@@ -3654,7 +3654,8 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     wizardPersonalityPending = result.personalityPending
       ? { detail: result.detail || '', warning: result.warning || '' }
       : null
-    statusEl.textContent = t('agents.soul_md_generating')
+    // C1 PR 11c-2: without Telegram no SOUL.md is generated, so the status does not name it.
+    statusEl.textContent = t(telegram ? 'agents.soul_md_generating' : 'agents.claude_md_generating')
 
     // Fetch full agent details to get generated content
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(createdName)}`)
@@ -3733,13 +3734,15 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
     }
 
     closeModal(agentWizardOverlay)
-    showToast('Ugynok letrehozva. Kosd be a csatornat a parosatashoz.')
+    // C1 PR 11c-2: the channel prompt and the jump to the channel tab only for an
+    // agent created with a Telegram bot; without one the detail opens on its default tab.
+    if (wizardTelegram) showToast('Ugynok letrehozva. Kosd be a csatornat a parosatashoz.')
     await loadAgents()
     // Drop the operator straight into the Telegram tab of the new agent so
     // the pairing step is in front of them -- easy to miss otherwise.
     try {
       await openAgentDetail(name)
-      switchAgentTab('channel')
+      if (wizardTelegram) switchAgentTab('channel')
     } catch { /* detail open failed, list refresh already happened */ }
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
