@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ComposeError, checkRegion, composeClaudeMd } from '../web/claude-md/compose.js'
+import { ComposeError, checkRegion, composeClaudeMd, scanClaudeMd } from '../web/claude-md/compose.js'
 import { REGION_BEGIN, REGION_END, wrapRegion } from '../web/claude-md/render.js'
 import { FEDERATION_MARKERS, LEGACY_MARKERS, type MarkerPair } from '../web/claude-md/legacy-markers.js'
 
@@ -277,5 +277,70 @@ describe('checkRegion', () => {
     expect(() => composeClaudeMd('A\n', REGION.replace('\n', '\r\n'))).toThrow(/CR found/)
     expect(() => composeClaudeMd('A\n', `${REGION_BEGIN}\n${ROSTER.begin}\n${REGION_END}\n`)).toThrow(/marker line inside/)
     expect(() => composeClaudeMd('A\n', `${REGION_BEGIN}\nx <!-- y\n${REGION_END}\n`)).toThrow(/HTML comment marker/)
+  })
+})
+
+// C1 PR 8: the dry-run report names a refused file by line, and reads the
+// owner zone through the same scan as compose.
+describe('ComposeError.line and scanClaudeMd (C1 PR 8)', () => {
+  const lineOf = (text: string) => {
+    try {
+      scanClaudeMd(text)
+    } catch (err) {
+      expect(err).toBeInstanceOf(ComposeError)
+      return (err as ComposeError).line
+    }
+    return 'no error'
+  }
+
+  it('every structural error carries its line', () => {
+    expect(lineOf(`A\n${ROSTER.begin}\nbody\n`)).toBe(2) // BEGIN without END: the BEGIN line
+    expect(lineOf(`A\nB\n${ROSTER.end}\n`)).toBe(3) // END without BEGIN
+    expect(lineOf(`${ROSTER.begin}\nx\n${EVIDENCE.begin}\n${EVIDENCE.end}\n${ROSTER.end}\n`)).toBe(3)
+    expect(lineOf(`${ROSTER.begin}\n${EVIDENCE.end}\n${ROSTER.end}\n`)).toBe(2)
+    expect(lineOf(`A\n${REGION}B\n${REGION}`)).toBe(7) // the second v2 BEGIN (REGION is 4 lines)
+  })
+
+  it('an unclosed fence names the line that opened it, not EOF', () => {
+    const text = 'A\n\n~~~~\ncode\n```\nstill code\n'
+    expect(lineOf(text)).toBe(3)
+    expect(() => composeClaudeMd(text, REGION)).toThrow('unclosed code fence at EOF: the region would land inside it')
+  })
+
+  it('a leading BOM does not shift line numbers', () => {
+    expect(lineOf(`\ufeffA\n${ROSTER.end}\n`)).toBe(2)
+  })
+
+  it('compose throws the same error, with the same line, as the scan', () => {
+    const text = `A\n${ROSTER.end}\n`
+    let fromCompose: ComposeError | undefined
+    try { composeClaudeMd(text, REGION) } catch (err) { fromCompose = err as ComposeError }
+    expect(fromCompose?.message).toBe('line 2: END of "fleet-roster" without its BEGIN')
+    expect(fromCompose?.line).toBe(2)
+  })
+
+  it('classifies every line; the raw lines join back to the file', () => {
+    const fenced = '```md\n' + ROSTER.begin + '\n```\n'
+    const text = `\ufeffOwner\r\n${fenced}${block(EVIDENCE, 'b1\nb2')}tail`
+    const r = scanClaudeMd(text)
+    expect(r.bom).toBe(true)
+    expect(r.lines.map((l) => [l.n, l.kind, l.block ?? '', l.inFence ?? false])).toEqual([
+      [1, 'owner', '', false],
+      [2, 'owner', '', true],
+      [3, 'owner', '', true],
+      [4, 'owner', '', true],
+      [5, 'begin', 'evidence-rule', false],
+      [6, 'inner', 'evidence-rule', false],
+      [7, 'inner', 'evidence-rule', false],
+      [8, 'end', 'evidence-rule', false],
+      [9, 'owner', '', false],
+    ])
+    expect(r.lines[0].content).toBe('Owner')
+    expect(r.lines.map((l) => l.raw).join('')).toBe(text.slice(1))
+  })
+
+  it('a previous v2 region is a block with id v2', () => {
+    const r = scanClaudeMd(`A\n\n${REGION}`)
+    expect(r.lines.filter((l) => l.kind !== 'owner').map((l) => l.block)).toEqual(Array(REGION.split('\n').length - 1).fill('v2'))
   })
 })
