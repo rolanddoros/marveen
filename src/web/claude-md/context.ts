@@ -49,6 +49,11 @@ export interface AgentDocContext {
     browser: boolean
     federation: boolean
     thinChief: boolean
+    // The agent owns a channel (Telegram, Discord, Slack, Google Chat, Teams;
+    // channel.ts agentHasChannel, fail safe). false = headless: the region
+    // drops the channel-bound rules and the owner-communication lines (C1 PR
+    // 11a-2).
+    channel: boolean
   }
   autonomy: Record<string, AutonomyLevel>
   team: { reportsTo: string | null; directReports: string[] }

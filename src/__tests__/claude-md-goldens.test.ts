@@ -44,10 +44,10 @@ function verbsTaught(text: string): string[] {
 }
 
 describe('golden files', () => {
-  it('there are the eight agreed fixtures', () => {
+  it('there are the nine agreed fixtures', () => {
     expect(names.sort()).toEqual([
       'heartbeat', 'main', 'main-no-hooks', 'main-with-federation',
-      'sub-all-hooks', 'sub-helper-denied', 'sub-permissive', 'sub-strict',
+      'sub-all-hooks', 'sub-headless', 'sub-helper-denied', 'sub-permissive', 'sub-strict',
     ])
   })
 

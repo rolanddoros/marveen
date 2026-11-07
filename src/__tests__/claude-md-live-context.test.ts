@@ -505,9 +505,9 @@ describe('import tree', () => {
     return { files: files.sort(), builtins: [...builtins].sort() }
   }
 
-  it('reaches exactly five source files, none of the forbidden ones, and only fs, os and path', () => {
+  it('reaches exactly six source files, none of the forbidden ones, and only fs, os and path', () => {
     const { files, builtins } = tree('web/claude-md/live-context.ts')
-    expect(files).toEqual(['env-parse.ts', 'web/claude-md/agent-name.ts', 'web/claude-md/context.ts', 'web/claude-md/hooks-from-settings.ts', 'web/claude-md/live-context.ts'])
+    expect(files).toEqual(['env-parse.ts', 'web/claude-md/agent-name.ts', 'web/claude-md/channel.ts', 'web/claude-md/context.ts', 'web/claude-md/hooks-from-settings.ts', 'web/claude-md/live-context.ts'])
     for (const f of FORBIDDEN) expect(files).not.toContain(f)
     expect(builtins).toEqual(['node:fs', 'node:os', 'node:path'])
   })

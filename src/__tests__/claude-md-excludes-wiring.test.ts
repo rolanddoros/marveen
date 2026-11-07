@@ -48,6 +48,27 @@ describe('injectClaudeMdExcludes', () => {
     expect(s.claudeMdExcludes).toBe('/opt/x/CLAUDE.md')
   })
 
+  // Ron 13273: the silent cases, null and an object included
+  it.each([[null], [{ a: '/opt/x/CLAUDE.md' }], [42]])('%j stays exactly as it is', (value) => {
+    const s: Record<string, unknown> = { claudeMdExcludes: value }
+    expect(injectClaudeMdExcludes(SUB, s)).toBe(false)
+    expect(s).toEqual({ claudeMdExcludes: value })
+  })
+
+  it('an own entry spelled differently is not recognised: the canonical path is appended next to it', () => {
+    const other = ROOT_MD.replace(/\/CLAUDE\.md$/, '//CLAUDE.md')
+    const s: Record<string, unknown> = { claudeMdExcludes: [other] }
+    expect(injectClaudeMdExcludes(SUB, s)).toBe(true)
+    expect(s.claudeMdExcludes).toEqual([other, ROOT_MD])
+  })
+
+  it('a moved install root: the old entry stays, the new one is appended', () => {
+    const s: Record<string, unknown> = {}
+    injectClaudeMdExcludes(SUB, s, '/old/root/CLAUDE.md')
+    injectClaudeMdExcludes(SUB, s, '/new/root/CLAUDE.md')
+    expect(s.claudeMdExcludes).toEqual(['/old/root/CLAUDE.md', '/new/root/CLAUDE.md'])
+  })
+
   it('the main agent is never touched', () => {
     const s: Record<string, unknown> = { env: { A: '1' } }
     expect(injectClaudeMdExcludes(MAIN_AGENT_ID, s)).toBe(false)

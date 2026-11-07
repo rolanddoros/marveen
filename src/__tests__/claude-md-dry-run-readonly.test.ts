@@ -41,6 +41,7 @@ const CLI_SRC = join(REPO, 'src', 'web', 'claude-md', 'cli.ts')
 const ALLOWED_MODULES = [
   'src/env-parse.ts',
   'src/web/claude-md/agent-name.ts',
+  'src/web/claude-md/channel.ts',
   'src/web/claude-md/cli.ts',
   'src/web/claude-md/compose.ts',
   'src/web/claude-md/context.ts',

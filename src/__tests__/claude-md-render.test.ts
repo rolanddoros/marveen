@@ -28,6 +28,7 @@ const ctx: AgentDocContext = {
   profile: { id: 'developer-junior', strict: true, helperAllowed: true },
   capabilities: {
     kanbanWrite: false, scheduleWrite: false, emailSend: 'none', browser: false, federation: false, thinChief: false,
+    channel: true,
   },
   autonomy: {},
   team: { reportsTo: 'kevin', directReports: [] },

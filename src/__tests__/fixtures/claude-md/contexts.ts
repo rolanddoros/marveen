@@ -8,6 +8,7 @@ const FLEET = ['main', 'pm', 'dev-a', 'dev-b', 'reviewer']
 const rosterWithout = (self: string) => FLEET.filter((n) => n !== self).map((name) => ({ name }))
 const CAPS = {
   kanbanWrite: false, scheduleWrite: false, emailSend: 'none' as const, browser: false, federation: false, thinChief: false,
+  channel: true,
 }
 
 const base: AgentDocContext = {
@@ -53,12 +54,15 @@ export const FIXTURES: Readonly<Record<string, AgentDocContext>> = {
     hooks: ALL_HOOKS,
   }),
   'sub-helper-denied': sub('dev-b', { profile: { id: 'researcher', strict: true, helperAllowed: false } }),
+  // C1 PR 11a-2: a sub without any channel (today's developer and reviewer agents)
+  'sub-headless': sub('dev-c', { capabilities: { ...CAPS, channel: false } }),
   'heartbeat': {
     ...base,
     name: 'heartbeat',
     role: 'heartbeat',
     profile: { id: 'heartbeat', strict: true, helperAllowed: true },
-    capabilities: CAPS,
+    // no channel, as live-context reads it; its region does not depend on it
+    capabilities: { ...CAPS, channel: false },
     team: { reportsTo: null, directReports: [] },
     roster: rosterWithout('heartbeat'),
     hooks: NO_HOOKS,
