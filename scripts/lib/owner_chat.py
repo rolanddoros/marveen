@@ -128,3 +128,11 @@ def resolve_owner_chat_id(env, provider="telegram"):
     """The chat id, or None when this install has no owner chat for an alert
     (resolve_owner_chat gives the reason)."""
     return resolve_owner_chat(env, provider)[0]
+
+
+def configured_chat_id(env_file, provider="telegram"):
+    """The owner chat the install's .env names for this provider (ALLOWED_CHAT_ID
+    for Telegram), or None when it is unset, empty or the installer placeholder
+    "0". The .env only: no access.json fallback. For text that must not carry a
+    guessed or placeholder chat (the main CLAUDE.md, C1 PR 11c)."""
+    return _normalize(_read_env_value(env_file, _env_key(provider)))

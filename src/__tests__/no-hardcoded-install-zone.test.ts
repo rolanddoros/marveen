@@ -77,9 +77,14 @@ describe('no hardcoded Europe/Budapest outside the allow-list (ISSUE1895)', () =
 
   it('the agent template carries the {{TIMEZONE}} placeholder, and every renderer fills it', () => {
     expect(readFileSync(join(ROOT, 'templates', 'CLAUDE.md.template'), 'utf-8')).toContain('{{TIMEZONE}}')
+    // C1 PR 11c: the three shell renderers hand the install zone to one renderer, which fills the placeholder.
     for (const f of ['install-macos.sh', 'install-linux.sh', 'update.sh']) {
-      expect(readFileSync(join(ROOT, f), 'utf-8'), f).toContain('s|{{TIMEZONE}}|')
+      const src = readFileSync(join(ROOT, f), 'utf-8')
+      expect(src, f).toContain('TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"')
+      expect(src, f).toContain('python3 "$INSTALL_DIR/scripts/lib/render_claude_md_template.py" "$INSTALL_DIR/templates/CLAUDE.md.template"')
     }
+    expect(readFileSync(join(ROOT, 'scripts', 'lib', 'render_claude_md_template.py'), 'utf-8'))
+      .toMatch(/PLACEHOLDERS = \([^)]*"TIMEZONE"[^)]*\)/)
     expect(readFileSync(join(ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')).toContain(".replaceAll('{{TIMEZONE}}'")
   })
 })
