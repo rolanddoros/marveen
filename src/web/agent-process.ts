@@ -99,6 +99,7 @@ import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
+import { applySubClaudeMdV2 } from './claude-md/wire.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
@@ -2394,32 +2395,36 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     } catch (err) {
       logger.warn({ err, name }, 'per-agent dashboard token sync failed (agent keeps the shared token)')
     }
-    ensureFleetRosterSection(name)
-    ensureProjectRootInClaudeMd(name)
-    ensureAutonomySection(name)
-    ensureSkillsPathTrapSection(name)
-    ensureSkillSectionCurrent(name)
-    ensureSystemDirectiveAuthSection(name)
-    ensureAgentIdHeaderSection(name)
-    // OPT-IN, DEFAULT OFF (PR #1357 review). The THIN CHIEF handoff is this
-    // fleet's reporting standard -- how a specialist hands a result to its
-    // coordinator -- not a property of the software. Injecting it into every
-    // downstream install's agent CLAUDE.md would be shipping our process as if
-    // it were a feature. No shipped profile sets the flag, so a fresh install
-    // gets nothing; the fleet that wrote it opts in on its own profiles.
-    // Turning the flag off does not remove a section an agent already carries:
-    // ensureThinChiefHandoffSection only appends, and nothing here deletes.
-    if (profileWantsThinChiefHandoff(profile)) ensureThinChiefHandoffSection(name)
-    ensureMemorySearchLabelSection(name)
-    ensureFleetAuthSection(name)
-    ensureEvidenceSection(name)
-    ensureMcpListChannelSection(name)
-    ensureMessageCloseSection(name)
-    // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
-    ensureStrictApiSection(name)
-    // VOICETOKENLEAK1101 PR-A2: every other agent on the helper gets the same recipes, overriding its body curl.
-    ensureApiHelperSection(name)
-    ensureBackgroundCheckpointSection(name)
+    // C1 PR 10b: with the per-agent flag on (and every precondition met) the v2 region replaces the legacy
+    // sections; otherwise this is the legacy sequence, unchanged (after removing a v2 region a rollback left).
+    if (!applySubClaudeMdV2(name, profile)) {
+      ensureFleetRosterSection(name)
+      ensureProjectRootInClaudeMd(name)
+      ensureAutonomySection(name)
+      ensureSkillsPathTrapSection(name)
+      ensureSkillSectionCurrent(name)
+      ensureSystemDirectiveAuthSection(name)
+      ensureAgentIdHeaderSection(name)
+      // OPT-IN, DEFAULT OFF (PR #1357 review). The THIN CHIEF handoff is this
+      // fleet's reporting standard -- how a specialist hands a result to its
+      // coordinator -- not a property of the software. Injecting it into every
+      // downstream install's agent CLAUDE.md would be shipping our process as if
+      // it were a feature. No shipped profile sets the flag, so a fresh install
+      // gets nothing; the fleet that wrote it opts in on its own profiles.
+      // Turning the flag off does not remove a section an agent already carries:
+      // ensureThinChiefHandoffSection only appends, and nothing here deletes.
+      if (profileWantsThinChiefHandoff(profile)) ensureThinChiefHandoffSection(name)
+      ensureMemorySearchLabelSection(name)
+      ensureFleetAuthSection(name)
+      ensureEvidenceSection(name)
+      ensureMcpListChannelSection(name)
+      ensureMessageCloseSection(name)
+      // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
+      ensureStrictApiSection(name)
+      // VOICETOKENLEAK1101 PR-A2: every other agent on the helper gets the same recipes, overriding its body curl.
+      ensureApiHelperSection(name)
+      ensureBackgroundCheckpointSection(name)
+    }
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot

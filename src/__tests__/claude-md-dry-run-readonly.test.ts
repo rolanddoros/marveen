@@ -25,12 +25,13 @@
 //    would make every check above pass vacuously.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { writeDryRunTree } from './fixtures/claude-md/dry-run-tree.js'
+import { buildLiveContext, defaultManagedSettingsPath } from '../web/claude-md/live-context.js'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CLI_SRC = join(REPO, 'src', 'web', 'claude-md', 'cli.ts')
@@ -39,23 +40,35 @@ const CLI_SRC = join(REPO, 'src', 'web', 'claude-md', 'cli.ts')
 
 const ALLOWED_MODULES = [
   'src/env-parse.ts',
+  'src/web/claude-md/agent-name.ts',
   'src/web/claude-md/cli.ts',
   'src/web/claude-md/compose.ts',
+  'src/web/claude-md/context.ts',
   'src/web/claude-md/dry-run-cli.ts',
   'src/web/claude-md/dry-run.ts',
+  'src/web/claude-md/hooks-from-settings.ts',
   'src/web/claude-md/legacy-markers.ts',
+  'src/web/claude-md/line-diff.ts',
+  'src/web/claude-md/live-context.ts',
   'src/web/claude-md/owner-zone.ts',
+  'src/web/claude-md/registry.ts',
   'src/web/claude-md/render.ts',
+  'src/web/claude-md/sections.ts',
 ]
-const ALLOWED_BUILTINS = ['node:fs', 'node:path', 'node:url']
-const ALLOWED_FS = ['lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'statSync'] // sort() order
+// node:crypto: the sha256 of a removed generated block in the full diff (dry-run.ts)
+const ALLOWED_BUILTINS = ['node:crypto', 'node:fs', 'node:os', 'node:path', 'node:url']
+// sort() order; accessSync and existsSync are live-context.ts's hook-script and roster checks
+const ALLOWED_FS = ['accessSync', 'constants', 'existsSync', 'lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'statSync']
+// the hash only (Ron 13154)
+const ALLOWED_CRYPTO = ['createHash']
 
-interface Graph { modules: string[]; builtins: string[]; fsNames: string[]; dynamic: string[] }
+interface Graph { modules: string[]; builtins: string[]; fsNames: string[]; cryptoNames: string[]; dynamic: string[] }
 
 function importGraph(entry: string): Graph {
   const seen = new Set<string>()
   const builtins = new Set<string>()
   const fsNames = new Set<string>()
+  const cryptoNames = new Set<string>()
   const dynamic: string[] = []
   const visit = (file: string) => {
     if (seen.has(file)) return
@@ -69,13 +82,14 @@ function importGraph(entry: string): Graph {
         visit(resolve(dirname(file), spec.replace(/\.js$/, '.ts')))
       } else {
         builtins.add(spec)
-        if (spec === 'node:fs') for (const n of what.replace(/[{}]/g, '').split(',')) if (n.trim()) fsNames.add(n.trim())
+        const names = spec === 'node:fs' ? fsNames : spec === 'node:crypto' ? cryptoNames : null
+        if (names) for (const n of what.replace(/[{}]/g, '').split(',')) if (n.trim()) names.add(n.trim())
       }
     }
     for (const m of src.matchAll(/^\s*import\s+'([^']+)'/gm)) dynamic.push(`${relative(REPO, file)}: side-effect import ${m[1]}`)
   }
   visit(entry)
-  return { modules: [...seen].map((f) => relative(REPO, f)).sort(), builtins: [...builtins].sort(), fsNames: [...fsNames].sort(), dynamic }
+  return { modules: [...seen].map((f) => relative(REPO, f)).sort(), builtins: [...builtins].sort(), fsNames: [...fsNames].sort(), cryptoNames: [...cryptoNames].sort(), dynamic }
 }
 
 // Free calls (not a method: `re.exec(x)` is a RegExp), member calls of the
@@ -99,6 +113,10 @@ describe('read-only: import graph and static ban', () => {
 
   it('only reading fs functions are imported', () => {
     expect(g.fsNames).toEqual(ALLOWED_FS)
+  })
+
+  it('only createHash is imported from node:crypto', () => {
+    expect(g.cryptoNames).toEqual(ALLOWED_CRYPTO)
   })
 
   it.each(ALLOWED_MODULES)('%s has no writing, spawning or network call', (rel) => {
@@ -166,15 +184,21 @@ const CONTROLS: Record<string, string> = {
 
 let base: string
 let out: string
+let templates: string
 let link: string
 const STAMP = '0123456789abcdef0123456789abcdef01234567'
 let root: string
+let home: string
 let childTmp: string
 let childHome: string
 
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), 'claude-md-readonly-'))
-  out = join(base, 'build')
+  // The checkout layout: <base>/dist/web/claude-md/render.js finds its region
+  // templates at <base>/templates/claude-md, three levels up (render.ts).
+  out = join(base, 'dist')
+  templates = join(base, 'templates')
+  cpSync(join(REPO, 'templates', 'claude-md'), join(templates, 'claude-md'), { recursive: true })
   // tsc only (no bundler, no new or transitive dependency in the test path; Kevin 12995).
   const tsc = spawnSync(process.execPath, [
     join(REPO, 'node_modules', 'typescript', 'bin', 'tsc'), '--outDir', out, '--rootDir', join(REPO, 'src'),
@@ -193,6 +217,9 @@ beforeAll(() => {
   root = join(base, 'install')
   mkdirSync(root)
   writeDryRunTree(root)
+  // The main agent's user-scope settings layer: a home inside the readable
+  // tree (outside it the read itself would be denied, and the run would fail).
+  home = join(root, 'home')
   childTmp = join(base, 'child-tmp')
   childHome = join(base, 'child-home')
   mkdirSync(childTmp)
@@ -207,7 +234,9 @@ afterAll(() => {
 // `script` is relative to the build, or an absolute path (the symlinked start).
 function sandboxed(script: string, args: string[], extraRead: string[] = []) {
   const r = spawnSync(process.execPath, [
-    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${root}`, ...extraRead.map((p) => `--allow-fs-read=${p}`),
+    // the managed settings file: Claude Code's highest settings layer, read for the hooks (C1 PR 10b, Ron S1)
+    '--permission', `--allow-fs-read=${out}`, `--allow-fs-read=${templates}`, `--allow-fs-read=${root}`, `--allow-fs-read=${defaultManagedSettingsPath()}`,
+    ...extraRead.map((p) => `--allow-fs-read=${p}`),
     '--import', join(out, 'guard.mjs'), script.startsWith('/') ? script : join(out, script), ...args,
   ], {
     encoding: 'utf-8',
@@ -287,7 +316,7 @@ describe('read-only: runtime under node --permission (read access only)', () => 
     [['--agent', 'alpha'], 0],
   ])('the CLI %j runs to the end, writes nothing, calls no network', (extra, code) => {
     const before = manifest(root)
-    const r = sandboxed(CLI, ['--dry-run', '--root', root, ...(extra as string[])])
+    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, ...(extra as string[])])
     expect(r.stderr).toBe('')
     expect(r.code).toBe(code)
     expect(r.stdout).toMatch(/\nsummary: \d+ agent\(s\)|"exit": \d/)
@@ -298,14 +327,40 @@ describe('read-only: runtime under node --permission (read access only)', () => 
   })
 
   it('the sandboxed --json output is the full report (same agents as in-process)', () => {
-    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--all', '--json'])
+    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, '--all', '--json', '--full-diff'])
     const data = JSON.parse(r.stdout)
     expect(data.agents.map((a: { name: string; status: string }) => `${a.name}:${a.status}`))
       .toEqual(['chief:ok', 'alpha:ok', 'beta:refused', 'delta:refused', 'gamma:missing'])
+    // PR 8b: the region and the diff were built inside the sandbox too
+    for (const a of data.agents.slice(0, 2)) {
+      expect(a.after.regionLength).toBeGreaterThan(1000)
+      expect(a.diff).toContain('+<!-- END MARVEEN GENERATED v2 -->')
+      expect(a.context.assumptions).toContain('profile.helperAllowed')
+    }
+  })
+
+  // Ron 13122 J1, Kevin's own measurement: a hook script outside the --permission grant read as not wired, and the
+  // region came out longer with nothing said. Now the sandboxed report names it; in-process the same hook is wired.
+  it('J1: a hook script outside the grant is named "not readable" in the sandbox; in-process it is wired', () => {
+    const script = join(base, 'outside-grant', 'scripts', 'hooks', 'shell-rescan-guard.py')
+    mkdirSync(dirname(script), { recursive: true })
+    writeFileSync(script, '# hook\n')
+    const settings = join(root, 'agents', 'alpha', '.claude', 'settings.json')
+    mkdirSync(dirname(settings), { recursive: true })
+    writeFileSync(settings, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 ${script}` }] }] } }))
+    try {
+      const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, '--agent', 'alpha', '--json'])
+      expect(r.stderr).toBe('')
+      const alpha = JSON.parse(r.stdout).agents[0]
+      expect(alpha.context.hooksNotWired).toEqual([{ id: 'shellRescan', path: script, reason: 'not readable' }])
+      expect(buildLiveContext(root, 'alpha', { homeDir: home }).hooksNotWired).toEqual([])
+    } finally {
+      rmSync(join(root, 'agents', 'alpha', '.claude'), { recursive: true, force: true })
+    }
   })
 
   it('the header names the code version from dist/.built-commit (Ron S3)', () => {
-    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--agent', 'alpha'])
+    const r = sandboxed(CLI, ['--dry-run', '--root', root, '--home', home, '--agent', 'alpha'])
     expect(r.stdout.split('\n')[0]).toBe(`claude-md dry-run (read-only), root ${root}, main agent chief, code ${STAMP}`)
   })
 })
@@ -328,16 +383,20 @@ describe('read-only: started through a symlinked path', () => {
 
   it('a real run prints the full report, under --permission with the link and the real path granted', () => {
     const before = manifest(root)
-    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--all'], [link])
+    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--home', home, '--all', '--full-diff'], [link])
     expect(r.stderr).toBe('')
     expect(r.code).toBe(1)
-    expect(r.stdout).toContain('\nsummary: 5 agent(s): 2 ok, 2 refused, 0 unreadable, 1 missing; exit 1\n')
+    expect(r.stdout).toContain('\nsummary: 5 agent(s): 2 ok, 2 refused, 0 unreadable, 0 error, 1 missing; exit 1\n')
+    // PR 8b: the region templates resolve from the real path (render.ts), inside the grant
+    expect(r.stdout).toContain('\n+<!-- END MARVEEN GENERATED v2 -->\n')
     expect(manifest(root)).toEqual(before)
   })
 
+  // Exit 1 like a refused file, but with an empty stdout: the cli.ts header
+  // tells the caller to read an empty stdout as a failed run (Ron 13073).
   it('under --permission without a grant for the link path, Node refuses loudly (no silent empty run)', () => {
-    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--all'])
-    expect(r.code).not.toBe(0)
+    const r = sandboxed(linked(), ['--dry-run', '--root', root, '--home', home, '--all'])
+    expect(r.code).toBe(1)
     expect(r.stdout).toBe('')
     expect(r.stderr).toContain('ERR_ACCESS_DENIED')
   })
