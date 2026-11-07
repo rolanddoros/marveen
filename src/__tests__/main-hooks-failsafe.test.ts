@@ -63,13 +63,15 @@ function run(shell: string, command: string, proj: string) {
 }
 
 describe('main agent hooks: explicit fail mode (A5-main-hooks-failsafe)', () => {
-  it('classifies every handler: 16 security gates, 1 freeze gate, the rest fail-open', () => {
-    // 16 = 8 outgoing-copy-gate + 6 email-approval-gate + egress-gate + db-write-gate (upstream APPROVALDBGATE1030)
-    expect(handlers.filter(isSecurityGate)).toHaveLength(16)
+  it('classifies every handler: 17 security gates, 1 freeze gate, the rest fail-open', () => {
+    // 17 = 8 outgoing-copy-gate + 6 email-approval-gate + egress-gate + db-write-gate (upstream APPROVALDBGATE1030)
+    // + child-claude-channel-guard (C1 PR 13a)
+    expect(handlers.filter(isSecurityGate)).toHaveLength(17)
     expect(handlers.filter(isFreezeGate)).toHaveLength(1)
-    expect(failOpen.length).toBe(handlers.length - 17)
-    // All 12 UserPromptSubmit hooks are fail-open: a broken UPS hook must never deafen the agent.
-    expect(failOpen.filter((h) => h.event === 'UserPromptSubmit')).toHaveLength(12)
+    expect(failOpen.length).toBe(handlers.length - 18)
+    // All 13 UserPromptSubmit hooks are fail-open (directive-verify, C1 PR 13a, is the 13th): a broken UPS
+    // hook must never deafen the agent.
+    expect(failOpen.filter((h) => h.event === 'UserPromptSubmit')).toHaveLength(13)
   })
 
   it('the bare form this replaces does block on a missing script (the defect)', () => {

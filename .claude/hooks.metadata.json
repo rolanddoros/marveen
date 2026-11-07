@@ -98,6 +98,14 @@
         "gate": false,
         "purpose": "UserPromptSubmit hook: write a minimal task-state stub when a prompt arrives and no live record exists for the agent.",
         "fingerprint": "1d47784bf6f3fe7a1f8dc30ad3434d61571c8149013ec31874763ccf99d84156"
+      },
+      {
+        "index": 12,
+        "id": "user-prompt-submit/directive-verify",
+        "hook": "directive-verify",
+        "gate": false,
+        "purpose": "UserPromptSubmit hook: verify a [SYSTEM-DIREKTIVA msg_id:N] directive before the agent acts on it.",
+        "fingerprint": "7820c6353faa76846d540b30211253d58898cfcbd9d7b6b3786ab534f3afbce6"
       }
     ],
     "PostToolUse": [
@@ -352,6 +360,14 @@
         "gate": true,
         "purpose": "PreToolUse gate: refuse a Bash command whose own TEXT will be re-scanned by the shell, because that is how prose becomes an executed command.",
         "fingerprint": "c2565aa033e00819ea6ce0d400c41df7ebdf6c31af1220b2eccd50fd777610b0"
+      },
+      {
+        "index": 21,
+        "id": "pre-tool-use/child-claude-channel-guard",
+        "hook": "child-claude-channel-guard",
+        "gate": true,
+        "purpose": "PreToolUse hook (matcher: Bash): a session whose Telegram poller can be killed must not start a child `claude` that would kill it (CHILDCLAUDEPOLLER1010).",
+        "fingerprint": "83f72ba38e100707034b43485bf9c513fe952b0a72707f02a961126b26785fd9"
       }
     ],
     "Stop": [

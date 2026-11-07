@@ -28,7 +28,8 @@ import { TEMPLATES_DIR, TemplateError, checkBody, checkValue, loadTemplate, rend
 export const SKILL_TEMPLATES_DIR = join(TEMPLATES_DIR, '..', 'skills')
 
 // The rendered skills, in a fixed order (design 2.4). marveen-directive-auth
-// stays only until the directive-verify hook ships (PR 13).
+// stays until the directive-verify hook (C1 PR 13a) is wired live for every
+// agent; dropping it is a separate step.
 export const PRODUCT_SKILLS = [
   'marveen-fleet-auth',
   'marveen-background-work',

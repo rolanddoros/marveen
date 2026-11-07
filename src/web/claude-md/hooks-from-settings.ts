@@ -63,9 +63,9 @@ interface HookSpec {
   needsBashMatcher: boolean
 }
 
-// directive-verify.py does not exist yet: it is the UserPromptSubmit hook of
-// C1 step 13 (main agent). That step must ship it under this name, or change
-// this constant in the same PR.
+// directive-verify.py is the UserPromptSubmit hook C1 PR 13a ships (wired in the
+// repo's .claude/settings.json and in templates/settings.json.template). A rename
+// changes this constant in the same PR.
 export const HOOK_SPECS: Readonly<Record<HookId, HookSpec>> = {
   directiveVerify: { event: 'UserPromptSubmit', script: 'directive-verify.py', needsBashMatcher: false },
   childClaudeGuard: { event: 'PreToolUse', script: 'child-claude-channel-guard.mjs', needsBashMatcher: true },
