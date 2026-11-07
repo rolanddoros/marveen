@@ -52,6 +52,9 @@ const EXPECTED: Record<string, string[]> = {
     // call or subprocess, and the write is atomic (os.replace). It cannot block
     // a prompt.
     'taskstate-stub.py',
+    // C1 PR 13a: verifies a [SYSTEM-DIREKTIVA msg_id:N] header against its queue row and puts the
+    // verdict into the context. Always exit 0 (fail-open wrapper): it can never block a prompt.
+    'directive-verify.py',
   ],
   PostToolUse: [
     'ledger-outbound.py @ mcp__plugin_[^_]+_[^_]+__reply', 'tool-log-capture.py',
@@ -95,6 +98,10 @@ const EXPECTED: Record<string, string[]> = {
     // in double quotes, $( ) in an inline interpreter payload, ...). Fail-open on
     // any internal error, so it cannot wedge a session.
     'shell-rescan-guard.py @ Bash',
+    // C1 PR 13a (CHILDCLAUDEPOLLER1010): a child `claude` that would kill this session's Telegram
+    // poller is refused; fail-open on the main agent (Kevin 13549 B1). Binds the operator's interactive
+    // sessions in the project root too (Kevin 13441 (2)).
+    'child-claude-channel-guard.mjs @ Bash',
     // C1 PR 13b: warns (TOKEN_ARGV_GUARD=warn, the default) or blocks (enforce) a Bash command
     // that puts the dashboard token on a process argv; fail-open wrapper, locked in hook_switches.
     'token-argv-guard.py @ Bash',
