@@ -56,7 +56,10 @@ def _read_env_value(env_file, key):
                 line = line.rstrip("\n")
                 if line.startswith(f"{key}="):
                     return line[len(key) + 1:]
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError: a .env that is not UTF-8 (UnicodeDecodeError) is "no value",
+        # like a missing file -- never an exception that stops the caller (an
+        # install under set -e, C1 PR 11c, Ron 13359/2). Its content is not shown.
         return None
     return None
 

@@ -16,14 +16,18 @@ A {{CHAT_ID}} outside the known fragments stops the render (exit 2, nothing
 written) instead of reaching the file: a new occurrence must be added here with
 its null form first. The other placeholders are literal replacements of the
 values the installer passes in the environment (OWNER_NAME, INSTALL_DIR,
-BOT_NAME, MAIN_AGENT_ID, WEB_PORT, TIMEZONE), an empty value when one is unset,
-as the sed did.
+BOT_NAME, MAIN_AGENT_ID, WEB_PORT, TIMEZONE), inserted as given (not stripped)
+and empty when one is unset, as the sed did. A .env that cannot be read or is
+not UTF-8 counts as "no chat id".
 
 Usage: render_claude_md_template.py TEMPLATE OUT ENV_FILE
 Exit: 0 written; 2 bad call or a {{CHAT_ID}} outside the known fragments.
-The output is written atomically (a temp file in OUT's directory, then rename).
+The output is written atomically (a temp file next to the target, then rename):
+a failed write leaves the old file as it was. A symlinked OUT is written at its
+target and stays a link; the file keeps its mode (a new one: 0666 minus umask).
 """
 import os
+import stat
 import sys
 import tempfile
 
@@ -65,12 +69,23 @@ def render(template, chat_id, values):
 
 
 def write_atomic(path, text):
-    d = os.path.dirname(os.path.abspath(path))
-    fd, tmp = tempfile.mkstemp(prefix=".claude-md-", dir=d)
+    """Write text to path through a temp file and a rename, so a failure leaves the
+    old file as it was. A symlinked path is written at its target and the link
+    stays (Ron 13359/1). The file keeps its mode; a new file gets 0666 minus the
+    umask, as a plain shell redirect (the old sed) gave it."""
+    target = os.path.realpath(path)
+    try:
+        mode = stat.S_IMODE(os.stat(target).st_mode)
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp = tempfile.mkstemp(prefix=".claude-md-", dir=os.path.dirname(target))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        os.replace(tmp, path)
+        os.chmod(tmp, mode)
+        os.replace(tmp, target)
     except BaseException:
         try:
             os.unlink(tmp)
