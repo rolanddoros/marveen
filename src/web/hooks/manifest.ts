@@ -8,7 +8,10 @@
 // generated from it:
 //   - renderHooks(HOOK_MANIFEST, 'main') deep-equals the `hooks` object of the
 //     tracked .claude/settings.json (src/__tests__/hook-manifest-main.test.ts).
-//   - the sub-agent half follows in C3-1b.
+//   - renderHooks(HOOK_MANIFEST, 'sub', ctx) deep-equals what the real code
+//     path (template seed, create, boot backfill, spawn) writes for a probe
+//     agent, per profile and per gate condition
+//     (src/__tests__/hook-manifest-sub.test.ts).
 //
 // Nothing calls this module yet: no settings file is written from it and no
 // caller changed (C3-3 makes the sub generator render from it, C3-4 turns the
@@ -64,12 +67,17 @@ export type FailMode = 'closed' | 'open' | 'advisory'
  *   failClosedRun                 run under `timeout`; any status other than 0 or 2 becomes 2
  *   failClosedRunNodeProbe        `command -v node` probe that blocks, then failClosedRun
  *
- * Sub (agents/<n>/.claude/settings.json, absolute P), rendered from C3-1b on:
+ * Sub (agents/<n>/.claude/settings.json, absolute P):
  *   failOpenExecUnquoted          failOpenExec with an unquoted absolute path (template)
- *   bare / bareQuoted             `python3 P` with no wrapper, path unquoted / quoted
+ *   bare / bareQuoted             `python3 P` with no wrapper, path unquoted / quoted; only on
+ *                                 events where no exit status blocks a call (see FailMode below)
  *   failClosedPythonProbe         pythonHookCommand(): `command -v python3` probe + failClosedRun
  *   failClosedNodeBin             hookCommand(): `test -x <HOOK_NODE_BIN>` probe + failClosedRun
  *   agentPrompt                   a prompt-type hook (`type: agent`), no command
+ *
+ * `bare` is recorded `open`: a crash (1) or a missing interpreter (127) does not
+ * block, and the 2 python3 gives for a missing script reaches only events that
+ * cannot block a call (SessionStart, SessionEnd, PostToolUse after the tool ran).
  */
 export type WrapperKind =
   | 'failOpenExec'
@@ -87,8 +95,13 @@ export type WrapperKind =
 /** The profile switches that opt a sub-agent into a gate (templates/profiles/*.json). */
 export type HookProfileFlag = keyof Pick<ProfileTemplate, 'destructiveGate' | 'credentialGate' | 'secondReviewer'>
 
-/** Per-agent conditions that are not profile switches (heartbeat agent, email thread-reply capability, sender-role policy). */
-export type HookAgentFlag = 'heartbeat' | 'threadReply' | 'senderRolePolicy'
+/**
+ * Per-agent conditions that are not profile switches: the heartbeat agent, and
+ * an agent with a sender-role policy (the policy rides on the command as the
+ * last argument). The email thread-reply capability changes arguments only,
+ * see HookManifestEntry.threadReplyArgs.
+ */
+export type HookAgentFlag = 'heartbeat' | 'senderRolePolicy'
 
 /** How one scope renders an entry. */
 export interface HookSpec {
@@ -100,6 +113,13 @@ export interface HookSpec {
   args?: readonly string[]
   /** Seconds; absent: the hook object carries no timeout key. */
   timeout?: number
+  /**
+   * Seconds the fail-closed wrapper's own deadline is computed from (minus 2),
+   * where the command was built with another value than `timeout`. Recorded as
+   * found: second-reviewer-gate's builder call passes no timeout, so its gate is
+   * cut at 8 s (default 10) inside a 180 s hook.
+   */
+  wrapperTimeout?: number
   wrapper: WrapperKind
   failMode: FailMode
 }
@@ -119,8 +139,18 @@ export interface HookManifestEntry extends HookSpec {
   profileFlag?: HookProfileFlag
   /** Sub-agents only: the entry is rendered only when the agent has this property. */
   agentFlag?: HookAgentFlag
+  /** Sub-agents only: arguments appended when the agent has the email thread-reply capability. */
+  threadReplyArgs?: readonly string[]
   /** Where one scope differs from the fields above today. Each override is a recorded main/sub difference. */
   override?: Partial<Record<HookScope, Partial<HookSpec>>>
+  /**
+   * false: a hook some agents carry today that no code path writes (added by
+   * hand). Recorded by name so a generator cannot drop it unnoticed, never
+   * rendered, never placed in a layout; `perAgent` says who carries it and how.
+   */
+  rendered?: false
+  /** rendered:false only: the agents carrying the hook today; timeout absent = the hook has no timeout key. */
+  perAgent?: Readonly<Record<string, { timeout?: number }>>
 }
 
 /**
@@ -148,9 +178,13 @@ export interface RenderedGroup {
 export type RenderedHooks = Partial<Record<HookEvent, RenderedGroup[]>>
 
 export interface RenderContext {
-  /** Path prefix of every script. Main default: the literal $CLAUDE_PROJECT_DIR. Sub: the absolute project root. */
+  /**
+   * Path prefix of every script. Main default: the literal $CLAUDE_PROJECT_DIR.
+   * Sub (required): the absolute project root. Plain path characters only, it
+   * lands inside a single-quoted bash -c string.
+   */
   root?: string
-  /** Sub: the node binary hookCommand() burns in (HOOK_NODE_BIN). */
+  /** Sub (required): the node binary hookCommand() burns in (HOOK_NODE_BIN); plain path characters only. */
   nodeBin?: string
   /** Sub: the agent's profile (only the gate switches are read). */
   profile?: Pick<ProfileTemplate, HookProfileFlag>
@@ -186,67 +220,97 @@ export const MAIN_MAIL_MATCHERS: readonly string[] = [
 const TELEGRAM_REPLY_EDIT = 'mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message'
 const DISCORD_REPLY_EDIT = 'mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__edit_message'
 
+/** The sub-agents' email gate matcher (EMAIL_GATE_MATCHER): Bash plus the main agent's mail matchers, as ONE group. */
+const SUB_EMAIL_MATCHER = ['Bash', ...MAIN_MAIL_MATCHERS].join('|')
+
 // ---------------------------------------------------------------------------
-// The entries. C3-1a carries the main agent's 41 hooks (56 settings entries:
-// three hooks sit under more than one event, the two mail gates under several
-// matchers). C3-1b sets scope 'both' where a sub-agent carries the same hook,
-// with its differences as `override.sub`, and adds the sub-only entries.
+// The entries. Scope 'both' where the main agent and the sub-agents carry the
+// same script under the same event; `override.sub` is then the recorded
+// difference (C3-5 removes those, here every one stays as found). Main: 41
+// entries, 56 settings entries (three hooks sit under more than one event, the
+// two mail gates under several matchers). Sub: 42 rendered entries, 36 of them
+// unconditional (39 settings entries on every sub-agent today), 6 behind a
+// profile switch or an agent property, plus one recorded but not rendered.
 
 const open = { wrapper: 'failOpenExec', failMode: 'open' } as const
+/** The template's spelling of a fail-open hook on the sub-agents. */
+const subOpen = { sub: { wrapper: 'failOpenExecUnquoted' } } as const
+/** hookCommand() / pythonHookCommand() gates, sub-agents only. */
+const nodeGate = { scope: 'sub', timeout: 10, wrapper: 'failClosedNodeBin', failMode: 'closed' } as const
+const pythonGate = { scope: 'sub', timeout: 10, wrapper: 'failClosedPythonProbe', failMode: 'closed' } as const
 
 export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   // UserPromptSubmit
   { id: 'ledger-capture', script: 'scripts/hooks/ledger-capture.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
   { id: 'inbox-drain', script: 'scripts/hooks/inbox-drain.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
-  { id: 'telegram-reply-directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 10, ...open },
-  { id: 'provenance-gate', script: 'scripts/hooks/provenance-gate.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 10, ...open },
-  { id: 'staleness-guard', script: 'scripts/hooks/staleness-guard.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 10, ...open },
-  { id: 'memory-lookup-nudge', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 3, ...open },
-  { id: 'channel-inbox-drain', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 5, ...open },
-  { id: 'voice-reply-directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 180, ...open },
-  { id: 'telegram_progress', script: 'scripts/hooks/telegram_progress.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
-  { id: 'slack_progress', script: 'scripts/hooks/slack_progress.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
-  { id: 'marveen-commands', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 45, ...open },
-  { id: 'taskstate-stub', script: 'scripts/hooks/taskstate-stub.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 10, ...open },
-  { id: 'directive-verify', script: 'scripts/hooks/directive-verify.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 10, ...open },
+  { id: 'telegram-reply-directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'provenance-gate', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'staleness-guard', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'memory-lookup-nudge', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open, override: subOpen },
+  { id: 'channel-inbox-drain', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open, override: subOpen },
+  { id: 'voice-reply-directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', timeout: 60 } } },
+  { id: 'telegram_progress', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
+  { id: 'slack_progress', script: 'scripts/hooks/slack_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
+  { id: 'marveen-commands', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 45, ...open, override: subOpen },
+  { id: 'taskstate-stub', script: 'scripts/hooks/taskstate-stub.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'directive-verify', script: 'scripts/hooks/directive-verify.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
 
   // PostToolUse / PostToolUseFailure
   { id: 'ledger-outbound', script: 'scripts/hooks/ledger-outbound.py', scope: 'main', events: ['PostToolUse'], matcher: 'mcp__plugin_[^_]+_[^_]+__reply', timeout: 15, ...open },
-  { id: 'tool-log-capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'main', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 5, ...open },
+  { id: 'tool-log-capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 5, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', matcher: '*', timeout: 10 } } },
   { id: 'persona-change-notify', script: 'scripts/hooks/persona-change-notify.py', scope: 'main', events: ['PostToolUse'], timeout: 15, ...open },
-  { id: 'telegram_progress_reply_clear', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'main', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open },
-  { id: 'browser-content-notice', script: 'scripts/hooks/browser-content-notice.py', scope: 'main', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open },
-  { id: 'slack_progress_reply_clear', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'main', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open },
-  { id: 'skill-usage-capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'main', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open },
-  { id: 'memory-frontmatter-bash-gate', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'main', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open },
+  { id: 'telegram_progress_reply_clear', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open, override: subOpen },
+  { id: 'browser-content-notice', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } } },
+  // Hand-added on five sub-agents (skill playwright-mcp-agens), written by no code path. Measured
+  // 2026-11-07 23:17 on the live files: bella and lilla without a timeout, kevin, margot, tom with 10.
+  // C3-3 renders it behind a browser capability flag; until then it is data only.
+  {
+    id: 'browser-content-notice-playwright', script: 'scripts/hooks/browser-content-notice.py', scope: 'sub', events: ['PostToolUse'],
+    matcher: 'mcp__playwright__browser_.*', wrapper: 'bare', failMode: 'open', rendered: false,
+    perAgent: { bella: {}, kevin: { timeout: 10 }, lilla: {}, margot: { timeout: 10 }, tom: { timeout: 10 } },
+  },
+  { id: 'slack_progress_reply_clear', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open, override: subOpen },
+  { id: 'skill-usage-capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'both', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open, override: subOpen },
+  { id: 'memory-frontmatter-bash-gate', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
 
   // PreToolUse
-  // Fail-open while the fleet runs; a missing script blocks only while frozen,
-  // the one state in which this gate stops anything.
-  { id: 'fleet-freeze-gate', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'main', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed' },
-  { id: 'outgoing-copy-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed' },
+  // Main: fail-open while the fleet runs; a missing script blocks only while
+  // frozen, the one state in which this gate stops anything. Sub: plain fail-open.
+  { id: 'fleet-freeze-gate', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExecUnquoted', failMode: 'open' } } },
+  { id: 'outgoing-copy-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } } },
   { id: 'email-approval-gate', script: 'scripts/hooks/email-approval-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS], timeout: 10, wrapper: 'failClosedRun', failMode: 'closed' },
-  { id: 'channel-image-resize', script: 'scripts/hooks/channel-image-resize.sh', scope: 'main', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open },
-  { id: 'egress-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'main', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed' },
-  { id: 'memory-frontmatter-gate', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'main', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open },
-  { id: 'db-write-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'main', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed' },
-  { id: 'shell-rescan-guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'main', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open },
-  { id: 'child-claude-channel-guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'main', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, wrapper: 'failOpenNodeProbe', failMode: 'open' },
-  { id: 'token-argv-guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'main', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open },
+  { id: 'channel-image-resize', script: 'scripts/hooks/channel-image-resize.sh', scope: 'both', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open, override: subOpen },
+  { id: 'egress-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
+  { id: 'memory-frontmatter-gate', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'both', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open, override: subOpen },
+  { id: 'db-write-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
+  { id: 'shell-rescan-guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
+  { id: 'child-claude-channel-guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, wrapper: 'failOpenNodeProbe', failMode: 'open', override: { sub: { wrapper: 'failClosedNodeBin', failMode: 'closed' } } },
+  { id: 'token-argv-guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
+  { id: 'email-send-gate', script: 'scripts/email-send-gate.mjs', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, threadReplyArgs: ['--allow-thread-reply'], ...nodeGate },
+  { id: 'self-pace-gate', script: 'scripts/self-pace-gate.mjs', events: ['PreToolUse'], matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit', ...nodeGate },
+  { id: 'kanban-write-gate', script: 'scripts/kanban-write-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
+  { id: 'digest-provenance-gate', script: 'scripts/digest-provenance-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
+  { id: 'sender-role-gate', script: 'scripts/hooks/sender-role-gate.py', events: ['PreToolUse'], matcher: '*', args: ['--policy'], agentFlag: 'senderRolePolicy', ...pythonGate },
+  { id: 'destructive-gate', script: 'scripts/hooks/destructive-gate.py', events: ['PreToolUse'], matcher: 'Bash|Read|Edit|Write|NotebookEdit', profileFlag: 'destructiveGate', ...pythonGate },
+  { id: 'credential-gate', script: 'scripts/hooks/credential-gate.py', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, profileFlag: 'credentialGate', ...pythonGate },
+  { id: 'second-reviewer-gate', script: 'scripts/hooks/second-reviewer-gate.py', events: ['PreToolUse'], matcher: 'Bash|mcp__.*', profileFlag: 'secondReviewer', ...pythonGate, timeout: 180, wrapperTimeout: 10 },
+  { id: 'bash-egress-parser', script: 'scripts/hooks/bash-egress-parser.mjs', events: ['PreToolUse'], matcher: 'Bash', ...nodeGate },
 
   // Stop / StopFailure
   { id: 'telegram-reply-guard', script: 'scripts/hooks/telegram-reply-guard.py', scope: 'main', events: ['Stop'], timeout: 10, ...open },
-  { id: 'telegram_progress_clear', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'main', events: ['Stop'], timeout: 15, ...open },
-  { id: 'slack_progress_clear', script: 'scripts/hooks/slack_progress_clear.py', scope: 'main', events: ['Stop'], timeout: 15, ...open },
-  { id: 'marveen-commands-stop', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['Stop'], args: ['--stop'], timeout: 10, ...open },
+  { id: 'telegram_progress_clear', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
+  { id: 'slack_progress_clear', script: 'scripts/hooks/slack_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
+  { id: 'marveen-commands-stop', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['Stop'], args: ['--stop'], timeout: 10, ...open, override: subOpen },
   { id: 'ledger-turn-failure', script: 'scripts/hooks/ledger-turn-failure.py', scope: 'main', events: ['StopFailure'], timeout: 10, ...open },
 
-  // SessionStart / SessionEnd
+  // SessionStart / SessionEnd / PreCompact
   { id: 'ledger-replay', script: 'scripts/hooks/ledger-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'startup|resume|clear', timeout: 15, ...open },
-  { id: 'taskstate-replay', script: 'scripts/hooks/taskstate-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open },
-  { id: 'clear-replay', script: 'scripts/hooks/clear-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open },
+  { id: 'taskstate-replay', script: 'scripts/hooks/taskstate-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
+  { id: 'clear-replay', script: 'scripts/hooks/clear-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
   { id: 'marveen-commands-session-start', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['SessionStart'], args: ['--session-start'], timeout: 10, ...open },
-  { id: 'clear-capture', script: 'scripts/hooks/clear-capture.py', scope: 'main', events: ['SessionEnd'], timeout: 15, ...open },
+  { id: 'clear-capture', script: 'scripts/hooks/clear-capture.py', scope: 'both', events: ['SessionEnd'], timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
+  // The prompt text (about 3 KB, from templates/settings.json.template) is passed in by the caller.
+  { id: 'precompact', script: 'precompact', scope: 'sub', events: ['PreCompact'], matcher: 'auto', timeout: 180, wrapper: 'agentPrompt', failMode: 'advisory' },
 ]
 
 // The main agent's written order (tracked .claude/settings.json). Every group
@@ -273,9 +337,39 @@ const MAIN_LAYOUT: HookLayout = {
   SessionEnd: ['clear-capture'],
 }
 
+// A sub-agent's written order as the real code path leaves it after the first
+// spawn: the template's events and groups (templates/settings.json.template),
+// then the gates in the order writeAgentSettingsFromProfile injects them (each
+// injector drops its old entry and appends). Conditional entries hold their
+// place and are skipped when off. The live files carry older orders and
+// groupings (history); the C3-3 gate compares them as flattened multisets.
+const SUB_LAYOUT: HookLayout = {
+  PreCompact: ['precompact'],
+  SessionStart: ['taskstate-replay', 'clear-replay'],
+  SessionEnd: ['clear-capture'],
+  PostToolUse: [
+    'skill-usage-capture', 'tool-log-capture', 'telegram_progress_reply_clear', 'slack_progress_reply_clear',
+    'memory-frontmatter-bash-gate', 'browser-content-notice',
+  ],
+  PostToolUseFailure: ['tool-log-capture', 'memory-frontmatter-bash-gate'],
+  UserPromptSubmit: [[
+    'staleness-guard', 'taskstate-stub', 'provenance-gate', 'memory-lookup-nudge', 'channel-inbox-drain',
+    'voice-reply-directive', 'telegram-reply-directive', 'marveen-commands', 'telegram_progress', 'slack_progress',
+    'directive-verify',
+  ]],
+  PreToolUse: [
+    'fleet-freeze-gate', 'channel-image-resize', 'memory-frontmatter-gate', 'memory-frontmatter-bash-gate',
+    'shell-rescan-guard', 'token-argv-guard',
+    'email-send-gate', 'self-pace-gate', 'db-write-gate', 'kanban-write-gate', 'digest-provenance-gate',
+    'outgoing-copy-gate', 'sender-role-gate', 'child-claude-channel-guard', 'destructive-gate', 'credential-gate',
+    'second-reviewer-gate', 'egress-gate', 'bash-egress-parser',
+  ],
+  Stop: [['telegram_progress_clear', 'slack_progress_clear'], 'marveen-commands-stop'],
+}
+
 export const HOOK_MANIFEST: HookManifest = {
   entries: HOOK_MANIFEST_ENTRIES,
-  layout: { main: MAIN_LAYOUT },
+  layout: { main: MAIN_LAYOUT, sub: SUB_LAYOUT },
 }
 
 // ---------------------------------------------------------------------------
@@ -283,20 +377,31 @@ export const HOOK_MANIFEST: HookManifest = {
 //
 // TEMPORARY DUPLICATE: the wrapper strings below repeat what the builders in
 // agent-scaffold.ts (hookCommand, pythonHookCommand, failClosedGateRun,
-// gateDeadlineSec) and the hand-written main settings spell today. They are
-// copied, not imported, because agent-scaffold.ts will import this module in
-// C3-3 and the reverse import would be a cycle. C3-3 is where the builders and
-// these strings become one implementation; until then the deep-equal tests
-// against the real outputs are what keep the two copies identical.
+// gateDeadlineSec), the settings template and the hand-written main settings
+// spell today. They are copied, not imported, because agent-scaffold.ts will
+// import this module in C3-3 and the reverse import would be a cycle. C3-3 is
+// where the builders and these strings become one implementation; until then
+// the deep-equal tests against the real outputs keep the copies identical.
 
 const SCRIPT_RE = /^scripts\/[A-Za-z0-9_./-]+\.(py|mjs|sh)$/
 const ARG_RE = /^[A-Za-z0-9_=.:-]+$/
+/**
+ * A root or node binary: an absolute path of plain characters. Both land inside
+ * a single-quoted `bash -c '...'` string, and the main root also inside double
+ * quotes, so a quote, `$`, backtick, backslash or space must never reach them.
+ */
+const PLAIN_ABS_PATH_RE = /^(?:\/[A-Za-z0-9_.+-]+)+$/
+const AGENT_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/
 const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
 const FLEET_FREEZE_MARKER = 'store/fleet-freeze.json'
 const FLEET_FREEZE_MISSING_MSG = 'fleet-freeze-gate (fail-closed while frozen): the gate script is missing and '
   + 'store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh '
   + 'or unfreeze from the dashboard.'
 const MAIN_NODE_MISSING_MSG = 'governance-kapu: node interpreter hianyzik, a kapu BLOKKOL'
+const SUB_PYTHON_MISSING_MSG = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert '
+  + 'BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
+const subNodeMissingMsg = (nodeBin: string): string => `governance-kapu: a hook interpretere nem talalhato (${nodeBin}). `
+  + 'A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.'
 
 function interpreterFor(script: string): string {
   if (script.endsWith('.py')) return 'python3'
@@ -347,7 +452,32 @@ function mainCommand(spec: HookSpec, script: string, root: string): string {
   }
 }
 
+function subCommand(spec: HookSpec, script: string, args: readonly string[], root: string, nodeBin: string): string {
+  const p = `${root}/${script}`
+  const interp = interpreterFor(script)
+  const a = args.map((x) => ` ${x}`).join('')
+  switch (spec.wrapper) {
+    case 'failOpenExecUnquoted':
+      return `bash -c '[ -f ${p} ] && exec ${interp} ${p}${a}; exit 0'`
+    case 'bare':
+      return `${interp} ${p}${a}`
+    case 'bareQuoted':
+      return `${interp} "${p}"${a}`
+    case 'failClosedPythonProbe':
+      if (interp !== 'python3') throw new Error(`hook manifest: ${script} is not a python gate`)
+      return `command -v python3 >/dev/null 2>&1 || { echo "${SUB_PYTHON_MISSING_MSG}" >&2; exit 2; }; `
+        + failClosedRun(`python3 "${p}"${a}`, basenameOf(script), requireTimeout(spec, script))
+    case 'failClosedNodeBin':
+      if (interp !== 'node') throw new Error(`hook manifest: ${script} is not a node gate`)
+      return `test -x "${nodeBin}" || { echo "${subNodeMissingMsg(nodeBin)}" >&2; exit 2; }; `
+        + failClosedRun(`"${nodeBin}" "${p}"${a}`, basenameOf(script), requireTimeout(spec, script))
+    default:
+      throw new Error(`hook manifest: wrapper ${spec.wrapper} is not a sub-agent spelling (${script})`)
+  }
+}
+
 function requireTimeout(spec: HookSpec, script: string): number {
+  if (spec.wrapperTimeout !== undefined) return spec.wrapperTimeout
   if (spec.timeout === undefined) throw new Error(`hook manifest: ${script} needs a timeout for wrapper ${spec.wrapper}`)
   return spec.timeout
 }
@@ -360,6 +490,7 @@ export function specFor(entry: HookManifestEntry, scope: HookScope): HookSpec {
     matcher: 'matcher' in o ? o.matcher : entry.matcher,
     args: 'args' in o ? o.args : entry.args,
     timeout: 'timeout' in o ? o.timeout : entry.timeout,
+    wrapperTimeout: 'wrapperTimeout' in o ? o.wrapperTimeout : entry.wrapperTimeout,
     wrapper: o.wrapper ?? entry.wrapper,
     failMode: o.failMode ?? entry.failMode,
   }
@@ -369,16 +500,34 @@ function inScope(entry: HookManifestEntry, scope: HookScope): boolean {
   return entry.scope === scope || entry.scope === 'both'
 }
 
+/** In scope and rendered: the entries a layout of this scope must place. */
+function placedIn(entry: HookManifestEntry, scope: HookScope): boolean {
+  return inScope(entry, scope) && entry.rendered !== false
+}
+
+/** Whether a placed sub entry is switched on for this profile and agent. */
+function activeFor(entry: HookManifestEntry, ctx: RenderContext): boolean {
+  if (entry.profileFlag && ctx.profile?.[entry.profileFlag] !== true) return false
+  if (entry.agentFlag === 'heartbeat' && ctx.agent?.heartbeat !== true) return false
+  if (entry.agentFlag === 'senderRolePolicy' && !ctx.agent?.senderRolePolicy) return false
+  return true
+}
+
 function matchersOf(spec: HookSpec): Array<string | undefined> {
   if (spec.matcher === undefined) return [undefined]
   return typeof spec.matcher === 'string' ? [spec.matcher] : [...spec.matcher]
 }
 
+function checkPlainPath(what: string, value: string): void {
+  if (!PLAIN_ABS_PATH_RE.test(value)) throw new Error(`hook manifest: ${what} must be an absolute path of plain characters, got: ${value}`)
+}
+
 /**
  * Structural check of a manifest for one scope; throws on the first problem.
- * Ids unique, script paths and args plain, every layout slot names an entry of
- * this scope that is registered under that event, and every (entry, event) of
- * the scope is placed exactly once.
+ * Ids unique, script paths and args plain, every layout slot names a rendered
+ * entry of this scope that is registered under that event, every (entry, event)
+ * of the scope is placed exactly once, profile and agent conditions only on
+ * sub-only entries, and a not-rendered entry carries per-agent data and no place.
  */
 export function validateManifest(m: HookManifest, scope: HookScope): void {
   const byId = new Map<string, HookManifestEntry>()
@@ -387,11 +536,28 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
     byId.set(e.id, e)
     const spec = specFor(e, scope)
     if (spec.wrapper !== 'agentPrompt' && !SCRIPT_RE.test(e.script)) throw new Error(`hook manifest: bad script path ${e.script}`)
-    for (const a of spec.args ?? []) if (!ARG_RE.test(a)) throw new Error(`hook manifest: ${e.id}: argument needs quoting: ${a}`)
-    if (spec.timeout !== undefined && !(Number.isInteger(spec.timeout) && spec.timeout > 0)) {
-      throw new Error(`hook manifest: ${e.id}: timeout must be a positive integer`)
+    for (const a of [...(spec.args ?? []), ...(e.threadReplyArgs ?? [])]) {
+      if (!ARG_RE.test(a)) throw new Error(`hook manifest: ${e.id}: argument needs quoting: ${a}`)
+    }
+    for (const t of [spec.timeout, spec.wrapperTimeout]) {
+      if (t !== undefined && !(Number.isInteger(t) && t > 0)) throw new Error(`hook manifest: ${e.id}: timeout must be a positive integer`)
     }
     if (Array.isArray(spec.matcher) && spec.matcher.length === 0) throw new Error(`hook manifest: ${e.id}: empty matcher list`)
+    if ((e.profileFlag || e.agentFlag || e.threadReplyArgs) && e.scope !== 'sub') {
+      throw new Error(`hook manifest: ${e.id}: profile and agent conditions are sub-agent only`)
+    }
+    if (e.rendered === false) {
+      const agents = Object.entries(e.perAgent ?? {})
+      if (agents.length === 0) throw new Error(`hook manifest: ${e.id}: a not-rendered entry needs perAgent data`)
+      for (const [name, data] of agents) {
+        if (!AGENT_NAME_RE.test(name)) throw new Error(`hook manifest: ${e.id}: bad agent name ${name}`)
+        if (data.timeout !== undefined && !(Number.isInteger(data.timeout) && data.timeout > 0)) {
+          throw new Error(`hook manifest: ${e.id}: ${name}: timeout must be a positive integer`)
+        }
+      }
+    } else if (e.perAgent !== undefined) {
+      throw new Error(`hook manifest: ${e.id}: perAgent is for not-rendered entries only`)
+    }
   }
   const layout = m.layout[scope]
   if (!layout) throw new Error(`hook manifest: no layout for scope ${scope}`)
@@ -405,6 +571,7 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
         const e = byId.get(id)
         if (!e) throw new Error(`hook manifest: layout ${scope}.${event} names unknown id ${id}`)
         if (!inScope(e, scope)) throw new Error(`hook manifest: layout ${scope}.${event} names ${id}, which is not in scope ${scope}`)
+        if (e.rendered === false) throw new Error(`hook manifest: layout ${scope}.${event} names ${id}, which is not rendered`)
         const spec = specFor(e, scope)
         if (!spec.events.includes(event)) throw new Error(`hook manifest: ${id} is not registered under ${event}`)
         const key = `${id}\u0000${event}`
@@ -418,7 +585,7 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
     }
   }
   for (const e of m.entries) {
-    if (!inScope(e, scope)) continue
+    if (!placedIn(e, scope)) continue
     for (const event of specFor(e, scope).events) {
       if (!placed.has(`${e.id}\u0000${event}`)) throw new Error(`hook manifest: ${e.id} (${event}) has no place in the ${scope} layout`)
     }
@@ -427,33 +594,51 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
 
 /**
  * The `hooks` object one scope's settings carry, in written order. Pure: no
- * file is read or written.
- *
- * C3-1a renders the main scope only; the sub scope (template merge + gate
- * injectors, profile and agent conditions) is C3-1b and throws until then.
+ * file is read or written. Main: every placed entry. Sub: the placed entries
+ * whose profile switch and agent property are on (ctx.root, ctx.nodeBin and
+ * the prompt of each agentPrompt entry are required); an event left with no
+ * group is omitted. Not-rendered entries never appear.
  */
 export function renderHooks(m: HookManifest, scope: HookScope, ctx: RenderContext = {}): RenderedHooks {
-  if (scope !== 'main') throw new Error('hook manifest: the sub-agent render is not implemented yet (C3-1b)')
   validateManifest(m, scope)
-  const root = ctx.root ?? MAIN_ROOT
+  const root = ctx.root ?? (scope === 'main' ? MAIN_ROOT : undefined)
+  if (root === undefined) throw new Error('hook manifest: the sub-agent render needs ctx.root')
+  if (!(scope === 'main' && root === MAIN_ROOT)) checkPlainPath('ctx.root', root)
+  const nodeBin = ctx.nodeBin ?? ''
+  if (scope === 'sub') checkPlainPath('ctx.nodeBin', nodeBin)
+  const policy = ctx.agent?.senderRolePolicy
+  if (policy && !ARG_RE.test(policy)) throw new Error('hook manifest: the sender-role policy needs quoting')
   const byId = new Map(m.entries.map((e) => [e.id, e] as const))
   const out: RenderedHooks = {}
   for (const [event, groups] of Object.entries(m.layout[scope] ?? {}) as Array<[HookEvent, ReadonlyArray<string | readonly string[]>]>) {
     const rendered: RenderedGroup[] = []
     for (const slot of groups) {
-      const ids = typeof slot === 'string' ? [slot] : slot
+      const ids = (typeof slot === 'string' ? [slot] : slot).filter((id) => scope === 'main' || activeFor(byId.get(id)!, ctx))
+      if (ids.length === 0) continue
       const first = specFor(byId.get(ids[0])!, scope)
       for (const matcher of matchersOf(first)) {
-        const hooks = ids.map((id): RenderedHook => {
-          const e = byId.get(id)!
-          const spec = specFor(e, scope)
-          const command = mainCommand(spec, e.script, root)
-          return spec.timeout === undefined ? { type: 'command', command } : { type: 'command', command, timeout: spec.timeout }
-        })
+        const hooks = ids.map((id) => renderHook(byId.get(id)!, scope, root, nodeBin, ctx))
         rendered.push(matcher === undefined ? { hooks } : { matcher, hooks })
       }
     }
-    out[event] = rendered
+    if (rendered.length > 0) out[event] = rendered
   }
   return out
+}
+
+function renderHook(e: HookManifestEntry, scope: HookScope, root: string, nodeBin: string, ctx: RenderContext): RenderedHook {
+  const spec = specFor(e, scope)
+  const withTimeout = <T extends RenderedHook>(h: T): T => (spec.timeout === undefined ? h : { ...h, timeout: spec.timeout })
+  if (spec.wrapper === 'agentPrompt') {
+    const prompt = ctx.prompts?.[e.script]
+    if (prompt === undefined) throw new Error(`hook manifest: ${e.id} needs ctx.prompts.${e.script}`)
+    return withTimeout({ type: 'agent', prompt })
+  }
+  if (scope === 'main') return withTimeout({ type: 'command', command: mainCommand(spec, e.script, root) })
+  const args = [
+    ...(spec.args ?? []),
+    ...(ctx.agent?.threadReply ? e.threadReplyArgs ?? [] : []),
+    ...(e.agentFlag === 'senderRolePolicy' ? [ctx.agent!.senderRolePolicy!] : []),
+  ]
+  return withTimeout({ type: 'command', command: subCommand(spec, e.script, args, root, nodeBin) })
 }
