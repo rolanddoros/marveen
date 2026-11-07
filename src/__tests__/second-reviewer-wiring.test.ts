@@ -5,7 +5,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, rmdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   agentGetsSecondReviewer,
   injectSecondReviewerGate,
@@ -13,8 +14,11 @@ import {
   ensureGovernanceGateCommands,
   writeAgentSettingsFromProfile,
   agentSettingsPath,
+  pythonHookCommand,
+  secondReviewerHookCommand,
   SECOND_REVIEWER_MATCHER,
 } from '../web/agent-scaffold.js'
+import { SECOND_REVIEW_TIMEOUT_MS } from '../web/routes/review-action.js'
 import { loadProfileTemplate, profileWantsSecondReviewer, type ProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
@@ -58,6 +62,26 @@ function render(profile: ProfileTemplate): string {
 type Settings = { hooks?: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string; timeout: number }> }> } }
 const entries = (s: string) =>
   (JSON.parse(s) as Settings).hooks?.PreToolUse?.filter((e) => JSON.stringify(e).includes('second-reviewer-gate.py')) ?? []
+
+// The deadline the fail-closed wrapper puts on the gate: `timeout -k 1 <n>` in the written command.
+function wrapperDeadlineSec(command: string): number {
+  const m = /\btimeout -k 1 (\d+) /.exec(command)
+  if (!m) throw new Error(`no wrapper deadline in: ${command}`)
+  return Number(m[1])
+}
+// The gate's own HTTP budget, read from the shipped script (not the placeholder above): urlopen(..., timeout=<n>).
+const GATE_SOURCE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'hooks', 'second-reviewer-gate.py')
+function gateSocketTimeoutSec(): number {
+  const m = /urlopen\(req, timeout=(\d+)\)/.exec(readFileSync(GATE_SOURCE, 'utf-8'))
+  if (!m) throw new Error('no urlopen timeout in second-reviewer-gate.py')
+  return Number(m[1])
+}
+// The margin over the server's reviewer deadline: 30 s. The server answers only AFTER its reviewer call
+// ends (on a timeout it then still files an owner approval and writes the answer), and before the request
+// even reaches it the hook pays python start-up, the token read and the connect. 30 s is the budget the
+// gate already grants itself for this (its socket timeout is 75 s = 45 s + 30 s), so the wrapper must not
+// cut a pending review shorter than the gate's own fail-closed path would.
+const REVIEW_MARGIN_SEC = 30
 
 describe('second reviewer wiring', () => {
   it('W1 off: no entry', () => {
@@ -139,5 +163,28 @@ describe('second reviewer wiring', () => {
     ensureGovernanceGateCommands(TEST_AGENT, ON)
     expect(ensureGovernanceGateCommands(TEST_AGENT, ON)).toBe(false)
     expect(entries(readFileSync(p, 'utf-8'))).toHaveLength(2)
+  })
+  it('W13 the wrapper deadline outlasts the server reviewer deadline plus the margin, inside the hook timeout', () => {
+    const [e] = entries(render(ON))
+    const deadline = wrapperDeadlineSec(e.hooks[0].command)
+    expect(deadline).toBeGreaterThanOrEqual(SECOND_REVIEW_TIMEOUT_MS / 1000 + REVIEW_MARGIN_SEC)
+    // The gate's own socket timeout fires first, with its own "nem erheto el" message, not the wrapper's kill.
+    expect(deadline).toBeGreaterThanOrEqual(gateSocketTimeoutSec())
+    // And the wrapper, not Claude Code's hook timeout, ends a hung gate (fail-closed, exit 2).
+    expect(deadline).toBeLessThan(e.hooks[0].timeout)
+  })
+  it('W14 an agent wired with the old 8 s wrapper is rewritten once by the migration, then settles', () => {
+    render(ON)
+    const p = agentSettingsPath(TEST_AGENT)
+    const old = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
+    expect(wrapperDeadlineSec(old)).toBeLessThan(SECOND_REVIEW_TIMEOUT_MS / 1000)
+    const s = JSON.parse(readFileSync(p, 'utf-8'))
+    const entry = s.hooks.PreToolUse.find((x: unknown) => JSON.stringify(x).includes('second-reviewer-gate.py'))
+    entry.hooks[0].command = old
+    writeFileSync(p, JSON.stringify(s))
+    expect(ensureGovernanceGateCommands(TEST_AGENT, ON)).toBe(true)
+    const [e] = entries(readFileSync(p, 'utf-8'))
+    expect(e.hooks[0].command).toBe(secondReviewerHookCommand())
+    expect(ensureGovernanceGateCommands(TEST_AGENT, ON)).toBe(false)
   })
 })
