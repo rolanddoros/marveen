@@ -1126,6 +1126,37 @@ export function enforceStrictPermissionMode(
   return true
 }
 
+// C1 PR 11a-1 (Roland TG 2857, Kevin 13217): a sub-agent's working dir is
+// under PROJECT_ROOT, so Claude Code also loads the main agent's root
+// CLAUDE.md (about 33 KB) into every sub-agent, as an ancestor's Project
+// memory file. claudeMdExcludes stops that. The format, in the settings schema
+// of Claude Code 2.1.318: "Glob patterns or absolute paths of CLAUDE.md files
+// to exclude from loading. Patterns are matched against absolute file paths
+// using picomatch. Only applies to User, Project, and Local memory types".
+// Docs: code.claude.com/docs/en/settings-reference#claudemdexcludes (any
+// settings file) and /memory#exclude-specific-claude-md-files (arrays merge
+// across layers, so this project-scope entry and an agent's own
+// settings.local.json entries add up). The root file's absolute
+// path is appended once; every entry already there stays (an owner's own, or
+// the same path written by hand), and a value that is not an array is left as
+// the owner wrote it. The main agent is untouched: the root file is its own.
+// Returns whether it changed anything. Pure: unit-tested directly.
+export function injectClaudeMdExcludes(
+  name: string,
+  settings: Record<string, unknown>,
+  rootClaudeMd: string = join(PROJECT_ROOT, 'CLAUDE.md'),
+): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const current = settings.claudeMdExcludes
+  if (current === undefined) {
+    settings.claudeMdExcludes = [rootClaudeMd]
+    return true
+  }
+  if (!Array.isArray(current) || current.includes(rootClaudeMd)) return false
+  current.push(rootClaudeMd)
+  return true
+}
+
 // `extraHooksPath` is a test seam (the install-local extras file); production
 // callers pass nothing and get store/extra-hooks.json.
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate, extraHooksPath?: string): void {
@@ -1200,6 +1231,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
   enforceStrictPermissionMode(existing, profile.permissionMode)
+  // Kept across spawns: this function merges into the existing file.
+  injectClaudeMdExcludes(name, existing)
   // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
   // hooks. Re-applied on every spawn (this function regenerates settings.json),
   // so they survive respawns. (a) email-send block -- outbound email routes
