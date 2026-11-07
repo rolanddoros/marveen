@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { createServer, type Server, type IncomingMessage } from 'node:http'
 import { execFile, execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, readFileSync, readdirSync, chmodSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, cpSync, readFileSync, readdirSync, chmodSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,20 @@ const CONTENT = 'titkos szoveg a torzsben 4242'
 const dir = mkdtempSync(join(tmpdir(), 'agent-msg-argv-'))
 const tokenFile = join(dir, '.dashboard-token')
 writeFileSync(tokenFile, TOKEN + '\n', 'utf-8')
+// agent-msg.sh runs from a throwaway copy of the install: it logs a failed send to <its install>/store/
+// agent-msg-failures.log (the "exit code" case below is a failed send). Run from the checkout it wrote the
+// checkout's log, which jegyzetek.test.py checks while the scripts shards run in the same checkout (fork CI, 2026-11-06).
+const inst = mkdtempSync(join(dir, 'inst-'))
+mkdirSync(join(inst, 'scripts'))
+mkdirSync(join(inst, 'store'))
+copyFileSync(join(REPO, 'scripts', 'agent-msg.sh'), join(inst, 'scripts', 'agent-msg.sh'))
+cpSync(join(REPO, 'scripts', 'lib'), join(inst, 'scripts', 'lib'), { recursive: true })
+const HELPER = join(inst, 'scripts', 'agent-msg.sh')
+// This run's own FAIL lines in a failure log: the marker is this run's capture-server endpoint (a fresh port per run),
+// so another suite writing the checkout's log at the same moment is neither counted nor blamed.
+const markedLines = (log: string, port: number): string[] => existsSync(log)
+  ? readFileSync(log, 'utf-8').split('\n').filter((l) => l.includes(`\tfrom=dani\tto=samu\turl=http://127.0.0.1:${port}/api/messages\t`))
+  : []
 const REAL_CURL = execFileSync('/bin/sh', ['-c', 'command -v curl'], { encoding: 'utf-8' }).trim()
 const stubDir = join(dir, 'bin')
 mkdirSync(stubDir)
@@ -108,7 +122,7 @@ function expectHeaderNotArgv(argv: string, env: string, headers: string): void {
 describe('agent-msg.sh (C2 PR4: python, no curl): the token is on no child\'s argv and in no child\'s environment', () => {
   it('the server gets the token header and the body; no curl runs; no python child carries the token; nothing on disk', async () => {
     const tmp = mkdtempSync(join(dir, 'tmp-'))
-    const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', CONTENT], {
+    const r = await run(HELPER, ['dani', 'samu', CONTENT], {
       MARVEEN_API_BASE: `http://127.0.0.1:${port()}`, MARVEEN_TOKEN_FILE: tokenFile, TMPDIR: tmp,
     })
     expect(r.code, r.out).toBe(0)
@@ -129,7 +143,7 @@ describe('agent-msg.sh (C2 PR4: python, no curl): the token is on no child\'s ar
   // Dani 65583: an exported TOKEN in the caller's environment must not become a way for the dashboard token into a
   // child's environment. The caller's own value may pass through (it is the caller's), the dashboard token never.
   it('a TOKEN the caller exported does not carry the dashboard token into any child\'s environment', async () => {
-    const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', 'x'], {
+    const r = await run(HELPER, ['dani', 'samu', 'x'], {
       MARVEEN_API_BASE: `http://127.0.0.1:${port()}`, MARVEEN_TOKEN_FILE: tokenFile, TOKEN: 'ambient-foreign-value',
     })
     expect(r.code, r.out).toBe(0)
@@ -143,18 +157,21 @@ describe('agent-msg.sh (C2 PR4: python, no curl): the token is on no child\'s ar
   it('unchanged: the exit code says what happened (an answer with no message id is a failure, not "sent")', async () => {
     reply = '{"error":"x"}'
     const before = seen.length
-    const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', 'x'], {
+    const r = await run(HELPER, ['dani', 'samu', 'x'], {
       MARVEEN_API_BASE: `http://127.0.0.1:${port()}`, MARVEEN_TOKEN_FILE: tokenFile,
     })
     reply = '{"id":1}'
     expect(r.code).not.toBe(0)
     expect(seen.length).toBeGreaterThan(before)
+    // the failed send is logged in the throwaway install, and not in the checkout's store/
+    expect(markedLines(join(inst, 'store', 'agent-msg-failures.log'), port())).toHaveLength(1)
+    expect(markedLines(join(REPO, 'store', 'agent-msg-failures.log'), port())).toEqual([])
   })
 
   it('an empty token file stops before anything is sent: no request, no empty Bearer', async () => {
     const empty = join(mkdtempSync(join(dir, 'e-')), '.dashboard-token')
     writeFileSync(empty, '\n')
-    const r = await run(join(REPO, 'scripts', 'agent-msg.sh'), ['dani', 'samu', 'x'], {
+    const r = await run(HELPER, ['dani', 'samu', 'x'], {
       MARVEEN_API_BASE: `http://127.0.0.1:${port()}`, MARVEEN_TOKEN_FILE: empty,
     })
     expect(r.code).not.toBe(0)
