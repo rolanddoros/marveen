@@ -2455,18 +2455,28 @@ export function agentGetsSecondReviewer(name: string, profile?: ProfileTemplate)
   return profileWantsSecondReviewer(p)
 }
 
+// 180 s: the server gives the reviewer 45 s (SECOND_REVIEW_TIMEOUT_MS); the hook's socket timeout
+// (75 s) applies per operation, so connect plus read stays well inside this, and the hook never times
+// out while a review is pending. The fail-closed wrapper's own deadline is derived from this same
+// value (gateDeadlineSec: 178 s); built with the builder's default (10) the gate was cut at 8 s, before
+// any review could answer, and every high-risk call blocked.
+export const SECOND_REVIEWER_HOOK_TIMEOUT_SEC = 180
+// One builder for the injector AND the migration's wired-already check, so the two cannot disagree on
+// the command (a disagreement rewrites settings.json on every boot).
+export function secondReviewerHookCommand(): string {
+  return pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'), [], SECOND_REVIEWER_HOOK_TIMEOUT_SEC)
+}
+
 export function injectSecondReviewerGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
+  const command = secondReviewerHookCommand()
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
-  // 180 s: the server gives the reviewer 45 s; the hook's socket timeout (75 s) applies per operation,
-  // so connect plus read stays well inside this, and the hook never times out while a review is pending.
   const entry = {
     matcher: SECOND_REVIEWER_MATCHER,
-    hooks: [{ type: 'command', command, timeout: 180 }],
+    hooks: [{ type: 'command', command, timeout: SECOND_REVIEWER_HOOK_TIMEOUT_SEC }],
   }
   removeSecondReviewerGate(existing)
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -2961,7 +2971,7 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (e as { matcher?: unknown })?.matcher !== EMAIL_GATE_MATCHER)
   const needCredential = agentGetsCredentialGate(name, profile)
     && (!hookCommandWired(ptuJson, credentialCmd) || credentialStale)
-  const reviewerCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
+  const reviewerCmd = secondReviewerHookCommand()
   const reviewerStale = ptu.some((e) => entryHasSecondReviewer(e)
     && (e as { matcher?: unknown })?.matcher !== SECOND_REVIEWER_MATCHER)
   const needReviewer = agentGetsSecondReviewer(name, profile)

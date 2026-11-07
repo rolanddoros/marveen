@@ -115,9 +115,9 @@ export interface HookSpec {
   timeout?: number
   /**
    * Seconds the fail-closed wrapper's own deadline is computed from (minus 2),
-   * where the command was built with another value than `timeout`. Recorded as
-   * found: second-reviewer-gate's builder call passes no timeout, so its gate is
-   * cut at 8 s (default 10) inside a 180 s hook.
+   * where the command was built with another value than `timeout`. No entry
+   * sets it today: second-reviewer-gate did (10, its gate cut at 8 s inside a
+   * 180 s hook) until its builder passed the hook's own timeout.
    */
   wrapperTimeout?: number
   wrapper: WrapperKind
@@ -293,7 +293,7 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   { id: 'sender-role-gate', script: 'scripts/hooks/sender-role-gate.py', events: ['PreToolUse'], matcher: '*', args: ['--policy'], agentFlag: 'senderRolePolicy', ...pythonGate },
   { id: 'destructive-gate', script: 'scripts/hooks/destructive-gate.py', events: ['PreToolUse'], matcher: 'Bash|Read|Edit|Write|NotebookEdit', profileFlag: 'destructiveGate', ...pythonGate },
   { id: 'credential-gate', script: 'scripts/hooks/credential-gate.py', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, profileFlag: 'credentialGate', ...pythonGate },
-  { id: 'second-reviewer-gate', script: 'scripts/hooks/second-reviewer-gate.py', events: ['PreToolUse'], matcher: 'Bash|mcp__.*', profileFlag: 'secondReviewer', ...pythonGate, timeout: 180, wrapperTimeout: 10 },
+  { id: 'second-reviewer-gate', script: 'scripts/hooks/second-reviewer-gate.py', events: ['PreToolUse'], matcher: 'Bash|mcp__.*', profileFlag: 'secondReviewer', ...pythonGate, timeout: 180 },
   { id: 'bash-egress-parser', script: 'scripts/hooks/bash-egress-parser.mjs', events: ['PreToolUse'], matcher: 'Bash', ...nodeGate },
 
   // Stop / StopFailure
