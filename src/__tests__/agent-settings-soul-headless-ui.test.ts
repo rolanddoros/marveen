@@ -4,6 +4,8 @@
 // field and the main agent keep them. If an empty save still reaches the server (an old
 // client), the 11c-3 guard skips it and answers soulMdWritten:false, and the client shows
 // no "saved" toast for that no-op. No new copy.
+// C1 PR 11c-5 (Johnny 13617): hidden ONLY while SOUL.md is missing or blank; a SOUL.md
+// with content keeps the editor visible whatever personaAtCreation says.
 //
 // The functions under test are the real ones from web/app.js, run against a stub DOM.
 import { describe, it, expect } from 'vitest'
@@ -64,11 +66,51 @@ describe('Settings tab: the SOUL.md editor for an agent created without Telegram
     expect(els.editSoulGroup.hidden).toBe(false)
   })
 
+  // C1 PR 11c-5: content wins over personaAtCreation.
+  it('personaAtCreation false WITH SOUL.md content: shown (content is never unreachable)', () => {
+    const { els, document } = stubDom()
+    els.editSoulGroup.hidden = true
+    applyVisibility(document, { name: 'x', personaAtCreation: false, soulMd: '# by hand\n' })
+    expect(els.editSoulGroup.hidden).toBe(false)
+  })
+
+  for (const blank of ['', '  \n\t ']) {
+    it(`personaAtCreation false, SOUL.md ${JSON.stringify(blank)}: hidden`, () => {
+      const { els, document } = stubDom()
+      applyVisibility(document, { name: 'x', personaAtCreation: false, soulMd: blank })
+      expect(els.editSoulGroup.hidden).toBe(true)
+    })
+  }
+
+  it('personaAtCreation true with an empty SOUL.md (a Telegram agent): shown', () => {
+    const { els, document } = stubDom()
+    els.editSoulGroup.hidden = true
+    applyVisibility(document, { name: 'x', personaAtCreation: true, soulMd: '' })
+    expect(els.editSoulGroup.hidden).toBe(false)
+  })
+
+  it('the rule reads the detail\'s own soulMd text, no other field', () => {
+    expect(visibilitySrc()).toContain("const hasSoulContent = typeof agent?.soulMd === 'string' && agent.soulMd.trim() !== ''")
+    expect(visibilitySrc()).toContain('group.hidden = agent?.personaAtCreation === false && !hasSoulContent')
+  })
+
   it('a persona-less agent opened first does not leave the editor hidden for the next one', () => {
     const { els, document } = stubDom()
     applyVisibility(document, { name: 'a', personaAtCreation: false })
     applyVisibility(document, { name: 'b', personaAtCreation: true })
     expect(els.editSoulGroup.hidden).toBe(false)
+  })
+
+  it('its doc comment sits above it, and the readOnly comment stays above applyMarveenReadonlyMode (Ron Low, 11c-4)', () => {
+    const fn = APP.indexOf('function applySoulEditorVisibility(agent) {')
+    const before = APP.slice(APP.lastIndexOf('\n}\n', fn), fn)
+    expect(before).toContain('// C1 PR 11c-4: an agent created without Telegram has no persona and no SOUL.md,')
+    expect(before).not.toContain('`readOnly` is really')
+    const ro = APP.indexOf('function applyMarveenReadonlyMode(readOnly) {')
+    const roBefore = APP.slice(APP.lastIndexOf('\n}\n', ro), ro)
+    expect(roBefore).toContain('// `readOnly` is really "this modal is showing the MAIN agent" -- it is called')
+    // the comment ends on the line right above the function
+    expect(roBefore).toMatch(/whose panel never runs that function\.\n$/)
   })
 
   it('both detail paths apply it on every open: the sub-agent and the main agent', () => {
