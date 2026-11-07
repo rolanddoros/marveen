@@ -16,10 +16,11 @@
 // owner chat_id is masked unless --show-chat-id. `--excerpts` adds a masked
 // excerpt of each finding's line and a diff with 3 verbatim context lines;
 // that output is NOT for a PR description (the owner zones belong to the
-// agents' principals). `--redact-names` replaces the root with <ROOT> and
-// every agent name with agent-01..NN (main agent first, then the sub-agents in
-// name order): the fork is public, so the PR text is made with it, and the
-// full report stays local (Kevin 13030). `--home` names the directory whose
+// agents' principals). `--redact-names` replaces the root with <ROOT>, every
+// agent name with agent-01..NN (main agent first, then the sub-agents in name
+// order), and the configured OWNER_NAME / BOT_NAME with <OWNER> / <BOT>: the
+// fork is public, so the PR text is made with it, and the full report stays
+// local (Kevin 13030, 13039). `--home` names the directory whose
 // .claude/settings.json is the main agent's user-scope settings layer
 // (default: os.homedir()). The header names the code version from
 // dist/.built-commit ("unknown" without one).

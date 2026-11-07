@@ -397,17 +397,22 @@ describe('--redact-names', () => {
     r3 = join(base, 'rootsentinelxq', 'install')
     mkdirSync(join(r3, 'agents', 'zzsentinelagent'), { recursive: true })
     mkdirSync(join(r3, 'agents', 'aasentinelagent'), { recursive: true })
-    writeFileSync(join(r3, '.env'), 'MAIN_AGENT_ID=chiefsentinelxq\n')
-    writeFileSync(join(r3, 'CLAUDE.md'), `# chief\n\nAsk zzsentinelagent \`curl -s ${r3}/x http://h/api/x\`\n`)
+    // Kevin 13039: the configured owner and bot names are masked too, also
+    // with a Hungarian suffix glued on. The quotes keep the spaces (env-parse.ts);
+    // live-context.ts trims them, so the redactor must too.
+    writeFileSync(join(r3, '.env'), 'MAIN_AGENT_ID=chiefsentinelxq\nOWNER_NAME=" ownersentinelxq "\nBOT_NAME=botsentinelxq\n')
+    writeFileSync(join(r3, 'CLAUDE.md'), `# chief\n\nAsk zzsentinelagent or botsentinelxq for ownersentinelxqnak \`curl -s ${r3}/x http://h/api/x\`\n`)
     writeFileSync(join(r3, 'agents', 'zzsentinelagent', 'CLAUDE.md'), '# zz\n```\nopen fence\n')
     writeFileSync(join(r3, 'agents', 'aasentinelagent', 'CLAUDE.md'), '# aa\n')
   })
-  const SENT = ['zzsentinelagent', 'aasentinelagent', 'chiefsentinelxq', 'rootsentinelxq']
+  const SENT = ['zzsentinelagent', 'aasentinelagent', 'chiefsentinelxq', 'rootsentinelxq', 'ownersentinelxq', 'botsentinelxq']
 
   it.each([[[]], [['--json']], [['--excerpts']], [['--json', '--excerpts']]])('%j: no agent name and no root path', (extra) => {
     const { out } = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--redact-names', ...(extra as string[]))
     for (const s of SENT) expect(out, s).not.toContain(s)
     expect(out).toContain('agent-03')
+    // the region diff was there to leak from: its identity line
+    expect(out).toContain('Owner: <OWNER>.')
   })
 
   it('numbers the agents main first, then the subs in name order, the same with --agent', () => {
@@ -425,14 +430,15 @@ describe('--redact-names', () => {
 
   it('excerpts: a name and the root inside owner text are replaced too', () => {
     const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--agent', 'chiefsentinelxq', '--redact-names', '--excerpts').out
-    expect(t).toContain('      | Ask agent-03 `curl -s <ROOT>/x http://h/api/x`\n')
+    expect(t).toContain('      | Ask agent-03 or <BOT> for <OWNER>nak `curl -s <ROOT>/x http://h/api/x`\n')
     // the verbatim diff context carries the same owner line, redacted the same way
-    expect(t).toContain('\n Ask agent-03 `curl -s <ROOT>/x http://h/api/x`\n')
+    expect(t).toContain('\n Ask agent-03 or <BOT> for <OWNER>nak `curl -s <ROOT>/x http://h/api/x`\n')
   })
 
   it('without the flag the names are printed (the local report)', () => {
-    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all').out
+    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--excerpts').out
     for (const s of SENT) expect(t).toContain(s)
+    expect(t).toContain('Owner: ownersentinelxq.')
   })
 
   // Today only booleans can be assumed and rendered (profile.strict,
@@ -442,14 +448,14 @@ describe('--redact-names', () => {
     const result = dryRun(r3, 'aasentinelagent', { homeDir: HOME_FIX() })
     const a = result.agents[0]
     expect(a.context).toBeDefined()
-    a.context!.assumedRendered = { projectRoot: r3, roster: ['zzsentinelagent'] }
+    a.context!.assumedRendered = { projectRoot: r3, roster: ['zzsentinelagent', 'botsentinelxq'], 'owner.name': 'ownersentinelxq' }
     const j = formatJson(result, { redactNames: true })
     const t = formatText(result, { redactNames: true })
     for (const s of SENT) {
       expect(j, s).not.toContain(s)
       expect(t, s).not.toContain(s)
     }
-    expect(JSON.parse(j).agents[0].context.assumedRendered).toEqual({ projectRoot: '<ROOT>', roster: ['agent-03'] })
+    expect(JSON.parse(j).agents[0].context.assumedRendered).toEqual({ projectRoot: '<ROOT>', roster: ['agent-03', '<BOT>'], 'owner.name': '<OWNER>' })
   })
 })
 

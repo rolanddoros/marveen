@@ -107,6 +107,27 @@ export function readMainAgentId(root: string): string {
   return v === undefined ? DEFAULT_MAIN_AGENT_ID : v
 }
 
+export interface IdentityNames {
+  owner?: string
+  bot?: string
+}
+
+// OWNER_NAME and BOT_NAME as <root>/.env sets them, trimmed (live-context.ts
+// reads them the same way). An unset or empty one renders the code default
+// ("Owner" / "Marveen"), which names nobody, so it is left out.
+export function readIdentityNames(root: string): IdentityNames {
+  let content: string
+  try {
+    content = readFileSync(join(root, '.env'), 'utf-8')
+  } catch {
+    return {}
+  }
+  const env = parseEnvContent(content, ['OWNER_NAME', 'BOT_NAME'])
+  const owner = (env.OWNER_NAME ?? '').trim()
+  const bot = (env.BOT_NAME ?? '').trim()
+  return { ...(owner ? { owner } : {}), ...(bot ? { bot } : {}) }
+}
+
 // The sub-agents the dashboard lists (agent-config.ts listAgentNames): the
 // directories of <root>/agents, not the main id, without the hidden sentinel.
 // A symlink into agents/ itself is an alias, not an agent (ROSTERALIAS1026);
@@ -279,6 +300,9 @@ export interface DryRunResult {
   // Every listed agent (main first, then the subs in name order), also when
   // one agent was asked for: --redact-names numbers agents by this list.
   listed: string[]
+  // The configured OWNER_NAME / BOT_NAME (readIdentityNames): --redact-names
+  // masks them; the report never prints this field.
+  identity: IdentityNames
 }
 
 export class UsageError extends Error {
@@ -377,5 +401,5 @@ export function dryRun(root: string, agent?: string, opts: PlanOptions = {}): Dr
     if (report.status !== 'ok' || got === null) return report
     return planRegion(report, new TextDecoder('utf-8', { ignoreBOM: true }).decode(got), root, opts)
   })
-  return { root, mainAgentId: mainId, agents, listed }
+  return { root, mainAgentId: mainId, agents, listed, identity: readIdentityNames(root) }
 }

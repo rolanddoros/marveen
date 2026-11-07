@@ -91,8 +91,10 @@ export function codeVersion(stamp = join(dirname(fileURLToPath(import.meta.url))
 // the listing order (main agent first, then the sub-agents in name order), the
 // same number on every run of the same install, whichever agent is asked for.
 // Applied to the report's own fields and to every free text it prints (error
-// messages, excerpts, the region diff and the assumed values), where a name
-// counts only as a whole word.
+// messages, excerpts, the region diff and the assumed values), where an agent
+// name counts only as a whole word. The configured OWNER_NAME and BOT_NAME
+// (DryRunResult.identity) become <OWNER> and <BOT> at every occurrence, also
+// inside a word (a Hungarian suffix is glued on: "Rolandnak") (Kevin 13039).
 export interface Redactor {
   name(n: string): string
   text(s: string): string
@@ -106,12 +108,18 @@ export function makeRedactor(result: DryRunResult): Redactor {
   const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   // Longest first, so a name that contains another is replaced whole.
   const words = [...map.keys()].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
+  // Longest first again: a bot name that contains the owner name (or back).
+  const people: [string, string][] = []
+  if (result.identity.owner) people.push([result.identity.owner, '<OWNER>'])
+  if (result.identity.bot) people.push([result.identity.bot, '<BOT>'])
+  people.sort((a, b) => b[0].length - a[0].length)
   const re = words.length > 0 ? new RegExp(`(?<![A-Za-z0-9_-])(?:${words.map(escapeRe).join('|')})(?![A-Za-z0-9_-])`, 'g') : null
   return {
     name: (n) => map.get(n) ?? n,
     text: (s) => {
       const rooted = s.split(result.root).join('<ROOT>')
-      return re ? rooted.replace(re, (w) => map.get(w) ?? w) : rooted
+      const named = re ? rooted.replace(re, (w) => map.get(w) ?? w) : rooted
+      return people.reduce((t, [v, ph]) => t.split(v).join(ph), named)
     },
   }
 }
@@ -165,7 +173,7 @@ export function formatText(result: DryRunResult, opts: FormatOptions = {}): stri
   const v = view(result, opts)
   const out: string[] = [`claude-md dry-run (read-only), root ${v.root}, main agent ${v.mainAgentId}, code ${v.code}`]
   if (opts.excerpts) out.push('EXCERPTS ON: owner-zone text below (findings masked, diff context verbatim); not for a PR description')
-  if (opts.redactNames) out.push('names redacted: root <ROOT>, agents agent-NN (main agent first, then the sub-agents in name order)')
+  if (opts.redactNames) out.push('names redacted: root <ROOT>, agents agent-NN (main agent first, then the sub-agents in name order), owner <OWNER>, bot <BOT>')
   for (const a of v.agents) {
     out.push('')
     out.push(`${a.name} (${a.role}) ${a.file}: ${a.status}`)
