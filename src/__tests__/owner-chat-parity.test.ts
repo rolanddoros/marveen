@@ -6,10 +6,11 @@
 // resolveOwnerChatId's first-entry heuristic (#1555 review round 1).
 import { describe, it, expect, afterEach, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveAlertOwnerChat } from '../owner-chat.js'
+import { parseEnvContent } from '../env-parse.js'
 
 const REAL = '1268077055'
 const REPO_ROOT = join(__dirname, '..', '..')
@@ -133,6 +134,38 @@ describe('owner-chat parity: shell, Python, TS agree', () => {
     const envFile = join(dir, '.env')
     expect(runShell(envFile, { TELEGRAM_STATE_DIR: sub }), 'shell').toBe(REAL)
     expect(runPython(envFile, { TELEGRAM_STATE_DIR: sub }), 'python').toBe(REAL)
+  })
+
+  // C1 PR 11c (Ron 13368/1): an invalid UTF-8 byte on ANOTHER line of .env (a
+  // comment here) garbles only that line. The shell greps the key line, the TS
+  // reads the file as UTF-8 with replacement (readEnvFile + parseEnvContent),
+  // and the Python decodes with errors="replace": all three read the valid id.
+  it('an invalid byte on another .env line: all three read the valid ALLOWED_CHAT_ID', () => {
+    const dir = makeInstall(undefined, { allowFrom: ['999'] })
+    const envFile = join(dir, '.env')
+    writeFileSync(envFile, Buffer.concat([
+      Buffer.from('MAIN_AGENT_ID=marveen\n# comment '), Buffer.from([0xff, 0xfe]), Buffer.from(' broken\nALLOWED_CHAT_ID=424242\n'),
+    ]))
+    const tsValue = parseEnvContent(readFileSync(envFile, 'utf-8')).ALLOWED_CHAT_ID ?? ''
+    expect(runTs(tsValue, { allowFrom: ['999'] }), 'TS').toBe('424242')
+    expect(runShell(envFile), 'shell').toBe('424242')
+    expect(runPython(envFile), 'python').toBe('424242')
+  })
+
+  // The same byte ON the ALLOWED_CHAT_ID line: none of the three refuses it
+  // today (Kevin 13373, pinned as it is; a follow-up makes all three return
+  // null). The shell passes the raw byte through, TS and Python carry U+FFFD.
+  it('an invalid byte on the ALLOWED_CHAT_ID line: the garbled value, as all three return it today', () => {
+    const dir = makeInstall(undefined, undefined)
+    const envFile = join(dir, '.env')
+    writeFileSync(envFile, Buffer.concat([
+      Buffer.from('MAIN_AGENT_ID=marveen\nALLOWED_CHAT_ID=4242'), Buffer.from([0xff]), Buffer.from('42\n'),
+    ]))
+    const tsValue = parseEnvContent(readFileSync(envFile, 'utf-8')).ALLOWED_CHAT_ID ?? ''
+    expect(runTs(tsValue, undefined), 'TS').toBe('4242�42')
+    expect(runPython(envFile), 'python').toBe('4242�42')
+    const shBytes = execFileSync('bash', ['-c', `. "${SH_LIB}"; resolve_owner_chat_id "$1" 2>/dev/null`, '_', envFile], { env: childEnv() })
+    expect([...shBytes], 'shell (raw bytes)').toEqual([...Buffer.from('4242'), 0xff, ...Buffer.from('42\n')])
   })
 
   // Mutant probe (Phase 1.1 verification requirement): a deliberately broken

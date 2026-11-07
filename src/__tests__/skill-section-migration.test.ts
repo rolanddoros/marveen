@@ -156,7 +156,7 @@ describe('skill section migration', () => {
     expect(ensureSkillSectionCurrent(MAIN_AGENT_ID)).toBe(false)
   })
 
-  it('M10: generateClaudeMd embeds buildSkillSection(), and the heading lives only there', () => {
+  it('M10: the creation sections (buildCreationSections, C1 PR 11c) embed buildSkillSection(), and the heading lives only there', () => {
     // Read the source the way skill-propose-instructions.test.ts does, so the
     // prompt agents are SHIPPED and the section the migration WRITES cannot
     // drift apart.
@@ -166,7 +166,7 @@ describe('skill section migration', () => {
       return src.slice(from, m < 0 ? undefined : from + 1 + m)
     }
     expect(src).toContain('${buildSkillSection(helper ? name : undefined, tokenPath)}')
-    const g = src.indexOf('function generateClaudeMd')
+    const g = src.indexOf('function buildCreationSections')
     expect(g).toBeGreaterThan(-1)
     expect(body(g)).toContain('${buildSkillSection(helper ? name : undefined, tokenPath)}')
     // the section text lives once, in buildSkillSection's template literal (it opens

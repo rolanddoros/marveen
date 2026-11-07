@@ -1929,16 +1929,13 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
     # Opt-in: re-render from the canonical template with this install's identity.
     # Back up first -- the operator may have hand-edited CLAUDE.md.
     [ -f "$CLAUDE_MD" ] && cp "$CLAUDE_MD" "$CLAUDE_MD.backup-$(date +%Y%m%d-%H%M%S)"
-    REGEN_CHAT_ID=""
-    [ -f "$INSTALL_DIR/.env" ] && REGEN_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
-    sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-        -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-        -e "s/{{CHAT_ID}}/$REGEN_CHAT_ID/g" \
-        -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-        -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-        -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-        -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-        "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
+    # C1 PR 11c: the same renderer as the installers. It reads the chat id from the
+    # .env's ALLOWED_CHAT_ID (this used to grep a CHAT_ID= key the .env does not
+    # have, so the chat id came out empty) and leaves it out when unset or "0".
+    OWNER_NAME="$OWNER_NAME" INSTALL_DIR="$INSTALL_DIR" BOT_NAME="$BOT_NAME" MAIN_AGENT_ID="$MAIN_AGENT_ID" \
+        WEB_PORT="${WEB_PORT:-3420}" \
+        TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")" \
+        python3 "$INSTALL_DIR/scripts/lib/render_claude_md_template.py" "$INSTALL_DIR/templates/CLAUDE.md.template" "$CLAUDE_MD" "$INSTALL_DIR/.env"
     echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
   elif [ -f "$CLAUDE_MD" ]; then
     KNOWN_IDS=" ${MAIN_AGENT_ID} ${BOT_NAME} "

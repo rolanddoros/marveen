@@ -100,10 +100,11 @@ function startBlocks(name: string): string {
   return readFileSync(path, 'utf-8')
 }
 
-async function creation(name: string): Promise<{ prompt: string; out: string }> {
+async function creation(name: string): Promise<{ prompt: string; out: string; body: string }> {
   captured.length = 0
   const out = await S.generateClaudeMd(name, 'desc', 'model')
-  return { prompt: captured[0], out }
+  // C1 PR 11c: the recipes are in the body the code appends after the model's text, before the marker blocks.
+  return { prompt: captured[0], out, body: out.slice(0, out.indexOf('<!-- BEGIN GENERATED: ')) }
 }
 
 const BLOCK_TITLES = [
@@ -159,25 +160,25 @@ describe('a strict agent gets no recipe its dontAsk mode denies', () => {
     }
   })
 
-  it('the creation prompt and the file it returns', async () => {
+  it('the creation prompt, the body the code appends and the file it returns', async () => {
     stageAgent('strict-a', 'developer-junior')
-    const { prompt, out } = await creation('strict-a')
-    for (const text of [prompt, out]) {
+    const { prompt, out, body } = await creation('strict-a')
+    for (const text of [prompt, body, out]) {
       expect(text).not.toContain('$(cat ')
       expect(text).not.toContain('Authorization: Bearer')
       expect(text.split('\n').filter((l) => l.trimStart().startsWith('curl '))).toEqual([])
     }
     // memory save, daily log, search, hot list, move, schedule list (PR-B: a strict agent can list now), skill
     // proposal, stranger ping
-    expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(
+    expect(helperLines(body).map((l) => l.split(' ')[2])).toEqual(
       ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'schedules-list', 'skill-propose', 'message'],
     )
-    expect(prompt).not.toContain('Listázni sem tudsz')
+    expect(body).not.toContain('Listázni sem tudsz')
   })
 
   it('every helper line is matched by the profile allow-list entry and names a known verb', async () => {
     stageAgent('strict-a', 'developer-junior')
-    const text = startBlocks('strict-a') + '\n' + (await creation('strict-a')).prompt
+    const text = startBlocks('strict-a') + '\n' + (await creation('strict-a')).body
     const profile = JSON.parse(readFileSync(join(REPO, 'templates', 'profiles', 'developer-junior.json'), 'utf-8'))
     const rule = (profile.filesystem.allow as string[])
       .map((r) => resolveProfilePlaceholders(r, { HOME: '/home/x', AGENT_DIR: '/agent' }))
@@ -230,7 +231,7 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
   // Dani 65347, Samu 65350: every recipe kind names ITS OWN file, everywhere the recipes are generated (the creation
   // prompt and every block, for a permissive and a strict agent); a save and a log prepared in one round must never
   // share a file. (A daily log on api-memoria.txt in the creation recipes stayed green before this assert.)
-  it('every recipe kind names its own payload file, in the creation prompt and in every block', async () => {
+  it('every recipe kind names its own payload file, in the creation body and in every block', async () => {
     const KIND: Record<string, string> = {
       'memory-save': 'memoria', 'memory-update': 'memoria', 'daily-log': 'naplo', message: 'uzenet',
       'approval-request': 'jovahagyas',
@@ -238,7 +239,7 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     const seen = new Set<string>()
     for (const [name, profile] of [['plain-k', null], ['strict-k', 'developer-junior']] as const) {
       stageAgent(name, profile)
-      const text = [(await creation(name)).prompt, startBlocks(name)].join('\n')
+      const text = [(await creation(name)).body, startBlocks(name)].join('\n')
       // message-close names its result file in the sentence next to it
       const results = [...text.matchAll(/--result-file (\S+?)`/g)].map((m) => m[1]!)
       expect(results.length, name).toBeGreaterThan(0)
@@ -309,15 +310,15 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
 
   // VOICETOKENLEAK1101 PR-A2/PR-B: the creation-time body goes through the helper, the schedules read too (PR-B,
   // schedules-list); the dontAsk sentence stays strict-only.
-  it('the creation prompt: every recipe through the helper, the schedules read too (PR-B)', async () => {
+  it('the creation body: every recipe through the helper, the schedules read too (PR-B)', async () => {
     stageAgent('plain-b', null)
-    const { prompt } = await creation('plain-b')
-    expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(
+    const { body } = await creation('plain-b')
+    expect(helperLines(body).map((l) => l.split(' ')[2])).toEqual(
       ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'schedules-list', 'skill-propose', 'message'],
     )
-    expect(prompt.split('$(cat ').length - 1).toBe(0)
-    expect(prompt).not.toContain('dontAsk')
-    expect(prompt).toContain('Olvasni (listázni) szabad, a segéddel')
+    expect(body.split('$(cat ').length - 1).toBe(0)
+    expect(body).not.toContain('dontAsk')
+    expect(body).toContain('Olvasni (listázni) szabad, a segéddel')
   })
 
   // Dani 64941/3, Samu 65434 "kész-jel" for the WHOLE generated CLAUDE.md: the creation prompt the model copies, the
@@ -325,9 +326,9 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
   // helper); "curl" may stay in prose (the self-pace rule names the clients it forbids), never as a recipe line.
   it('the whole generated CLAUDE.md: no token and no curl recipe at all (PR-B)', async () => {
     stageAgent('plain-w', null)
-    const { prompt, out } = await creation('plain-w')
+    const { prompt, out, body } = await creation('plain-w')
     writeFileSync(join(tmpRoot, 'agents', 'plain-w', 'CLAUDE.md'), out, 'utf-8')
-    const text = [prompt, startBlocks('plain-w')].join('\n')
+    const text = [prompt, body, startBlocks('plain-w')].join('\n')
     expect(text.split('\n').filter((l) => /\$\(cat|\.dashboard-token|Authorization/.test(l))).toEqual([])
     expect(text.split('\n').filter((l) => /^\s*curl\s/.test(l))).toEqual([])
     expect(text).toContain('<!-- BEGIN GENERATED: api-helper')
@@ -396,14 +397,14 @@ describe('the api-helper block (VOICETOKENLEAK1101 PR-A2): an existing agent bod
   // inter-agent message, so an agent could follow the body's curl for a message to its lead (or the "task done" ping).
   it('the override sentence names every kind of body recipe, the inter-agent message to any recipient too', async () => {
     stageAgent('plain-n', null)
-    const prompt = (await creation('plain-n')).prompt
+    const body = (await creation('plain-n')).body
     const block = S.buildApiHelperBody('plain-n').replace(/\s+/g, ' ')
     const sentence = block.slice(block.indexOf('Ha ennek a fájlnak egy MÁSIK része'), block.indexOf('Helyette ezeket használd'))
     const NAMED: Record<string, string> = {
       'memory-save': 'memória mentés', 'memory-search': 'keresés', 'memory-list': 'hot-lista', 'memory-move': 'átsorolás',
       'daily-log': 'napi napló', message: 'inter-agent üzenet BÁRMELY címzettnek', 'schedules-list': 'ütemezések listája',
     }
-    const bodyVerbs = helperLines(prompt).map((l) => l.split(' ')[2]!).filter((v) => v !== 'skill-propose')
+    const bodyVerbs = helperLines(body).map((l) => l.split(' ')[2]!).filter((v) => v !== 'skill-propose')
     expect(bodyVerbs.length).toBeGreaterThanOrEqual(7)
     for (const v of bodyVerbs) {
       expect(NAMED[v], `body verb without a name in the test: ${v}`).toBeDefined()

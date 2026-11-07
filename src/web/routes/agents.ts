@@ -111,6 +111,7 @@ import {
   scaffoldAgentDir,
   generateClaudeMd,
   generateSoulMd,
+  buildCreationSections,
 } from '../agent-scaffold.js'
 import {
   isAgentRunning,
@@ -254,7 +255,12 @@ export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 // "Ujrageneralasig ez marad ervenyben", but nothing reads
 // PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
 // points at editing, which is what actually exists.
-function fallbackClaudeMd(name: string, description: string, model: string): string {
+//
+// C1 PR 11c: `sections` are the seven mandatory sections a generated CLAUDE.md
+// carries after its persona (buildCreationSections). The start path's generated
+// blocks do not write them, so without them a failed generation left the agent
+// without its memory, schedule, time and fleet rules.
+function fallbackClaudeMd(name: string, description: string, model: string, sections = ''): string {
   return `# ${name}
 
 > **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
@@ -275,7 +281,7 @@ ${description}
 ## Modell
 
 ${model}
-`
+` + (sections ? `\n${sections}\n` : '')
 }
 
 function fallbackSoulMd(name: string, description: string): string {
@@ -1287,9 +1293,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // wrote while it ran -- that is exactly the measured incident. No sidecar
       // here: a placeholder has nothing worth keeping.
       let templateWritten = false
+      // C1 PR 11c: the template carries the mandatory sections too; if even they
+      // cannot be built, the template goes without them (the agent stays usable).
+      let sections = ''
+      try {
+        sections = await buildCreationSections(name)
+      } catch (sectionsErr) {
+        logger.error({ err: sectionsErr, name }, 'Fallback CLAUDE.md: the mandatory sections could not be built -- template without them')
+      }
       try {
         for (const [f, content] of [
-          [claudeMdFile, fallbackClaudeMd(name, description, model)],
+          [claudeMdFile, fallbackClaudeMd(name, description, model, sections)],
           [soulMdFile, fallbackSoulMd(name, description)],
         ] as const) {
           if (personaWrittenByUs.has(f.file)) continue

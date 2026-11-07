@@ -26,6 +26,8 @@ import { tmpdir } from 'node:os'
 const h = vi.hoisted(() => ({
   root: '',
   createAgentMessage: vi.fn(),
+  // C1 PR 11c: what buildCreationSections hands the fallback template (a thrown error when sectionsError is set).
+  sectionsError: null as null | Error,
   gen: null as null | {
     started: Promise<void>
     markStarted: () => void
@@ -54,6 +56,10 @@ vi.mock('../web/agent-scaffold.js', async (importOriginal) => {
     writeAgentSettingsFromProfile: vi.fn(),
     generateClaudeMd: () => { h.gen!.markStarted(); return h.gen!.claude.promise },
     generateSoulMd: () => { h.gen!.markStarted(); return h.gen!.soul.promise },
+    buildCreationSections: async (name: string) => {
+      if (h.sectionsError) throw h.sectionsError
+      return `## Memoria rendszer\n\n(the seven sections for ${name})`
+    },
   }
 })
 
@@ -256,5 +262,40 @@ describe('POST /api/agents: untouched files still get written (the guard is not 
     expect(r.body.personalityPending).toBe(true)
     expect(r.body.personalitySkipped).toBeUndefined()
     expect(skipNotices()).toHaveLength(0)
+  })
+
+  // C1 PR 11c: the template is not the model's text, so the seven mandatory sections are its only source too.
+  it('generation FAILS: the template carries the mandatory sections after its own text', async () => {
+    h.sectionsError = null
+    const pending = startCreate()
+    await h.gen!.started
+    h.gen!.claude.reject(new Error('boom'))
+    h.gen!.soul.reject(new Error('boom'))
+    await pending
+
+    const file = read('CLAUDE.md')
+    expect(file).toContain('SABLON')
+    expect(file.endsWith(`\n\n## Memoria rendszer\n\n(the seven sections for ${NAME})\n`)).toBe(true)
+    expect(file.indexOf('## Modell')).toBeLessThan(file.indexOf('## Memoria rendszer'))
+    expect(read('SOUL.md')).not.toContain('Memoria rendszer')
+  })
+
+  it('generation FAILS and the sections cannot be built either: the plain template is still written, the agent kept', async () => {
+    h.sectionsError = new Error('settings unreadable')
+    try {
+      const pending = startCreate()
+      await h.gen!.started
+      h.gen!.claude.reject(new Error('boom'))
+      h.gen!.soul.reject(new Error('boom'))
+      const r = await pending
+
+      const file = read('CLAUDE.md')
+      expect(file).toContain('SABLON')
+      expect(file).not.toContain('Memoria rendszer')
+      expect(r.body.personalityPending).toBe(true)
+      expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(true)
+    } finally {
+      h.sectionsError = null
+    }
   })
 })

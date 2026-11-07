@@ -1430,14 +1430,13 @@ esac
 
 # CLAUDE.md generalasa template-bol
 if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
-  sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-    -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-    -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
-    -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-    -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-    -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-    -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
-    "$INSTALL_DIR/templates/CLAUDE.md.template" >"$INSTALL_DIR/CLAUDE.md"
+  # C1 PR 11c: the chat id comes from the .env written above (ALLOWED_CHAT_ID), not
+  # from $CHAT_ID: before pairing that is "0", and the renderer then leaves the chat
+  # id out instead of writing chat 0 (scripts/lib/render_claude_md_template.py).
+  OWNER_NAME="$OWNER_NAME" INSTALL_DIR="$INSTALL_DIR" BOT_NAME="$BOT_NAME" MAIN_AGENT_ID="$MAIN_AGENT_ID" \
+    WEB_PORT="${WEB_PORT:-3420}" \
+    TIMEZONE="$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")" \
+    python3 "$INSTALL_DIR/scripts/lib/render_claude_md_template.py" "$INSTALL_DIR/templates/CLAUDE.md.template" "$INSTALL_DIR/CLAUDE.md" "$INSTALL_DIR/.env"
   ok "CLAUDE.md generalva"
 else
   warn "CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"

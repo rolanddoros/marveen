@@ -50,8 +50,13 @@ def _env_key(provider):
 
 
 def _read_env_value(env_file, key):
+    # errors="replace": an invalid byte garbles only its own line, so a valid key
+    # line elsewhere stays readable, as the shell's grep and the TS readFileSync
+    # read it (OWNERCHAT803 parity; C1 PR 11c, Ron 13359/2 and 13368/1). The
+    # decoding never raises, so it can no longer stop a caller (an install under
+    # set -e); the file's content is not shown anywhere.
     try:
-        with open(env_file, encoding="utf-8") as f:
+        with open(env_file, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.rstrip("\n")
                 if line.startswith(f"{key}="):
@@ -128,3 +133,11 @@ def resolve_owner_chat_id(env, provider="telegram"):
     """The chat id, or None when this install has no owner chat for an alert
     (resolve_owner_chat gives the reason)."""
     return resolve_owner_chat(env, provider)[0]
+
+
+def configured_chat_id(env_file, provider="telegram"):
+    """The owner chat the install's .env names for this provider (ALLOWED_CHAT_ID
+    for Telegram), or None when it is unset, empty or the installer placeholder
+    "0". The .env only: no access.json fallback. For text that must not carry a
+    guessed or placeholder chat (the main CLAUDE.md, C1 PR 11c)."""
+    return _normalize(_read_env_value(env_file, _env_key(provider)))
