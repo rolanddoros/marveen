@@ -229,6 +229,39 @@ describe('child-claude guard: what it leaves alone', () => {
   })
 })
 
+// C1 PR 13a J1 (Johnny 13542, Kevin 13554 = option A, no code change): the documented isolated recipe
+// (both variables set in the SAME command) passes; anything not decidable from the command text stays
+// blocked. A single variable passes only where the 2026-10-10 measurement shows the child harmless:
+// (a) a fresh config dir enables no plugin, (b) a token-less state dir makes the plugin exit first.
+// Judged in two session shapes: the main agent (no config or state dir exported, the bot token under
+// ~/.claude/channels/telegram) and a channel-owning sub-agent (CHANNEL_ENV).
+describe('child-claude guard: the isolated recipe and single variables (C1 PR 13a J1)', () => {
+  const sessions: Record<string, () => Record<string, string>> = {
+    'main agent': () => ({ HOME: home }),
+    'sub-agent': () => CHANNEL_ENV,
+  }
+  // [case, command builder, allowed]
+  const table: Array<[string, () => string, boolean]> = [
+    ['both set, prefix assignments', () => `CLAUDE_CONFIG_DIR=${empty} TELEGRAM_STATE_DIR=${empty} claude -p x`, true],
+    ['both set, through env', () => `env TELEGRAM_STATE_DIR=${empty} CLAUDE_CONFIG_DIR=${empty} claude -p x`, true],
+    ['both set in an earlier export segment', () => `export CLAUDE_CONFIG_DIR=${empty}; export TELEGRAM_STATE_DIR=${empty}; claude -p x`, false],
+    ['both set in an earlier assignment-only segment', () => `CLAUDE_CONFIG_DIR=${empty} TELEGRAM_STATE_DIR=${empty}; claude -p x`, false],
+    ['both set in an earlier && segment', () => `export CLAUDE_CONFIG_DIR=${empty} TELEGRAM_STATE_DIR=${empty} && claude -p x`, false],
+    ['both set, both pointing at plugin homes', () => `CLAUDE_CONFIG_DIR=${home}/.claude TELEGRAM_STATE_DIR=${tg} claude -p x`, false],
+    ['only a fresh config dir (harmless, measured)', () => `CLAUDE_CONFIG_DIR=${empty} claude -p x`, true],
+    ['only a token-less state dir (harmless, measured)', () => `TELEGRAM_STATE_DIR=${empty} claude -p x`, true],
+    ['only the config dir, set to the shared ~/.claude', () => `CLAUDE_CONFIG_DIR=${home}/.claude claude -p x`, false],
+    ['only the config dir, set to one that enables the plugin', () => `CLAUDE_CONFIG_DIR=${pluginCfg} claude -p x`, false],
+    ['only the state dir, set to one holding a token', () => `TELEGRAM_STATE_DIR=${tg} claude -p x`, false],
+    ['only the state dir, set to the main bot\'s dir', () => `TELEGRAM_STATE_DIR=${home}/.claude/channels/telegram claude -p x`, false],
+  ]
+  for (const [shape, env] of Object.entries(sessions)) {
+    it.each(table)(`${shape}: %s -> allowed=%s`, (_name, command, allowed) => {
+      expect(decide(command(), env()).allow).toBe(allowed)
+    })
+  }
+})
+
 describe('child-claude guard: the real hook process', () => {
   const run = (command: string, env: Record<string, string>) => spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),

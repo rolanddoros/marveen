@@ -2311,12 +2311,14 @@ export function ensureWebSearchEnvelope(name: string): boolean {
 // Telegram state dir the CHILD's plugin would use holds a bot token, so a plain
 // child of a sub-agent without a bot is never blocked; only a child redirected
 // at a token-bearing state dir (an unset or overridden TELEGRAM_STATE_DIR,
-// env -i) is. The main agent is left to its
-// committed project settings, as with the outgoing-copy gate: its settings are
-// the shared ~/.claude config, which every interactive Claude session on the
-// machine reads, so wiring a deny hook there is the operator's call. The
-// guard resolves the state dir the way the plugin does (including the
-// ~/.claude/channels/telegram fallback), so it works there if wired.
+// env -i) is. The main agent gets the guard from the committed project
+// settings (.claude/settings.json, C1 PR 13a; fail-open there, Kevin 13549 B1,
+// while this scaffold's sub-agent copy stays fail-closed), as with the
+// outgoing-copy gate, never from this scaffold: its user settings are the shared ~/.claude config,
+// which every interactive Claude session on the machine reads. The project
+// file binds every session started in the project root, the operator's
+// interactive one included. The guard resolves the state dir the way the
+// plugin does (including the ~/.claude/channels/telegram fallback).
 export const CHILD_CLAUDE_GUARD_SCRIPT = 'child-claude-channel-guard.mjs'
 
 export function agentGetsChildClaudeGuard(name: string): boolean {
