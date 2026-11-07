@@ -60,6 +60,7 @@ DEFAULT_NON_DISABLEABLE = frozenset({
     "credential-gate",
     "destructive-gate",
     "shell-rescan-guard",       # a Bash command whose own text the shell would re-scan
+    "token-argv-guard",         # the dashboard token on an argv (C1 PR 13b; its off switch is TOKEN_ARGV_GUARD)
     "secret-gate",
     "sender-role-gate",
     # state integrity
