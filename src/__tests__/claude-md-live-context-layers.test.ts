@@ -201,6 +201,18 @@ describe('hooksNotWired (Ron 13122 J1): why a wired hook reads false', () => {
     ])
   })
 
+  it('the same hook missing in two layers: both paths, sorted by path (not by layer order)', () => {
+    const zz = join(root, 'zz', 'scripts', 'hooks', 'shell-rescan-guard.py')
+    const aa = join(root, 'aa', 'scripts', 'hooks', 'shell-rescan-guard.py')
+    const at = (p: string) => JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `python3 ${p}` }] }] } })
+    put('agents/kevin/.claude/settings.local.json', at(zz)) // the higher layer, read first
+    put('agents/kevin/.claude/settings.json', at(aa))
+    expect(build('kevin').hooksNotWired).toEqual([
+      { id: 'shellRescan', path: aa, reason: 'missing' },
+      { id: 'shellRescan', path: zz, reason: 'missing' },
+    ])
+  })
+
   it('a project layer that does not parse: one "all" entry naming the file', () => {
     put('agents/kevin/.claude/settings.json', JSON.stringify(wired()))
     put('agents/kevin/.claude/settings.local.json', '{broken')

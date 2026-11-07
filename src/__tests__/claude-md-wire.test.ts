@@ -443,6 +443,20 @@ describe('E: the flag off (or refused) on a file that still has its region: the 
     expect(read(KEVIN)).toBe(v2)
   })
 
+  it('a failure before the write on a file that has its region: true (legacy skipped), the file unchanged', () => {
+    const v2 = v2Kevin()
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ strict: () => { throw new Error('strict lookup failed') } }))).toBe(true)
+    expect(read(KEVIN)).toBe(v2)
+    put('.env', 'MAIN_AGENT_ID=boss\nCLAUDE_MD_BUILDER_MAIN=v2\n')
+    expect(applyMainClaudeMdV2(deps())).toBe(true)
+    const main = read(join(ROOT, 'CLAUDE.md'))
+    expect(applyMainClaudeMdV2(deps({ federationEnabled: () => { throw new Error('federation config failed') } }))).toBe(true)
+    expect(read(join(ROOT, 'CLAUDE.md'))).toBe(main)
+    // without a region the same failure lets the legacy sequence run, as before
+    put('agents/kevin/CLAUDE.md', '# Kevin\n')
+    expect(applySubClaudeMdV2('kevin', PROFILE, deps({ strict: () => { throw new Error('strict lookup failed') } }))).toBe(false)
+  })
+
   it('the marker line only inside a code fence is owner text: false, the whole root byte-identical', () => {
     put('agents/kevin/CLAUDE.md', `# Kevin\n\n\`\`\`\n${REGION_BEGIN}\nquoted\n${REGION_END}\n\`\`\`\n`)
     const before = snapshot()
