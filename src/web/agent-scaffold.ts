@@ -2311,12 +2311,14 @@ export function ensureWebSearchEnvelope(name: string): boolean {
 // Telegram state dir the CHILD's plugin would use holds a bot token, so a plain
 // child of a sub-agent without a bot is never blocked; only a child redirected
 // at a token-bearing state dir (an unset or overridden TELEGRAM_STATE_DIR,
-// env -i) is. The main agent is left to its
-// committed project settings, as with the outgoing-copy gate: its settings are
-// the shared ~/.claude config, which every interactive Claude session on the
-// machine reads, so wiring a deny hook there is the operator's call. The
-// guard resolves the state dir the way the plugin does (including the
-// ~/.claude/channels/telegram fallback), so it works there if wired.
+// env -i) is. The main agent gets the guard from the committed project
+// settings (.claude/settings.json, C1 PR 13a; fail-open there, Kevin 13549 B1,
+// while this scaffold's sub-agent copy stays fail-closed), as with the
+// outgoing-copy gate, never from this scaffold: its user settings are the shared ~/.claude config,
+// which every interactive Claude session on the machine reads. The project
+// file binds every session started in the project root, the operator's
+// interactive one included. The guard resolves the state dir the way the
+// plugin does (including the ~/.claude/channels/telegram fallback).
 export const CHILD_CLAUDE_GUARD_SCRIPT = 'child-claude-channel-guard.mjs'
 
 export function agentGetsChildClaudeGuard(name: string): boolean {
@@ -5128,7 +5130,12 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 - Van-e meglévő skill amit javítani kellene?`
 }
 
-export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
+export async function generateClaudeMd(
+  name: string,
+  description: string,
+  model: string,
+  opts: { telegram?: boolean } = {},
+): Promise<string> {
   // C1 PR 11c: the model writes role and persona only; buildCreationSections (below)
   // gives the seven mandatory sections the prompt used to tell it to copy.
   const mandatorySections = await buildCreationSections(name)
@@ -5137,18 +5144,31 @@ export async function generateClaudeMd(name: string, description: string, model:
   // The generated sections (autonomy, skill) are rendered as on every start: helper recipes unless the settings deny it.
   const helper = agentUsesApiHelper(name)
 
-  const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
-Agent name: ${name}
-Description of what the agent should do: ${description}
-Model: ${model}
-
-Generate the agent's role and persona only:
+  // C1 PR 11c-2 (Roland TG 3151 = C): an agent created without a Telegram bot gets no
+  // persona: role, domain and work rules only (and no SOUL.md, routes/agents.ts). With
+  // Telegram (the default) the request is byte for byte what it was.
+  const task = opts.telegram !== false
+    ? `Generate the agent's role and persona only:
 - Clear role and responsibilities based on the description above
 - Behavioral guidelines
 - Language rules (Hungarian with ${OWNER_NAME}, English for code/technical)
 - Tool usage guidelines relevant to the agent's role
 - Any domain-specific instructions
+`
+    : `Generate the agent's role and hard work rules only. This agent has no Telegram bot and no persona:
+do not write a persona, personality, character, communication style or tone of voice.
+- Clear role and responsibilities based on the description above
+- Language rules (Hungarian with ${OWNER_NAME}, English for code/technical)
+- Tool usage guidelines relevant to the agent's role
+- Any domain-specific instructions and hard work rules
+`
 
+  const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
+Agent name: ${name}
+Description of what the agent should do: ${description}
+Model: ${model}
+
+${task}
 Do not write sections on Telegram or any other channel, or on how to message the owner. Do not write
 memory, schedule, skill, time, MCP tool, unknown sender or fleet rules either: the system appends them
 after your text.
