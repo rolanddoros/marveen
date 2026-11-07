@@ -99,7 +99,7 @@ const EXPECTED: Record<string, string[]> = {
     // any internal error, so it cannot wedge a session.
     'shell-rescan-guard.py @ Bash',
     // C1 PR 13a (CHILDCLAUDEPOLLER1010): a child `claude` that would kill this session's Telegram
-    // poller is refused; fail-closed like the other node gates. Binds the operator's interactive
+    // poller is refused; fail-open on the main agent (Kevin 13549 B1). Binds the operator's interactive
     // sessions in the project root too (Kevin 13441 (2)).
     'child-claude-channel-guard.mjs @ Bash',
   ],

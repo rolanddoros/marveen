@@ -39,16 +39,18 @@ describe('C1 PR 13a: the main agent settings (repo .claude/settings.json)', () =
     expect(mainHooks(['child-claude-channel-guard.mjs'])).toEqual({ directiveVerify: true, childClaudeGuard: false, shellRescan: true })
   })
 
-  it('the guard is a fail-closed Bash gate; directive-verify can never block a prompt', () => {
+  it('the guard is a fail-open Bash hook (Kevin 13549 B1); directive-verify can never block a prompt', () => {
     const ptu = mainSettings.hooks.PreToolUse as { matcher?: string, hooks: { command: string, timeout: number }[] }[]
     const guard = ptu.filter((e) => JSON.stringify(e).includes('child-claude-channel-guard.mjs'))
     expect(guard).toHaveLength(1)
     expect(guard[0].matcher).toBe('Bash')
     const g = guard[0].hooks[0]
     expect(g.timeout).toBe(10)
-    expect(g.command).toContain('command -v node >/dev/null 2>&1 || {')
-    expect(g.command).toContain('[ "$rc" = 0 ] || [ "$rc" = 2 ] || {')
-    expect(g.command).toMatch(/A hivas ezert TILTVA\.[^}]*exit 2; \}; exit "\$rc"$/)
+    // Missing script or node: exit 0. Only an intentional 2 passes; every other status becomes 0.
+    // The behaviour itself is pinned in main-hooks-failsafe.test.ts.
+    expect(g.command).toContain('[ -f "$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs" ] && command -v node >/dev/null 2>&1 || exit 0;')
+    expect(g.command).toMatch(/\[ \$\? = 2 \] && exit 2; exit 0'$/)
+    expect(g.command).not.toContain('governance-kapu')
     const ups = mainSettings.hooks.UserPromptSubmit as { matcher?: string, hooks: { command: string, timeout: number }[] }[]
     const dv = ups.filter((e) => JSON.stringify(e).includes('directive-verify.py'))
     expect(dv).toHaveLength(1)

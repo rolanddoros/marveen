@@ -2312,8 +2312,9 @@ export function ensureWebSearchEnvelope(name: string): boolean {
 // child of a sub-agent without a bot is never blocked; only a child redirected
 // at a token-bearing state dir (an unset or overridden TELEGRAM_STATE_DIR,
 // env -i) is. The main agent gets the guard from the committed project
-// settings (.claude/settings.json, C1 PR 13a), as with the outgoing-copy gate,
-// never from this scaffold: its user settings are the shared ~/.claude config,
+// settings (.claude/settings.json, C1 PR 13a; fail-open there, Kevin 13549 B1,
+// while this scaffold's sub-agent copy stays fail-closed), as with the
+// outgoing-copy gate, never from this scaffold: its user settings are the shared ~/.claude config,
 // which every interactive Claude session on the machine reads. The project
 // file binds every session started in the project root, the operator's
 // interactive one included. The guard resolves the state dir the way the
