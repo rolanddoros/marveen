@@ -173,12 +173,27 @@ check("ertesit sends one message, from MAIN_AGENT_ID, exit 0",
       r.stdout + r.stderr + str(sent))
 check("the sent message carries no note text", sent and "SECRET-NOTE-TEXT" not in json.dumps(sent[0][2]), str(sent))
 Fake.messages_status = 500
-real_log_before = os.path.getsize(REAL_FAIL_LOG) if os.path.exists(REAL_FAIL_LOG) else None
 r, calls = cli("ertesit", "este")
 check("a failed send makes ertesit exit 1", r.returncode == 1 and "not sent to cody" in r.stderr, r.stdout + r.stderr)
-check("the failed send is logged in the sandbox, not in the real install",
-      os.path.exists(SANDBOX_FAIL_LOG) and "to=cody" in open(SANDBOX_FAIL_LOG).read()
-      and (os.path.getsize(REAL_FAIL_LOG) if os.path.exists(REAL_FAIL_LOG) else None) == real_log_before)
+
+
+MARK = "\turl=http://127.0.0.1:%d/api/messages\t" % PORT
+
+
+def marked_lines(path):
+    """This run's own FAIL lines in a failure log. The marker is this run's fake-server endpoint (a fresh port per
+    run), so another suite writing the same file at the same moment is neither counted nor blamed. Comparing the
+    real log's SIZE was racy: the scripts shards run in parallel in one checkout, and agent-msg-queue.test.sh (in
+    another shard) wrote that file while this check ran (fork CI, 2026-11-06)."""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return [line for line in f if MARK in line and "\tto=cody\t" in line]
+
+
+check("the failed send is logged in the sandbox", len(marked_lines(SANDBOX_FAIL_LOG)) == 1,
+      repr(open(SANDBOX_FAIL_LOG).read() if os.path.exists(SANDBOX_FAIL_LOG) else None))
+check("  ...and not in the real install", marked_lines(REAL_FAIL_LOG) == [], repr(marked_lines(REAL_FAIL_LOG)))
 
 server.shutdown()
 shutil.rmtree(SANDBOX, ignore_errors=True)
