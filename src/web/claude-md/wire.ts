@@ -14,16 +14,19 @@
 // The flag:
 // - a sub: agents/<name>/agent-config.json "claudeMdBuilder", read fresh on
 //   every start;
-// - the main agent: CLAUDE_MD_BUILDER_MAIN in <root>/.env, read fresh at boot.
+// - the main agent: CLAUDE_MD_BUILDER_MAIN in <root>/.env, read fresh at boot;
+// - the heartbeat worker: CLAUDE_MD_BUILDER_HEARTBEAT in <root>/.env, read
+//   fresh (C1 PR 12a). Not its agent-config.json: heartbeat-agent-scaffold.ts
+//   rewrites that file from its constants on every boot.
 // Only the exact string "v2" is on. Anything else (absent, "V2", true, "v3")
 // is off; a present value other than "v2" is warned about once per value.
-// The flag acts only on these two paths: the federation routes and agents.ts
-// keep calling their own writers.
+// The flag acts only on these two paths and on the heartbeat scaffold (see
+// below): the federation routes and agents.ts keep calling their own writers.
 //
 // Flag on, the v2 path (writeV2), in this order, each step fail-closed:
 // 1. Refusals (warn-log, the legacy sequence runs): federation enabled (two
-//    writers would flip the file, PR 12), the heartbeat worker (PR 12), a
-//    thin-chief profile (the region does not carry that block), a
+//    writers would flip the file, PR 12b), a thin-chief profile (the region
+//    does not carry that block), a
 //    helper-denied agent (its v2 recipes need a skill that does not exist
 //    yet, Kevin 12997). A refused agent whose file already has a v2 region is
 //    taken BACK to legacy: the rollback below runs first.
@@ -63,6 +66,15 @@
 // byte-identical. The rendered product skills go only once no flag is on AND
 // no CLAUDE.md of the install still carries a region: an agent flagged off
 // but not restarted yet keeps pointing at them (Ron 10b J1).
+//
+// The heartbeat worker (C1 PR 12a): its CLAUDE.md has no owner zone; the
+// whole file is heartbeat-agent-scaffold.ts's role prose, rewritten on every
+// boot. With its flag on, the scaffold writes the prose with the v2 region
+// after it (writeHeartbeatClaudeMdV2: the same refusals and steps 3-5, one
+// atomic write, none when the bytes are unchanged, a backup before the first
+// v2 write), and the start right after it then finds nothing to change. With
+// the flag off the scaffold writes the prose exactly as before, which also
+// drops a region an earlier flag left (the file is code-owned: no backup).
 
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -75,7 +87,8 @@ import { agentRunsStrict, agentUsesApiHelper, ensureProjectRootInClaudeMd, ensur
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getFederationConfig } from '../federation/config.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
-import { profileWantsThinChiefHandoff, type ProfileTemplate } from '../profiles.js'
+import { profileWantsThinChiefHandoff, resolveProfileTemplate, type ProfileTemplate } from '../profiles.js'
+import { resolveAgentSecurityProfile } from '../agent-team.js'
 import { backupClaudeMd } from './backup.js'
 import { composeClaudeMd, stripV2Region } from './compose.js'
 import { buildLiveContext, defaultManagedSettingsPath, RENDERED_FIELDS } from './live-context.js'
@@ -87,6 +100,7 @@ import { PRODUCT_SKILLS, type SkillContext } from './skills.js'
 export const FLAG_ON = 'v2'
 export const SUB_FLAG_KEY = 'claudeMdBuilder'
 export const MAIN_FLAG_ENV = 'CLAUDE_MD_BUILDER_MAIN'
+export const HEARTBEAT_FLAG_ENV = 'CLAUDE_MD_BUILDER_HEARTBEAT'
 
 const warnedFlagValues = new Set<string>()
 
@@ -115,10 +129,24 @@ export function subFlagOn(name: string): boolean {
 
 // The main agent's flag, read fresh from .env (not config.ts's boot-time copy).
 export function mainFlagOn(): boolean {
-  const raw = readEnvFile([MAIN_FLAG_ENV])[MAIN_FLAG_ENV]
+  return envFlagOn(MAIN_FLAG_ENV, MAIN_AGENT_ID)
+}
+
+// The heartbeat worker's flag, read fresh from .env (see the header).
+export function heartbeatFlagOn(): boolean {
+  return envFlagOn(HEARTBEAT_FLAG_ENV, HEARTBEAT_AGENT_ID)
+}
+
+function envFlagOn(key: string, where: string): boolean {
+  const raw = readEnvFile([key])[key]
   if (raw === FLAG_ON) return true
-  if (raw !== undefined && raw !== '') warnUnknownFlag(MAIN_AGENT_ID, raw)
+  if (raw !== undefined && raw !== '') warnUnknownFlag(where, raw)
   return false
+}
+
+// An agent's flag: the heartbeat worker's from .env, every other sub's from its agent-config.json.
+function agentFlagOn(name: string): boolean {
+  return name === HEARTBEAT_AGENT_ID ? heartbeatFlagOn() : subFlagOn(name)
 }
 
 export interface WireDeps {
@@ -169,7 +197,7 @@ export function hasV2Region(text: string): boolean {
 export function anyFlagOn(): boolean {
   if (mainFlagOn()) return true
   try {
-    return listAllAgentNames().some((n) => subFlagOn(n))
+    return listAllAgentNames().some((n) => agentFlagOn(n))
   } catch {
     return true // cannot tell: keep the skills
   }
@@ -203,8 +231,7 @@ function anyRegionLeft(deps: WireDeps): boolean {
 }
 
 function refusal(deps: WireDeps, name: string, profile: ProfileTemplate | null): string | null {
-  if (deps.federationEnabled()) return 'federation is enabled (its onboarding block has a second writer until C1 PR 12)'
-  if (name === HEARTBEAT_AGENT_ID) return 'the heartbeat worker gets v2 in C1 PR 12'
+  if (deps.federationEnabled()) return 'federation is enabled (its onboarding block has a second writer until C1 PR 12b)'
   if (profile !== null && profileWantsThinChiefHandoff(profile)) return 'a thin-chief profile: the v2 region does not carry that block'
   if (!deps.helperAllowed(name)) return 'the agent settings deny the API helper: its v2 recipes need a skill that does not exist yet'
   return null
@@ -257,6 +284,21 @@ function fileHasV2Region(claudeMdPath: string): boolean {
   }
 }
 
+// Steps 3-5 of the header: the live ctx, the region, the product skills it points at. Throws on any failure.
+function renderV2Region(deps: WireDeps, name: string, strict: boolean): string {
+  const { ctx, assumptions } = buildLiveContext(deps.root, name, { helperAllowed: true, strict, homeDir: deps.homeDir, managedSettingsPath: deps.managedSettingsPath })
+  const assumedRendered = assumptions.filter((a) => (RENDERED_FIELDS as readonly string[]).includes(a))
+  if (assumedRendered.length > 0) throw new Error(`rendered fields without a real source: ${assumedRendered.join(', ')}`)
+  if (ctx.mainAgentId !== deps.mainAgentId) throw new Error(`.env MAIN_AGENT_ID ${ctx.mainAgentId} is not the running main id ${deps.mainAgentId}`)
+  const region = renderRegion(ctx)
+  installProductSkills(deps.skillPaths, deps.skillCtx())
+  const refs = regionSkillRefs(region)
+  const unknown = refs.filter((r) => !(PRODUCT_SKILLS as readonly string[]).includes(r))
+  if (unknown.length > 0) throw new Error(`the region points at skills that are not product skills: ${unknown.join(', ')}`)
+  if (!productSkillsInstalled(deps.skillPaths, refs)) throw new Error('a skill the region points at is not installed as the manifest records')
+  return region
+}
+
 // Steps 3-8 of the header for one CLAUDE.md. `before`: the file's bytes as read before step 2, for the backup.
 // Returns whether the caller should run the legacy sequence.
 function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boolean, before: Buffer): boolean {
@@ -266,16 +308,7 @@ function writeV2(deps: WireDeps, name: string, claudeMdPath: string, strict: boo
     hadRegion = file.hasRegion
     if (file.text === null) throw new Error(`${claudeMdPath} is not valid UTF-8: nothing is written (the bytes would change)`)
     const text = file.text
-    const { ctx, assumptions } = buildLiveContext(deps.root, name, { helperAllowed: true, strict, homeDir: deps.homeDir, managedSettingsPath: deps.managedSettingsPath })
-    const assumedRendered = assumptions.filter((a) => (RENDERED_FIELDS as readonly string[]).includes(a))
-    if (assumedRendered.length > 0) throw new Error(`rendered fields without a real source: ${assumedRendered.join(', ')}`)
-    if (ctx.mainAgentId !== deps.mainAgentId) throw new Error(`.env MAIN_AGENT_ID ${ctx.mainAgentId} is not the running main id ${deps.mainAgentId}`)
-    const region = renderRegion(ctx)
-    installProductSkills(deps.skillPaths, deps.skillCtx())
-    const refs = regionSkillRefs(region)
-    const unknown = refs.filter((r) => !(PRODUCT_SKILLS as readonly string[]).includes(r))
-    if (unknown.length > 0) throw new Error(`the region points at skills that are not product skills: ${unknown.join(', ')}`)
-    if (!productSkillsInstalled(deps.skillPaths, refs)) throw new Error('a skill the region points at is not installed as the manifest records')
+    const region = renderV2Region(deps, name, strict)
     const composed = composeClaudeMd(text, region)
     if (!composed.changed) return false
     if (!hadRegion) backupClaudeMd(deps.storeDir, name, before, deps.now(), deps.tz)
@@ -294,7 +327,7 @@ export function applySubClaudeMdV2(name: string, profile: ProfileTemplate, deps:
   // agentDir throws on a name it refuses; these entry points never throw (the legacy sequence then decides).
   let claudeMdPath: string | null = null
   try { claudeMdPath = join(agentDir(name), 'CLAUDE.md') } catch { /* stays null */ }
-  if (!subFlagOn(name)) {
+  if (!agentFlagOn(name)) {
     const legacy = claudeMdPath === null || rollbackV2(deps, name, claudeMdPath)
     flagOffHousekeeping(deps)
     return !legacy
@@ -314,6 +347,33 @@ export function applySubClaudeMdV2(name: string, profile: ProfileTemplate, deps:
   } catch (err) {
     logger.error({ err, name }, 'CLAUDE.md builder: v2 path failed before the write; the legacy sections are kept')
     return claudeMdPath !== null && fileHasV2Region(claudeMdPath)
+  }
+}
+
+// The heartbeat worker's scaffold (heartbeat-agent-scaffold.ts ensureHeartbeatAgent), flag on: `prose` (its whole
+// role text) with the v2 region after it, at claudeMdPath. true = handled: written, or the bytes were already these;
+// false = refused or failed, nothing written, and the scaffold writes the prose as it does with the flag off (the
+// start right after it then refuses or fails the same way and runs the legacy sequence).
+export function writeHeartbeatClaudeMdV2(claudeMdPath: string, prose: string, deps: WireDeps = defaultWireDeps()): boolean {
+  const name = HEARTBEAT_AGENT_ID
+  try {
+    const profile = resolveProfileTemplate(resolveAgentSecurityProfile(name)).profile
+    const why = refusal(deps, name, profile)
+    if (why !== null) {
+      logger.warn({ name, why }, 'CLAUDE.md builder: v2 refused; the heartbeat prose is written without a region')
+      return false
+    }
+    const region = renderV2Region(deps, name, deps.strict(name, profile))
+    const composed = composeClaudeMd(prose, region).text
+    const file = existsSync(claudeMdPath) ? readClaudeMd(claudeMdPath) : null
+    if (file !== null && file.text === composed) return true
+    if (file !== null && !file.hasRegion) backupClaudeMd(deps.storeDir, name, file.bytes, deps.now(), deps.tz)
+    atomicWriteFileSync(claudeMdPath, composed)
+    logger.info({ name, firstV2: file === null || !file.hasRegion }, 'CLAUDE.md builder: v2 region written')
+    return true
+  } catch (err) {
+    logger.error({ err, name }, 'CLAUDE.md builder: heartbeat v2 write failed; the prose is written without a region')
+    return false
   }
 }
 

@@ -264,7 +264,9 @@ describe('flag on, refused: the legacy sequence runs, nothing is written', () =>
   it('federation enabled', () => { flagKevin(); refused(deps({ federationEnabled: () => true })) })
   it('a helper-denied agent', () => { flagKevin(); refused(deps({ helperAllowed: () => false })) })
   it('a thin-chief profile', () => { flagKevin(); refused(deps(), 'kevin', { permissionMode: 'permissive', thinChiefHandoff: true } as unknown as ProfileTemplate) })
-  it('the heartbeat worker', () => {
+  // C1 PR 12a: no longer a refusal. The heartbeat worker's flag is .env CLAUDE_MD_BUILDER_HEARTBEAT
+  // (claude-md-heartbeat-v2.test.ts); a claudeMdBuilder in its agent-config.json is not it.
+  it('the heartbeat worker with claudeMdBuilder in agent-config.json only: off, nothing written', () => {
     put('agents/heartbeat/CLAUDE.md', '# hb\n')
     put('agents/heartbeat/agent-config.json', JSON.stringify({ claudeMdBuilder: 'v2' }))
     refused(deps(), 'heartbeat')

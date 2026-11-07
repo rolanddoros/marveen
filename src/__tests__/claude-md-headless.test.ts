@@ -209,11 +209,35 @@ describe('channel.ts covers every channel source of the launcher', () => {
     const from = src.indexOf('  const agentProvider = resolveAgentProvider(name)\n  const provider = getProvider(agentProvider)')
     const launch = src.slice(from, src.indexOf('const hasAnyChannel', from))
     expect(from).toBeGreaterThan(0)
-    expect([...new Set(launch.match(/\b(?:read[A-Za-z]*|parse[A-Za-z]*Token|resolveAgentProvider)\(/g))].sort()).toEqual([
-      'parseTelegramToken(', 'readAgentExtraChannels(', 'readAgentGromzo(', 'readChannelToken(', 'resolveAgentProvider(',
+    expect([...new Set(launch.match(/\b(?:read|parse|resolve|detect|check|has|get|load|build)[A-Za-z]*\(/g))].sort()).toEqual([
+      'buildExtraChannelLaunch(', 'getProvider(', 'parseTelegramToken(', 'readAgentExtraChannels(', 'readAgentGromzo(',
+      'readChannelToken(', 'resolveAgentProvider(',
     ])
-    expect(src).toContain('const hasAnyChannel = hasChannel || hasExtraChannels\n')
-    expect(src).toContain("const hasExtraChannels = extraLaunch.providers.length > 0 || extraLaunch.gromzo === 'on'\n")
+    // Ron 13374 (A2): the definitions themselves, verbatim, and no other assignment anywhere in the file, so a
+    // channel source added inside a definition (`!!token || detectX(name)`) or by a later assignment is red too.
+    expect(launch).toContain([
+      '  const token = readChannelToken(agentProvider, join(agentChannelDir, \'.env\'))\n',
+      '  // Backward compat: try legacy Telegram token if provider-aware lookup misses\n',
+      '  let hasChannel = !!token\n',
+      '  if (!token && agentProvider === \'telegram\') {\n',
+      '    const legacyToken = parseTelegramToken(name)\n',
+      '    hasChannel = !!legacyToken\n',
+    ].join(''))
+    expect(launch).toContain([
+      '  const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir, undefined,\n',
+      '    readAgentGromzo(name)\n',
+      '      ? { slug: name, sockUsable: mxdAgentSockUsable() }\n',
+      '      : undefined)\n',
+    ].join(''))
+    expect(src).toContain("  const hasExtraChannels = extraLaunch.providers.length > 0 || extraLaunch.gromzo === 'on'\n  const hasAnyChannel = hasChannel || hasExtraChannels\n")
+    const assignments = (text: string, v: string) => text.match(new RegExp(`\\b${v}\\s*(?:\\|\\||&&|\\?\\?)?=(?!=)`, 'g'))?.length ?? 0
+    // the three flags in the whole file (they are startAgentProcess's own names); token and extraLaunch in the
+    // launch (another function has a `token` of its own)
+    expect(assignments(src, 'hasChannel'), 'hasChannel: the let and the legacy branch').toBe(2)
+    expect(assignments(src, 'hasExtraChannels')).toBe(1)
+    expect(assignments(src, 'hasAnyChannel')).toBe(1)
+    expect(assignments(launch, 'token')).toBe(1)
+    expect(assignments(launch, 'extraLaunch')).toBe(1)
   })
 })
 
