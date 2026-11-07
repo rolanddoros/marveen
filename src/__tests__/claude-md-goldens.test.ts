@@ -377,7 +377,8 @@ describe('budget, live-shaped worst case (Ron 12886, 12953)', () => {
     { categories: { key: string }[] }
   const autonomy: Record<string, AutonomyLevel> = Object.fromEntries(seed.categories.map((c) => [c.key, 2 as AutonomyLevel]))
   const FLEET_SIZE = 13
-  const fleet = Array.from({ length: FLEET_SIZE }, (_, i) => `agent-${String(i + 1).padStart(2, '0')}`)
+  // 10-character names (Ron S6): agent-0001 ... agent-0013.
+  const fleet = Array.from({ length: FLEET_SIZE }, (_, i) => `agent-${String(i + 1).padStart(4, '0')}`)
   const HOOK_COMBOS: Record<HookId, boolean>[] = Array.from({ length: 8 }, (_, i) =>
     ({ directiveVerify: (i & 1) !== 0, childClaudeGuard: (i & 2) !== 0, shellRescan: (i & 4) !== 0 }))
   let visited = 0
@@ -415,6 +416,7 @@ describe('budget, live-shaped worst case (Ron 12886, 12953)', () => {
   })
 
   it('the walk covers 8 distinct hook combinations and a 13-member fleet (12 others in the roster)', () => {
+    expect(fleet.every((n) => n.length === 10)).toBe(true)
     expect(new Set(HOOK_COMBOS.map((h) => JSON.stringify(h))).size).toBe(8)
     expect(fleet.filter((n) => n !== fleet[0]).length).toBe(12)
   })

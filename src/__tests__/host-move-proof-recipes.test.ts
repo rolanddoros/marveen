@@ -185,7 +185,8 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
   })
 
   it('agent-process.ts re-anchors CLAUDE.md on respawn next to the fleet-roster refresh', () => {
-    expect(AGENT_PROCESS).toContain('    ensureFleetRosterSection(name)\n    ensureProjectRootInClaudeMd(name)\n')
+    // Indentation-agnostic since C1 PR 10b put the legacy sequence inside the v2 guard; still two consecutive lines.
+    expect(AGENT_PROCESS).toMatch(/^ +ensureFleetRosterSection\(name\)\n +ensureProjectRootInClaudeMd\(name\)\n/m)
   })
 
   it('keeps the absolute token path (the relative form is the measured 401)', () => {

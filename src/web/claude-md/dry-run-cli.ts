@@ -184,6 +184,15 @@ function redactValues(r: Redactor, values: Record<string, unknown>): Record<stri
   return Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v === undefined ? v : JSON.parse(r.text(JSON.stringify(v)))]))
 }
 
+// A hooksNotWired path as printed (Ron 10b J5): redacted like any text, and under --redact-names one still
+// outside the root, the home and the checkout keeps only its tail (/scripts/hooks/<script>, a fixed name, or
+// else the file name) behind <PATH>: a directory elsewhere can name a person or a host.
+function hookPath(r: Redactor, path: string, redacting: boolean): string {
+  const t = r.text(path)
+  if (!redacting || !t.startsWith('/')) return t
+  return `<PATH>${/\/scripts\/hooks\/[^/]+$/.exec(t)?.[0] ?? t.slice(t.lastIndexOf('/'))}`
+}
+
 // The report as printed: names redacted when asked, excerpts attached when asked.
 function view(result: DryRunResult, opts: FormatOptions) {
   const r = opts.redactNames ? makeRedactor(result, outsidePaths(result)) : IDENTITY
@@ -200,7 +209,13 @@ function view(result: DryRunResult, opts: FormatOptions) {
         ...a.ownerZone,
         findings: a.ownerZone.findings.map((x) => (opts.excerpts ? { ...x, excerpt: maskedExcerpt(r.text(rawLine(result.root, a, x.line))) } : x)),
       },
-      ...(a.context ? { context: { ...a.context, assumedRendered: redactValues(r, a.context.assumedRendered) } } : {}),
+      ...(a.context ? {
+        context: {
+          ...a.context,
+          assumedRendered: redactValues(r, a.context.assumedRendered),
+          hooksNotWired: a.context.hooksNotWired.map((h) => ({ ...h, path: h.path === null ? null : hookPath(r, h.path, opts.redactNames === true) })),
+        },
+      } : {}),
       ...(a.diff !== undefined ? { diff: r.text(a.diff) } : {}),
     })),
   }
@@ -212,7 +227,7 @@ export function formatText(result: DryRunResult, opts: FormatOptions = {}): stri
   if (opts.excerpts) out.push('EXCERPTS ON: owner-zone text below, masked; not for a PR description')
   if (opts.fullDiff) out.push('FULL DIFF ON: owner text below, verbatim; not for a PR description')
   if (opts.redactNames) out.push('names redacted: root <ROOT>, agents agent-NN (main agent first, then the sub-agents in name order), owner <OWNER>, bot <BOT>, '
-    + 'home <HOME>, checkout <CHECKOUT>')
+    + 'home <HOME>, checkout <CHECKOUT>, a hook path elsewhere <PATH>')
   for (const a of v.agents) {
     out.push('')
     out.push(`${a.name} (${a.role}) ${a.file}: ${a.status}`)
@@ -241,6 +256,9 @@ export function formatText(result: DryRunResult, opts: FormatOptions = {}): stri
       const other = ctx.assumptions.filter((f) => !(f in ctx.assumedRendered))
       out.push(`  assumed, rendered: ${rendered.length > 0 ? rendered.join('; ') : 'none'}`)
       out.push(`  assumed, not rendered: ${other.length > 0 ? other.join(', ') : 'none'}`)
+      // Ron 13122 J1: a hook that reads false although it may be wired is named, never silent.
+      const notWired = ctx.hooksNotWired.map((h) => `${h.id}${h.path === null ? '' : ` ${h.path}`} (${h.reason})`)
+      out.push(`  hooks not wired: ${notWired.length > 0 ? notWired.join('; ') : 'none'}`)
     }
     if (a.after) {
       out.push(`  after: file ${a.after.file}, region ${a.after.region} chars (${a.after.regionLength} of the ${REGION_BUDGET} budget`

@@ -26,7 +26,7 @@ import { join, sep } from 'node:path'
 import { parseEnvContent } from '../../env-parse.js'
 import { ComposeError, composeClaudeMd, scanClaudeMd, type ScannedLine } from './compose.js'
 import { type DiffLine, splitRaw, unifiedDiff } from './line-diff.js'
-import { LiveContextError, RENDERED_FIELDS, buildLiveContext } from './live-context.js'
+import { LiveContextError, RENDERED_FIELDS, buildLiveContext, type HookNotWired } from './live-context.js'
 import { ownerZoneFindings, retiredSectionFindings, type Finding } from './owner-zone.js'
 import { renderRegion } from './registry.js'
 import { TemplateError } from './render.js'
@@ -57,6 +57,8 @@ export interface AgentReport {
     assumptions: string[]
     // the rendered ones among them, with the value the region was rendered with
     assumedRendered: Record<string, unknown>
+    // why a hook reads false where its wiring may be there (live-context.ts, Ron 13122 J1): never silent
+    hooksNotWired: HookNotWired[]
   }
   after?: {
     file: number // code points
@@ -409,7 +411,7 @@ export function planRegion(report: AgentReport, text: string, root: string, opts
 
   return {
     ...report,
-    context: { assumptions: live.assumptions, assumedRendered },
+    context: { assumptions: live.assumptions, assumedRendered, hooksNotWired: live.hooksNotWired },
     after: {
       file: codePoints(composed.text),
       region: codePoints(region),

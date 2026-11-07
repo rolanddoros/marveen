@@ -67,6 +67,7 @@ import { runPendingWrite } from './web/pending-write.js'
 import { tryHandleCustomCommands } from './web/routes/custom-commands.js'
 import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
 import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
+import { applyMainClaudeMdV2 } from './web/claude-md/wire.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
 import { tryHandleAgentConversation } from './web/routes/agent-conversation.js'
 import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
@@ -642,19 +643,23 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   // the two known loss vectors: update.sh --regen-claudemd and a stale
   // dashboard-editor buffer PUT.
   if (!servicesOff) {
-    ensureFederationClaudeMdSection()
-    ensureAutonomySection(MAIN_AGENT_ID)
-    ensureSkillsPathTrapSection(MAIN_AGENT_ID)
-    ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
-    ensureAgentIdHeaderSection(MAIN_AGENT_ID)
-    ensureMemorySearchLabelSection(MAIN_AGENT_ID)
-    ensureFleetAuthSection(MAIN_AGENT_ID)
-    ensureEvidenceSection(MAIN_AGENT_ID)
-    ensureMcpListChannelSection(MAIN_AGENT_ID)
-    ensureMessageCloseSection(MAIN_AGENT_ID)
-    // VOICETOKENLEAK1101 PR-A2 (Samu 65192, Marveen 65196): the helper recipes as a marker block only; the body is untouched.
-    ensureApiHelperSection(MAIN_AGENT_ID)
-    ensureBackgroundCheckpointSection(MAIN_AGENT_ID)
+    // C1 PR 10b: CLAUDE_MD_BUILDER_MAIN=v2 (and every precondition met) -> the v2 region; otherwise the legacy
+    // sequence, unchanged (after removing a v2 region a rollback left).
+    if (!applyMainClaudeMdV2()) {
+      ensureFederationClaudeMdSection()
+      ensureAutonomySection(MAIN_AGENT_ID)
+      ensureSkillsPathTrapSection(MAIN_AGENT_ID)
+      ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
+      ensureAgentIdHeaderSection(MAIN_AGENT_ID)
+      ensureMemorySearchLabelSection(MAIN_AGENT_ID)
+      ensureFleetAuthSection(MAIN_AGENT_ID)
+      ensureEvidenceSection(MAIN_AGENT_ID)
+      ensureMcpListChannelSection(MAIN_AGENT_ID)
+      ensureMessageCloseSection(MAIN_AGENT_ID)
+      // VOICETOKENLEAK1101 PR-A2 (Samu 65192, Marveen 65196): the helper recipes as a marker block only; the body is untouched.
+      ensureApiHelperSection(MAIN_AGENT_ID)
+      ensureBackgroundCheckpointSection(MAIN_AGENT_ID)
+    }
   }
 
   // Owner slash commands (CMD920, spec D-4): the registry the main session's
