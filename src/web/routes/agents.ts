@@ -42,6 +42,8 @@ import {
   writeAgentDisplayName,
   readAgentSecurityProfile,
   writeAgentSecurityProfile,
+  writeAgentPersonaAtCreation,
+  readAgentPersonaAtCreation,
   listAgentNames,
   isKnownAgent,
   readAgentChannelProvider,
@@ -1194,6 +1196,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // C1 PR 11c-2 (Roland TG 3151): will the new agent have a Telegram bot? It
+    // decides only the one-time persona generation (none without Telegram: no
+    // persona in CLAUDE.md, no SOUL.md); the live channel state is read on every
+    // start elsewhere. Missing = true, today's behaviour; the wizard always sends it.
+    if (data.telegram !== undefined && typeof data.telegram !== 'boolean') {
+      json(res, { error: 'telegram must be true or false' }, 400); return true
+    }
+    const telegram = data.telegram !== false
     // SECSZIVEK1007: the model id is checked BEFORE anything is created;
     // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
     // malformed id left a half-created agent dir behind.
@@ -1216,6 +1226,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     scaffoldAgentDir(name)
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
+    writeAgentPersonaAtCreation(name, telegram)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
     // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).
     // Written as an explicit store row rather than by moving
@@ -1249,11 +1260,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // does not have the fallback report our own generated file as "changed".
     const personaWrittenByUs = new Set<string>()
     try {
+      // C1 PR 11c-2: without Telegram there is no persona, so no SOUL.md at all.
       const [claudeMd, soulMd] = await Promise.all([
-        generateClaudeMd(name, description, model),
-        generateSoulMd(name, description),
+        generateClaudeMd(name, description, model, { telegram }),
+        telegram ? generateSoulMd(name, description) : Promise.resolve(null),
       ])
       for (const [f, content] of [[claudeMdFile, claudeMd], [soulMdFile, soulMd]] as const) {
+        if (content === null) continue
         const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: true })
         if (r.written) personaWrittenByUs.add(f.file)
         else personaSkipped.push({ file: f.file, sidecarPath: r.sidecarPath })
@@ -1304,8 +1317,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       try {
         for (const [f, content] of [
           [claudeMdFile, fallbackClaudeMd(name, description, model, sections)],
-          [soulMdFile, fallbackSoulMd(name, description)],
+          // C1 PR 11c-2: no SOUL.md template either for an agent created without Telegram.
+          [soulMdFile, telegram ? fallbackSoulMd(name, description) : null],
         ] as const) {
+          if (content === null) continue
           if (personaWrittenByUs.has(f.file)) continue
           const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: false })
           if (r.written) templateWritten = true
@@ -1729,6 +1744,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         setAgentEnabledPlugins(name, provider)
       }
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
+      // C1 PR 11c-2: an agent created without Telegram got no persona (no SOUL.md,
+      // none in CLAUDE.md). Attaching Telegram now does not generate one: say so.
+      if (provider === 'telegram' && !readAgentPersonaAtCreation(name)) {
+        logger.warn({ name }, 'Telegram attached to an agent created without Telegram: it has no persona (no SOUL.md, none in CLAUDE.md); write one by hand if needed')
+      }
       wasRunning = isAgentRunning(name)
       // Same restart-slot discipline as the GC branch above: this too is a
       // stop -> (2s) -> start unit; skip loudly when a managed restart is in

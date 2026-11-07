@@ -637,6 +637,27 @@ export function writeAgentAuthMode(name: string, mode: AuthMode): void {
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// C1 PR 11c-2 (Roland TG 3151): whether the agent was created with a persona
+// (the creation form's "will have a Telegram bot" answer). Written once at
+// creation; read when a channel is attached later, to say that an agent made
+// without a persona has none (no SOUL.md). Absent = created before this field,
+// treated as with a persona.
+export function writeAgentPersonaAtCreation(name: string, persona: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  config.personaAtCreation = persona
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+export function readAgentPersonaAtCreation(name: string): boolean {
+  try {
+    const config = JSON.parse(readFileSync(join(agentDir(name), 'agent-config.json'), 'utf-8')) as Record<string, unknown>
+    return config.personaAtCreation !== false
+  } catch {
+    return true
+  }
+}
+
 export function writeAgentSecurityProfile(name: string, profileId: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}

@@ -2502,6 +2502,13 @@
             <select id="agentProfile"></select>
             <small id="agentProfileDesc" style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4"></small>
           </div>
+          <!-- C1 PR 11c-2 (Roland TG 3151): without a Telegram bot the agent is created without a persona (no SOUL.md). -->
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="agentTelegram" checked> <span data-i18n="agents.wizard.telegram_label">Lesz saját Telegram-botja</span>
+            </label>
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4" data-i18n="agents.wizard.telegram_hint">Ha nem, személyiség nélkül, kisebb CLAUDE.md-vel jön létre.</small>
+          </div>
           <button class="btn-primary" id="wizardNextBtn">
             <span class="btn-text" data-i18n="common.btn.next">Tovább</span>
           </button>
@@ -2533,7 +2540,7 @@
             <label for="wizardClaudeMd">CLAUDE.md</label>
             <textarea id="wizardClaudeMd" class="code-textarea" rows="10"></textarea>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="wizardSoulGroup">
             <label for="wizardSoulMd">SOUL.md</label>
             <textarea id="wizardSoulMd" class="code-textarea" rows="8"></textarea>
           </div>

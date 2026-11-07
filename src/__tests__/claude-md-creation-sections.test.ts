@@ -107,10 +107,12 @@ export function stage(c: CreationCase): void {
   }
 }
 
-export async function creation(c: CreationCase): Promise<{ prompt: string; out: string }> {
+export async function creation(c: CreationCase, opts?: { telegram?: boolean }): Promise<{ prompt: string; out: string }> {
   stage(c)
   captured.length = 0
-  const out = await S.generateClaudeMd(c.name, 'desc', 'model')
+  const out = opts === undefined
+    ? await S.generateClaudeMd(c.name, 'desc', 'model')
+    : await S.generateClaudeMd(c.name, 'desc', 'model', opts)
   return { prompt: captured[0] ?? '', out }
 }
 
@@ -181,5 +183,37 @@ describe('generateClaudeMd: the seven mandatory sections come from the code, not
     expect(prompt).toContain('Never use em dash')
     expect(prompt).not.toMatch(/Communication style/)
     expect(prompt).toMatch(/Do not write .*Telegram/)
+  })
+
+  // C1 PR 11c-2 (Roland TG 3151 = C, Kevin 13410): without a Telegram bot the model is
+  // asked for no persona; the seven sections stay, byte-identical to the same fixtures.
+  for (const c of CASES) {
+    it(`${c.id}: telegram=false keeps the seven sections byte-identical to the base prompt`, async () => {
+      const expected = fromFixture(readFileSync(join(FIXTURES, `${c.id}.md`), 'utf-8'))
+      const { out, prompt } = await creation(c, { telegram: false })
+      expect(out.startsWith(`# generated body\n\n${expected}\n\n${FLEET_ROSTER_BEGIN}`)).toBe(true)
+      expect(out).not.toContain('AGENT_NAME')
+      for (const h of HEADINGS) expect(prompt, h).not.toContain(h)
+    })
+  }
+
+  it('the request without the option and with telegram=true is the same, the role and persona one', async () => {
+    const { prompt: missing } = await creation(CASES[0])
+    const { prompt: withTelegram } = await creation(CASES[0], { telegram: true })
+    expect(withTelegram).toBe(missing)
+    expect(missing).toContain("Generate the agent's role and persona only:\n- Clear role and responsibilities based on the description above\n- Behavioral guidelines\n")
+    expect(missing).not.toContain('no persona')
+  })
+
+  it('telegram=false asks for role and work rules only: no persona, no behaviour or style guidelines', async () => {
+    const { prompt } = await creation(CASES[0], { telegram: false })
+    expect(prompt).not.toContain('role and persona only')
+    expect(prompt).not.toContain('Behavioral guidelines')
+    expect(prompt).toContain("Generate the agent's role and hard work rules only. This agent has no Telegram bot and no persona:")
+    expect(prompt).toContain('do not write a persona, personality, character, communication style or tone of voice.')
+    expect(prompt).toContain('Description of what the agent should do: desc')
+    expect(prompt).toContain('Language rules (Hungarian with TestOwner')
+    expect(prompt).toMatch(/Do not write sections on Telegram/)
+    expect(prompt).toContain('NEVER write Hungarian without accents.')
   })
 })

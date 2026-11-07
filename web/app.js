@@ -3330,6 +3330,9 @@ let wizardStep = 1
 let generatedClaudeMd = ''
 let generatedSoulMd = ''
 let wizardCreatedName = ''
+// C1 PR 11c-2: the "will have its own Telegram bot" answer the agent was created with.
+// Without it there is no SOUL.md: step 3 hides its editor and does not send it.
+let wizardTelegram = true
 // Set from the POST /api/agents response when the backend fell back to a template
 // because personality generation failed. It answers 200 in that case (the agent
 // EXISTS and works), so `res.ok` alone cannot tell the operator anything -- without
@@ -3578,6 +3581,9 @@ function resetWizard() {
   generatedSoulMd = ''
   wizardCreatedName = ''
   wizardPersonalityPending = null
+  wizardTelegram = true
+  document.getElementById('agentTelegram').checked = true
+  document.getElementById('wizardSoulGroup').hidden = false
   renderWizardPendingBanner()
   document.getElementById('wizardClaudeMd').value = ''
   document.getElementById('wizardSoulMd').value = ''
@@ -3615,6 +3621,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
   const statusEl = document.getElementById('wizardGenStatus')
   statusEl.textContent = t('agents.claude_md_generating')
 
+  const telegram = document.getElementById('agentTelegram').checked
   try {
     // Create agent via API (returns generated content)
     const res = await fetch('/api/agents', {
@@ -3625,6 +3632,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
         description: desc,
         model: agentModel.value,
         profile: document.getElementById('agentProfile').value,
+        telegram,
       }),
     })
 
@@ -3639,6 +3647,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     // like "étrendíró" still resolves to the real agent dir "etrendiro".
     const createdName = result.name || name
     wizardCreatedName = createdName
+    wizardTelegram = telegram
     // 200 + personalityPending means the agent was created but its personality
     // came from a template. Captured here and painted when step 3 opens, where
     // the operator both sees the placeholder text and can rewrite it.
@@ -3679,6 +3688,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       wizardStep = 3
       document.getElementById('wizardClaudeMd').value = generatedClaudeMd
       document.getElementById('wizardSoulMd').value = generatedSoulMd
+      document.getElementById('wizardSoulGroup').hidden = !wizardTelegram
       renderWizardPendingBanner()
       updateWizardUI()
     }, 600)
@@ -3713,7 +3723,8 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ claudeMd, soulMd }),
+      // C1 PR 11c-2: without Telegram the agent has no SOUL.md; sending soulMd would write one.
+      body: JSON.stringify(wizardTelegram ? { claudeMd, soulMd } : { claudeMd }),
     })
 
     if (!res.ok) {
