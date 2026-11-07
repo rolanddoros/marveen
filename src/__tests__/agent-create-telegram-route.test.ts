@@ -20,7 +20,8 @@ const h = vi.hoisted(() => ({
   claudeArgs: [] as unknown[][],
   soulCalls: 0,
   fail: false,
-  personaAtCreation: true,
+  // C1 PR 11c-5 (Ron Low, 11c-4): per-name, so a call with the wrong name fails.
+  persona: {} as Record<string, boolean>,
   names: [] as string[],
   writePersona: vi.fn(),
 }))
@@ -40,7 +41,10 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     writeAgentDisplayName: vi.fn(),
     writeAgentChannelProvider: vi.fn(),
     writeAgentPersonaAtCreation: h.writePersona,
-    readAgentPersonaAtCreation: () => h.personaAtCreation,
+    readAgentPersonaAtCreation: (name: string) => {
+      if (!Object.prototype.hasOwnProperty.call(h.persona, name)) throw new Error(`readAgentPersonaAtCreation: unexpected name ${name}`)
+      return h.persona[name]
+    },
     listAgentNames: () => h.names,
   }
 })
@@ -148,7 +152,7 @@ beforeEach(() => {
   h.claudeArgs = []
   h.soulCalls = 0
   h.fail = false
-  h.personaAtCreation = true
+  h.persona = { [NAME]: true }
   h.names = []
   h.writePersona.mockReset()
   process.env[CLI_VERSION_OVERRIDE_ENV] = ''
@@ -285,17 +289,17 @@ describe('GET /api/agents: status of an agent created without Telegram (C1 PR 11
   }
 
   it('without a persona: CLAUDE.md alone = configured', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     expect(await statusOf({ 'CLAUDE.md': '# role\n' })).toBe('configured')
   })
 
   it('without a persona: no CLAUDE.md = draft', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     expect(await statusOf({ 'CLAUDE.md': '  \n' })).toBe('draft')
   })
 
   it('with a persona: CLAUDE.md without SOUL.md = draft, both = configured (unchanged)', async () => {
-    h.personaAtCreation = true
+    h.persona[NAME] = true
     expect(await statusOf({ 'CLAUDE.md': '# role\n' })).toBe('draft')
     expect(await statusOf({ 'SOUL.md': '# soul\n' })).toBe('configured')
   })
@@ -313,7 +317,7 @@ describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agen
 
   for (const empty of ['', '  \n\t']) {
     it(`without a persona, no SOUL.md, soulMd=${JSON.stringify(empty)}: 200 and no SOUL.md`, async () => {
-      h.personaAtCreation = false
+      h.persona[NAME] = false
       const r = await put({ soulMd: empty })
       expect(r.status).toBe(200)
       // C1 PR 11c-4: the skip is reported, so the client shows no "saved" toast.
@@ -323,14 +327,14 @@ describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agen
   }
 
   it('without a persona, non-empty soulMd: written (a hand-written persona is allowed)', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     const r = await put({ soulMd: '# by hand\n' })
     expect(r.body).toEqual({ ok: true })
     expect(readFileSync(soul(), 'utf8')).toBe('# by hand\n')
   })
 
   it('without a persona, an existing SOUL.md emptied: written empty (clearing is an edit, not a create)', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     mkdirSync(dir(), { recursive: true })
     writeFileSync(soul(), '# old\n')
     const r = await put({ soulMd: '' })
@@ -339,7 +343,7 @@ describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agen
   })
 
   it('with a persona, no SOUL.md, empty soulMd: the empty file is created as today', async () => {
-    h.personaAtCreation = true
+    h.persona[NAME] = true
     const r = await put({ soulMd: '' })
     expect(r.body).toEqual({ ok: true })
     expect(existsSync(soul())).toBe(true)
@@ -347,7 +351,7 @@ describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agen
   })
 
   it('without a persona, empty soulMd next to claudeMd: CLAUDE.md written, still no SOUL.md', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     const r = await put({ claudeMd: '# role\n', soulMd: '' })
     expect(r.body).toEqual({ ok: true, soulMdWritten: false })
     expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toBe('# role\n')
@@ -355,7 +359,7 @@ describe('PUT /api/agents/:name soulMd: no empty SOUL.md for a persona-less agen
   })
 
   it('a PUT without soulMd says nothing about it (C1 PR 11c-4)', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     const r = await put({ claudeMd: '# role\n' })
     expect(r.body).toEqual({ ok: true })
   })
@@ -374,13 +378,34 @@ describe('GET /api/agents/:name: personaAtCreation in the detail (C1 PR 11c-4)',
   }
 
   it('created without Telegram: false', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     expect((await detail()).personaAtCreation).toBe(false)
   })
 
   it('created with Telegram (or before the field): true', async () => {
-    h.personaAtCreation = true
+    h.persona[NAME] = true
     expect((await detail()).personaAtCreation).toBe(true)
+  })
+
+  // C1 PR 11c-5: the Settings tab decides on the SOUL.md text the detail already carries.
+  it('the detail carries the SOUL.md text the Settings tab decides on (C1 PR 11c-5)', async () => {
+    h.persona[NAME] = false
+    mkdirSync(dir(), { recursive: true })
+    writeFileSync(join(dir(), 'SOUL.md'), '# by hand\n')
+    const d = await detail()
+    expect(d.soulMd).toBe('# by hand\n')
+    expect(d.personaAtCreation).toBe(false)
+  })
+
+  it('no SOUL.md: soulMd is the empty string (C1 PR 11c-5)', async () => {
+    h.persona[NAME] = false
+    expect((await detail()).soulMd).toBe('')
+  })
+
+  it('the persona mock is per-name: another name throws (C1 PR 11c-5, Ron Low)', async () => {
+    const { readAgentPersonaAtCreation } = await import('../web/agent-config.js')
+    expect(() => readAgentPersonaAtCreation('someone-else')).toThrow(/unexpected name someone-else/)
+    expect(readAgentPersonaAtCreation(NAME)).toBe(true)
   })
 })
 
@@ -393,7 +418,7 @@ describe('POST /api/agents/:name/channels/telegram: attaching Telegram later (C1
     spy.mock.calls.filter((c: unknown[]) => c.includes(NO_PERSONA_WARN))
 
   it('created without Telegram: exactly one warning that it has no persona, the channel still saved', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     const warn = vi.spyOn(logger, 'warn')
     const r = await attach()
     expect(r.status).toBe(200)
@@ -405,7 +430,7 @@ describe('POST /api/agents/:name/channels/telegram: attaching Telegram later (C1
   })
 
   it('created with a persona: no such warning', async () => {
-    h.personaAtCreation = true
+    h.persona[NAME] = true
     const warn = vi.spyOn(logger, 'warn')
     const r = await attach()
     expect(r.status).toBe(200)
@@ -413,7 +438,7 @@ describe('POST /api/agents/:name/channels/telegram: attaching Telegram later (C1
   })
 
   it('created without Telegram, Discord attached: no Telegram warning', async () => {
-    h.personaAtCreation = false
+    h.persona[NAME] = false
     const warn = vi.spyOn(logger, 'warn')
     const r = await attach('discord', { channelId: '123456789012345678' })
     expect(r.status).toBe(200)

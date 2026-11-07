@@ -4200,21 +4200,27 @@ async function openMarveenDetail() {
   openModal(agentDetailOverlay)
 }
 
-// `readOnly` is really "this modal is showing the MAIN agent" -- it is called
-// with true from openMarveenDetail and false from openAgentDetail, which makes
-// it the one hook both open-paths share. Anything that must differ for the main
-// agent belongs here; putting it in openAgentDetail alone silently no-ops for
-// the main agent, whose panel never runs that function.
 // C1 PR 11c-4: an agent created without Telegram has no persona and no SOUL.md,
 // so the Settings tab hides the SOUL.md editor together with its Save. Only an
 // explicit false hides it: Telegram agents, agents created before the field and
 // the main agent (whose detail has no such field) keep it. Called on every detail
 // open, so the next agent never inherits the previous one's state.
+// C1 PR 11c-5 (Johnny 13617): hidden only while there is nothing to show. A SOUL.md
+// with content (written by hand, or left over) keeps the editor visible whatever
+// personaAtCreation says: existing content must never be unreachable from the UI.
+// The detail already carries the SOUL.md text (soulMd), so no extra flag.
 function applySoulEditorVisibility(agent) {
   const group = document.getElementById('editSoulGroup')
-  if (group) group.hidden = agent?.personaAtCreation === false
+  if (!group) return
+  const hasSoulContent = typeof agent?.soulMd === 'string' && agent.soulMd.trim() !== ''
+  group.hidden = agent?.personaAtCreation === false && !hasSoulContent
 }
 
+// `readOnly` is really "this modal is showing the MAIN agent" -- it is called
+// with true from openMarveenDetail and false from openAgentDetail, which makes
+// it the one hook both open-paths share. Anything that must differ for the main
+// agent belongs here; putting it in openAgentDetail alone silently no-ops for
+// the main agent, whose panel never runs that function.
 function applyMarveenReadonlyMode(readOnly) {
   // The Team tab describes a SUB-agent's place in the hierarchy: role
   // (leader | member), who it reports to, who it delegates to. None of it
