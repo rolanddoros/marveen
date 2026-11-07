@@ -67,6 +67,14 @@ describe('curl-recipe', () => {
     ["--data-binary @- <<'JSON'", []],
     ['"http://h/api/memories?q=x"', ['raw-q']],
     ['-G --data-urlencode "q=x"', []],
+    // Ron S1: a literal token value after Bearer, 20+ token characters. The
+    // fixtures stay under 24, where the pre-commit secret gate's "bearer token
+    // literal" pattern starts (src/security/secret-gate.ts).
+    ['-H "Authorization: Bearer abcdefghij0123456789"', ['raw-bearer-value']],
+    ['-H "Authorization: Bearer abcdefghij012345678"', []],
+    ['-H "Authorization: Bearer eyJhbGciOi.J9-x_y~z+w/q="', ['raw-bearer-value']],
+    ['-H "Authorization: Bearer short123"', []],
+    ['-H "Authorization: Bearer <your token>"', []],
   ])('flags for %s', (part, flags) => {
     expect(curl(`curl -s http://h/api/x ${part}\n`)[0].flags).toEqual(flags)
   })

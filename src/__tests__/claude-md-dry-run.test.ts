@@ -6,8 +6,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { formatText, runCli } from '../web/claude-md/cli.js'
+import { codeVersion, formatJson, formatText, runCli } from '../web/claude-md/dry-run-cli.js'
 import { composeClaudeMd } from '../web/claude-md/compose.js'
+import { dryRun } from '../web/claude-md/dry-run.js'
 import { buildLiveContext } from '../web/claude-md/live-context.js'
 import { renderRegion } from '../web/claude-md/registry.js'
 import { DRY_RUN_TREE, writeDryRunTree } from './fixtures/claude-md/dry-run-tree.js'
@@ -164,6 +165,7 @@ describe('owner-zone findings', () => {
   it('the text report lists findings as file:line, detector, pattern and flags', () => {
     const { out } = cli('--dry-run', '--root', root, '--home', HOME_FIX(), '--agent', 'chief')
     expect(out).toContain('    CLAUDE.md:8 curl-recipe curl-api [token-on-argv, raw-q]\n')
+    expect(out.split('\n')[0]).toBe(`claude-md dry-run (read-only), root ${root}, main agent chief, code unknown`)
     expect(out).toContain('    CLAUDE.md:14 stale-path /scripts/hooks/\n')
     expect(out).toContain('  block evidence-rule at line 22: ')
   })
@@ -384,5 +386,81 @@ describe('PR 8b: assumptions, per agent, never silent (Kevin 12995)', () => {
     const r = cli('--dry-run', '--root', root, '--home', 'rel/home', '--all')
     expect(r.code).toBe(2)
     expect(r.err).toContain('--home must be an absolute path')
+  })
+})
+
+// Ron S2 / Kevin 13030: the fork is public; the PR text is made with --redact-names.
+describe('--redact-names', () => {
+  let r3: string
+  beforeAll(() => {
+    // Sentinel names, and a sentinel directory in the root path.
+    r3 = join(base, 'rootsentinelxq', 'install')
+    mkdirSync(join(r3, 'agents', 'zzsentinelagent'), { recursive: true })
+    mkdirSync(join(r3, 'agents', 'aasentinelagent'), { recursive: true })
+    writeFileSync(join(r3, '.env'), 'MAIN_AGENT_ID=chiefsentinelxq\n')
+    writeFileSync(join(r3, 'CLAUDE.md'), `# chief\n\nAsk zzsentinelagent \`curl -s ${r3}/x http://h/api/x\`\n`)
+    writeFileSync(join(r3, 'agents', 'zzsentinelagent', 'CLAUDE.md'), '# zz\n```\nopen fence\n')
+    writeFileSync(join(r3, 'agents', 'aasentinelagent', 'CLAUDE.md'), '# aa\n')
+  })
+  const SENT = ['zzsentinelagent', 'aasentinelagent', 'chiefsentinelxq', 'rootsentinelxq']
+
+  it.each([[[]], [['--json']], [['--excerpts']], [['--json', '--excerpts']]])('%j: no agent name and no root path', (extra) => {
+    const { out } = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--redact-names', ...(extra as string[]))
+    for (const s of SENT) expect(out, s).not.toContain(s)
+    expect(out).toContain('agent-03')
+  })
+
+  it('numbers the agents main first, then the subs in name order, the same with --agent', () => {
+    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all', '--redact-names').out
+    expect(t.split('\n')[0]).toBe('claude-md dry-run (read-only), root <ROOT>, main agent agent-01, code unknown')
+    expect(t).toContain('\nagent-01 (main) CLAUDE.md: ok\n')
+    expect(t).toContain('\nagent-02 (sub) agents/agent-02/CLAUDE.md: ok\n')
+    expect(t).toContain('\nagent-03 (sub) agents/agent-03/CLAUDE.md: refused\n')
+    expect(t).toContain('  refused: agents/agent-03/CLAUDE.md:2: unclosed code fence')
+    const one = JSON.parse(cli('--dry-run', '--root', r3, '--agent', 'zzsentinelagent', '--redact-names', '--json').out)
+    expect(one.agents.map((a: { name: string; file: string }) => [a.name, a.file])).toEqual([['agent-03', 'agents/agent-03/CLAUDE.md']])
+    expect(one.root).toBe('<ROOT>')
+    expect(one.redactNames).toBe(true)
+  })
+
+  it('excerpts: a name and the root inside owner text are replaced too', () => {
+    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--agent', 'chiefsentinelxq', '--redact-names', '--excerpts').out
+    expect(t).toContain('      | Ask agent-03 `curl -s <ROOT>/x http://h/api/x`\n')
+    // the verbatim diff context carries the same owner line, redacted the same way
+    expect(t).toContain('\n Ask agent-03 `curl -s <ROOT>/x http://h/api/x`\n')
+  })
+
+  it('without the flag the names are printed (the local report)', () => {
+    const t = cli('--dry-run', '--root', r3, '--home', HOME_FIX(), '--all').out
+    for (const s of SENT) expect(t).toContain(s)
+  })
+
+  // Today only booleans can be assumed and rendered (profile.strict,
+  // profile.helperAllowed); a later string or list value goes through the
+  // same redaction, which this pins.
+  it('an assumed value that carries a name or the root is redacted too', () => {
+    const result = dryRun(r3, 'aasentinelagent', { homeDir: HOME_FIX() })
+    const a = result.agents[0]
+    expect(a.context).toBeDefined()
+    a.context!.assumedRendered = { projectRoot: r3, roster: ['zzsentinelagent'] }
+    const j = formatJson(result, { redactNames: true })
+    const t = formatText(result, { redactNames: true })
+    for (const s of SENT) {
+      expect(j, s).not.toContain(s)
+      expect(t, s).not.toContain(s)
+    }
+    expect(JSON.parse(j).agents[0].context.assumedRendered).toEqual({ projectRoot: '<ROOT>', roster: ['agent-03'] })
+  })
+})
+
+describe('code version (Ron S3)', () => {
+  it('reads a 40-hex stamp; anything else or no file is unknown', () => {
+    const d = join(base, 'stamp')
+    mkdirSync(d)
+    writeFileSync(join(d, 'ok'), `${'ab'.repeat(20)}\n`)
+    writeFileSync(join(d, 'bad'), 'not a sha\n')
+    expect(codeVersion(join(d, 'ok'))).toBe('ab'.repeat(20))
+    expect(codeVersion(join(d, 'bad'))).toBe('unknown')
+    expect(codeVersion(join(d, 'missing'))).toBe('unknown')
   })
 })

@@ -21,6 +21,9 @@
 //                            inside it; the autonomy block forbids it)
 //     raw-q                  a q= query without --data-urlencode (design 1.3:
 //                            HTTP 400 on accented words)
+//     raw-bearer-value       a literal token after Bearer (20+ token
+//                            characters): the value itself is in the file
+//                            (Ron S1, 13027)
 // - dashboard-token: every `.dashboard-token` occurrence. Flags: in-curl-recipe,
 //   foreign-root (its absolute path is not under the install root).
 // - sniff-literal: text whose presence changes what a legacy writer does
@@ -108,6 +111,8 @@ const TOKEN_ON_ARGV: readonly RegExp[] = [
 // `curl` where a command starts: line start, after | & ; ( or a `$(`, or at
 // the start of an inline code span.
 const CURL_CMD = /(?:^|[|&;(`]|\$\()\s*curl\b/
+// A literal value after Bearer, not a $-form or a placeholder.
+const RAW_BEARER = /Bearer\s+[A-Za-z0-9._~+/=-]{20,}/
 const DOUBLE_QUOTED_PAYLOAD = /(?:^|\s)(?:-d|--data|--data-raw|--data-binary)\s+"/
 const RAW_Q = /[?&\s'"]q=/
 
@@ -164,6 +169,7 @@ export function ownerZoneFindings(owner: readonly ScannedLine[], root: string): 
     for (const n of ll.lines) curlLines.add(n)
     const flags: string[] = []
     if (TOKEN_ON_ARGV.some((re) => re.test(ll.text))) flags.push('token-on-argv')
+    if (RAW_BEARER.test(ll.text)) flags.push('raw-bearer-value')
     if (DOUBLE_QUOTED_PAYLOAD.test(ll.text)) flags.push('double-quoted-payload')
     if (RAW_Q.test(ll.text) && !ll.text.includes('--data-urlencode')) flags.push('raw-q')
     findings.push({ line: ll.start, detector: 'curl-recipe', pattern: 'curl-api', flags })
