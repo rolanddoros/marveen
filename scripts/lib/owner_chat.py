@@ -50,16 +50,18 @@ def _env_key(provider):
 
 
 def _read_env_value(env_file, key):
+    # errors="replace": an invalid byte garbles only its own line, so a valid key
+    # line elsewhere stays readable, as the shell's grep and the TS readFileSync
+    # read it (OWNERCHAT803 parity; C1 PR 11c, Ron 13359/2 and 13368/1). The
+    # decoding never raises, so it can no longer stop a caller (an install under
+    # set -e); the file's content is not shown anywhere.
     try:
-        with open(env_file, encoding="utf-8") as f:
+        with open(env_file, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.rstrip("\n")
                 if line.startswith(f"{key}="):
                     return line[len(key) + 1:]
-    except (OSError, ValueError):
-        # ValueError: a .env that is not UTF-8 (UnicodeDecodeError) is "no value",
-        # like a missing file -- never an exception that stops the caller (an
-        # install under set -e, C1 PR 11c, Ron 13359/2). Its content is not shown.
+    except OSError:
         return None
     return None
 

@@ -18,8 +18,9 @@ rule it sits in (Kevin 13339). Measured here on the real template:
 5. the file keeps its mode (a new one: 0666 minus umask), is replaced by a
    rename, and a symlinked target is written at the file it points at, the
    link kept (Ron 13359/1);
-6. a .env that is not UTF-8 counts as no chat id, without a crash and without
-   its content on stderr (Ron 13359/2);
+6. an invalid byte in the .env garbles only its own line: the ALLOWED_CHAT_ID
+   line elsewhere stays readable, without a crash and without the content on
+   stderr (Ron 13359/2, 13368/1);
 7. a rename that fails after the check leaves the old file and no temp file
    (Ron 13359/3, his mutant P3);
 8. the values are inserted as given, not stripped (his mutant P6).
@@ -202,11 +203,12 @@ def main():
         check('a symlinked target: no temp file next to the link or the target',
               not [n for d in (work, real_dir) for n in os.listdir(d) if n.startswith('.claude-md-')])
 
-        # 6. A .env that is not UTF-8 (Ron 13359/2): no id, never a crash, never its content on stderr.
-        rc, err, text = run(TEMPLATE, None, work, env_bytes=b'ALLOWED_CHAT_ID=987654321\n\xff\xfe broken\n')
-        check('a non-UTF-8 .env: exit 0', rc == 0, err)
-        check('a non-UTF-8 .env: treated as no chat id (the fragments dropped)', text == no_id_expected)
-        check('a non-UTF-8 .env: nothing of it on stderr', '987654321' not in err and 'broken' not in err, err)
+        # 6. A .env that is not UTF-8 (Ron 13359/2, 13368/1): never a crash, never its content on stderr; an
+        # invalid byte on ANOTHER line leaves the ALLOWED_CHAT_ID line readable, as the shell and TS read it.
+        rc, err, text = run(TEMPLATE, None, work, env_bytes=b'# comment \xff\xfe broken\nALLOWED_CHAT_ID=987654321\n')
+        check('an invalid byte on another .env line: exit 0', rc == 0, err)
+        check('an invalid byte on another .env line: the valid chat id is used', text == old_sed(TEMPLATE, '987654321'))
+        check('an invalid byte on another .env line: nothing of it on stderr', '987654321' not in err and 'broken' not in err, err)
 
         # 7. The write fails after the check (Ron 13359/3, mutant P3): the old file stays, no temp file.
         spec = importlib.util.spec_from_file_location('render_claude_md_template_under_test', RENDERER)
