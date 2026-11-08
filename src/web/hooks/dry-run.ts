@@ -4,6 +4,17 @@
 // for C3-3b going live is the flattened multiset of the hooks (event, matcher,
 // hook object): EMPTY for every agent; order and grouping may change (the first
 // render normalises them, Johnny 13728).
+//
+// C3-5a: a hook that only gets another wrapper or timeout is REWRAPPED, not
+// dropped and added (isRewrap). Both commands must be KNOWN spellings
+// (spellings.ts: a fixed template per wrapper kind, retired ones included) that
+// run the same interpreter on the same script with the same arguments; any
+// other text is a drift (Ron 14094). A rewrap is listed as wrapper kind,
+// gate deadline and timeout, each before -> after, and counted apart; the exit
+// stays 0. What exit 0 proves: every changed hook moved from one manifest
+// spelling to another around the same run. Which kinds and deadlines are the
+// right ones is NOT judged here: the window check compares the listed pairs
+// with the plan.
 
 import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -11,8 +22,9 @@ import { join } from 'node:path'
 import { unifiedDiff, splitRaw, type DiffLine } from '../claude-md/line-diff.js'
 import { isAgentName } from '../claude-md/agent-name.js'
 import { EXTRA_HOOK_EVENTS, loadExtraHookEntries } from '../extra-hook-entries.js'
-import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand } from './manifest.js'
-import { generateSubHooks, hookErrorSummary, HookShapeError, scriptBasename } from './sub-generator.js'
+import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand, type HookManifest } from './manifest.js'
+import { generateSubHooks, hookErrorSummary, HookShapeError, ownerOf, scriptBasename } from './sub-generator.js'
+import { classifySpelling, type Spelling } from './spellings.js'
 import { isUnsafeHookCommand, listSubAgents, mainAgentIdOf, resolveHookNodeBin, subHookFlags } from './sub-inputs.js'
 
 export class UsageError extends Error {}
@@ -32,8 +44,11 @@ export interface AgentDryRun {
   profile?: string
   before: number
   after: number
+  /** Hooks the generator adds or drops, each one not paired as a rewrap: a drift (exit 1). */
   added: string[]
   dropped: string[]
+  /** C3-5a: hooks that only get another wrapper or timeout (isRewrap), as `<place> <script> wrapper K -> K', deadline, timeout`. */
+  rewrapped: string[]
   /** Hooks kept as they are (not the manifest's, or a switched-off gate's copy). */
   kept: string[]
   /** Order or grouping changes, per event. */
@@ -46,7 +61,11 @@ export interface DryRunSummary {
   agents: number
   /** Agents whose settings were read and compared. */
   compared: number
+  /** Nothing added, dropped or rewrapped. */
   empty: number
+  /** Nothing added or dropped, at least one hook rewrapped (exit stays 0). */
+  rewrapOnly: number
+  /** At least one hook added or dropped. */
   drift: number
   /** Agents without a settings.json: exit stays 0, but the C3-5 go-live gate requires none (Kevin 13873). */
   noSettings: string[]
@@ -65,7 +84,14 @@ export interface DryRunResult {
 }
 
 type Group = { matcher?: unknown; hooks?: unknown }
-type Flat = { key: string; label: string }
+type Flat = PlacedHook & { key: string; label: string }
+
+/** One hook where it sits: its event, its group's matcher (absent: none) and the hook object. */
+export interface PlacedHook {
+  event: string
+  matcher?: unknown
+  hook: Record<string, unknown>
+}
 
 /** A stand-in where an agent has no PreCompact prompt yet: the boot seeds the template's, the dry-run shows it as added. */
 const SEED_PROMPT = '(the template PreCompact prompt, seeded by the boot)'
@@ -142,24 +168,86 @@ function flatten(hooks: unknown, tag: Tagger): Flat[] {
         const o = { event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), ...h } as Record<string, unknown>
         const what = typeof h?.command === 'string' ? commandTag(h.command, tag) : hookField('type', h?.type, tag)
         const timeout = h?.timeout === undefined ? '-' : hookField('timeout', h.timeout, tag)
-        out.push({ key: JSON.stringify(o, Object.keys(o).sort()), label: `${eventName(event, tag)} [${typeof g.matcher === 'string' ? g.matcher : '-'}] ${what} timeout=${timeout}` })
+        out.push({
+          key: JSON.stringify(o, Object.keys(o).sort()), label: `${placeLabel(event, g.matcher, tag)} ${what} timeout=${timeout}`,
+          event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), hook: isRecord(h) ? h : {},
+        })
       }
     }
   }
   return out
 }
 
-/** Multiset difference a - b, as labels. */
-function minus(a: Flat[], b: Flat[]): string[] {
+function placeLabel(event: string, matcher: unknown, tag: Tagger): string {
+  return `${eventName(event, tag)} [${typeof matcher === 'string' ? matcher : '-'}]`
+}
+
+/** Multiset difference a - b: the entries of a left over. */
+function minus(a: Flat[], b: Flat[]): Flat[] {
   const left = new Map<string, number>()
   for (const x of b) left.set(x.key, (left.get(x.key) ?? 0) + 1)
-  const out: string[] = []
+  const out: Flat[] = []
   for (const x of a) {
     const n = left.get(x.key) ?? 0
     if (n > 0) left.set(x.key, n - 1)
-    else out.push(x.label)
+    else out.push(x)
   }
   return out
+}
+
+/** A value as text with its object keys sorted at every depth (a key list given to JSON.stringify would drop nested keys). */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`
+  if (isRecord(v)) return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`
+  return JSON.stringify(v) ?? 'undefined'
+}
+
+/** A command hook's spelling (spellings.ts) in a sub-agent's settings; null: not a command hook or not a known spelling. */
+function spellingOf(p: PlacedHook): Spelling | null {
+  return p.hook.type === 'command' && typeof p.hook.command === 'string' ? classifySpelling(p.hook.command, p.hook.timeout, p.event, 'sub') : null
+}
+
+/**
+ * C3-5a: `after` is `before` with another wrapper or timeout, nothing else. All of: the same event and matcher;
+ * both command hooks; every field but command and timeout equal; a manifest entry owns `before` (ownerOf, never an
+ * operator's own hook); BOTH commands are known spellings (spellings.ts: fixed templates, so any other text, a hand
+ * edit included, is a drift); and their slots run the same interpreter on the same script path with the same
+ * arguments. The same entry then owns `after` too: ownerOf reads only the event, the matcher and the script's file
+ * name, and all three are equal by now (Ron 14094).
+ */
+export function isRewrap(before: PlacedHook, after: PlacedHook, m: HookManifest = HOOK_MANIFEST): boolean {
+  if (before.event !== after.event || canonical(before.matcher) !== canonical(after.matcher)) return false
+  const rest = (h: Record<string, unknown>) => canonical(Object.fromEntries(Object.entries(h).filter(([k]) => k !== 'command' && k !== 'timeout')))
+  if (rest(before.hook) !== rest(after.hook)) return false
+  if (ownerOf(m, before.event, before.matcher, before.hook) === null) return false
+  const b = spellingOf(before)
+  const a = spellingOf(after)
+  return b !== null && a !== null && b.interpreter === a.interpreter && b.path === a.path && canonical(b.args) === canonical(a.args)
+}
+
+/** Pairs each added hook with one dropped hook it rewraps (isRewrap), one to one; the rest stay added or dropped. */
+export function pairRewraps<T extends PlacedHook>(dropped: readonly T[], added: readonly T[], m: HookManifest = HOOK_MANIFEST): { pairs: Array<[T, T]>; dropped: T[]; added: T[] } {
+  const left = [...dropped]
+  const pairs: Array<[T, T]> = []
+  const unpaired: T[] = []
+  for (const a of added) {
+    const i = left.findIndex((d) => isRewrap(d, a, m))
+    if (i < 0) unpaired.push(a)
+    else pairs.push([left.splice(i, 1)[0], a])
+  }
+  return { pairs, dropped: left, added: unpaired }
+}
+
+/**
+ * A rewrap as the report names it: the place, the script, the wrapper kind, the gate deadline and the timeout, each
+ * before -> after (kind names and numbers, never command text), so the window check can hold them against the plan.
+ */
+function rewrapLabel([d, a]: [PlacedHook, PlacedHook], tag: Tagger): string {
+  const sb = spellingOf(d)!
+  const sa = spellingOf(a)!
+  const timeout = (h: Record<string, unknown>) => (h.timeout === undefined ? '-' : hookField('timeout', h.timeout, tag))
+  return `${placeLabel(a.event, a.matcher, tag)} ${commandTag(String(a.hook.command), tag)} wrapper ${sb.kind} -> ${sa.kind}, `
+    + `deadline ${sb.deadline ?? '-'} -> ${sa.deadline ?? '-'}, timeout ${timeout(d.hook)} -> ${timeout(a.hook)}`
 }
 
 function shape(hooks: Record<string, unknown>, event: string): string {
@@ -244,7 +332,7 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
   const agents: AgentDryRun[] = []
   for (const name of names) {
     const shown = opts.redactNames ? alias.get(name)! : name
-    const base: AgentDryRun = { name: shown, status: 'ok', before: 0, after: 0, added: [], dropped: [], kept: [], normalised: [], unsafe: [] }
+    const base: AgentDryRun = { name: shown, status: 'ok', before: 0, after: 0, added: [], dropped: [], rewrapped: [], kept: [], normalised: [], unsafe: [] }
     try {
       const settings = readSettings(join(root, 'agents', name, '.claude', 'settings.json'))
       if (settings === null) {
@@ -260,9 +348,10 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
       const after = plan.hooks as Record<string, unknown>
       const fb = flatten(before, tag)
       const fa = flatten(after, tag)
+      const paired = pairRewraps(minus(fb, fa), minus(fa, fb))
       const report: AgentDryRun = {
         ...base, profile: flags.profileId, before: fb.length, after: fa.length,
-        added: minus(fa, fb), dropped: minus(fb, fa),
+        added: paired.added.map((x) => x.label), dropped: paired.dropped.map((x) => x.label), rewrapped: paired.pairs.map((p) => rewrapLabel(p, tag)),
         kept: plan.kept.map((k) => `${k.inManagedGroup ? '(was in a managed group) ' : ''}${flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] }, tag)[0].label}`),
         normalised: normalised(before, after, tag), unsafe: plan.unsafe,
       }
@@ -279,9 +368,10 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
   }
   const compared = agents.filter((a) => a.status === 'ok')
   const drifted = compared.filter((a) => a.added.length > 0 || a.dropped.length > 0)
+  const rewrapOnly = compared.filter((a) => !drifted.includes(a) && a.rewrapped.length > 0).length
   const errors = agents.filter((a) => a.status === 'error').map((a) => a.name)
   const summary: DryRunSummary = {
-    agents: agents.length, compared: compared.length, empty: compared.length - drifted.length, drift: drifted.length,
+    agents: agents.length, compared: compared.length, empty: compared.length - drifted.length - rewrapOnly, rewrapOnly, drift: drifted.length,
     noSettings: agents.filter((a) => a.status === 'no-settings').map((a) => a.name), errors,
   }
   return {
@@ -299,17 +389,20 @@ export function formatDryRun(r: DryRunResult): string {
       lines.push(`${a.name}: ${a.status}${a.error ? ` (${a.error})` : ''}`)
       continue
     }
-    const empty = a.added.length === 0 && a.dropped.length === 0
-    lines.push(`${a.name}: profile ${a.profile}, hooks ${a.before} -> ${a.after}, multiset ${empty ? 'EMPTY' : `+${a.added.length} -${a.dropped.length}`}, `
+    const drift = a.added.length > 0 || a.dropped.length > 0
+    const n = a.rewrapped.length
+    const multiset = drift ? `+${a.added.length} -${a.dropped.length}${n ? ` ~${n}` : ''}` : n ? `rewrap only ~${n}` : 'EMPTY'
+    lines.push(`${a.name}: profile ${a.profile}, hooks ${a.before} -> ${a.after}, multiset ${multiset}, `
       + (a.normalised.length ? `normalised: ${a.normalised.join('; ')}` : 'order unchanged'))
     for (const k of a.kept) lines.push(`  kept as is: ${k}`)
     for (const u of a.unsafe) lines.push(`  not rendered (registration guard): ${u}`)
     for (const x of a.added) lines.push(`  + ${x}`)
     for (const x of a.dropped) lines.push(`  - ${x}`)
+    for (const x of a.rewrapped) lines.push(`  ~ ${x}`)
     if (a.diff) lines.push(a.diff.trimEnd())
   }
   const s = r.summary
-  lines.push(`summary: ${s.agents} agent(s), ${s.empty}/${s.compared} multiset EMPTY, `
+  lines.push(`summary: ${s.agents} agent(s), ${s.empty}/${s.compared} multiset EMPTY, ${s.rewrapOnly} rewrap only, `
     + `${s.noSettings.length} without settings, ${s.errors.length} error; exit ${r.exit}`)
   if (s.noSettings.length) lines.push(`  without settings: ${s.noSettings.join(', ')}`)
   if (s.errors.length) lines.push(`  error: ${s.errors.join(', ')}`)
