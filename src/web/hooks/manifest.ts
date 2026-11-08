@@ -180,6 +180,31 @@ export interface HookManifestEntry extends HookSpec {
   rendered?: false
   /** rendered:false only: the agents carrying the hook today; timeout absent = the hook has no timeout key. */
   perAgent?: Readonly<Record<string, { timeout?: number }>>
+  /**
+   * The entry's text in .claude/hooks.metadata.json (the sidecar of the main
+   * settings, HOOKDRIFT926). Required on every entry the main agent renders,
+   * absent on every other (validateManifest 'main'); the sub render ignores it.
+   */
+  sidecar?: HookSidecarText
+}
+
+/**
+ * What the sidecar says about one entry's matcher groups. The rest of a
+ * sidecar entry is derived (sidecarGroupText, and C3-4 for index, hook, gate
+ * and fingerprint).
+ */
+export interface HookSidecarText {
+  /**
+   * One sentence per group: a string, the same for every group of the entry;
+   * an object with one sentence for each event the entry is registered under;
+   * or an array parallel to the matcher array, one sentence per matcher group.
+   */
+  purpose: string | Partial<Record<HookEvent, string>> | readonly string[]
+  /**
+   * Exactly when the matcher is an array: the id suffix of each matcher group,
+   * parallel to it, the first null (that group carries the bare id).
+   */
+  labels?: readonly (string | null)[]
 }
 
 /**
@@ -270,26 +295,44 @@ const pythonGate = { scope: 'sub', kind: 'security-gate', timeout: 10, wrapper: 
 
 export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   // UserPromptSubmit
-  { id: 'ledger-capture', kind: 'capture', script: 'scripts/hooks/ledger-capture.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
-  { id: 'inbox-drain', kind: 'directive', script: 'scripts/hooks/inbox-drain.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
-  { id: 'telegram-reply-directive', kind: 'directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'provenance-gate', kind: 'directive', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'staleness-guard', kind: 'directive', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'memory-lookup-nudge', kind: 'directive', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open, override: subOpen },
-  { id: 'channel-inbox-drain', kind: 'directive', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open, override: subOpen },
-  { id: 'voice-reply-directive', kind: 'directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', timeout: 60 } } },
-  { id: 'telegram_progress', kind: 'handler', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
-  { id: 'slack_progress', kind: 'handler', script: 'scripts/hooks/slack_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
-  { id: 'marveen-commands', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 45, ...open, override: subOpen },
-  { id: 'taskstate-stub', kind: 'capture', script: 'scripts/hooks/taskstate-stub.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'directive-verify', kind: 'directive', script: 'scripts/hooks/directive-verify.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'ledger-capture', kind: 'capture', script: 'scripts/hooks/ledger-capture.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open,
+    sidecar: { purpose: 'Records every inbound channel message into the conversation ledger before the agent processes it.' } },
+  { id: 'inbox-drain', kind: 'directive', script: 'scripts/hooks/inbox-drain.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open,
+    sidecar: { purpose: 'UserPromptSubmit hook: PULL the MAIN agent\'s inter-agent inbox into context.' } },
+  { id: 'telegram-reply-directive', kind: 'directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'UserPromptSubmit hook: inject a reply-tool directive whenever an inbound Telegram TEXT message arrives.' } },
+  { id: 'provenance-gate', kind: 'directive', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'Blocks a prompt that carries no provenance envelope (channel, scheduled task, peer), i.e. text injected straight into the pane.' } },
+  { id: 'staleness-guard', kind: 'directive', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'Warns when an inbound channel message is processed long after it was sent (lagging poller, re-delivery after restart).' } },
+  { id: 'memory-lookup-nudge', kind: 'directive', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open, override: subOpen,
+    sidecar: { purpose: 'UserPromptSubmit hook: on a human message, remind the agent to look in its memory.' } },
+  { id: 'channel-inbox-drain', kind: 'directive', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open, override: subOpen,
+    sidecar: { purpose: 'UserPromptSubmit hook: drain sub-agent Telegram channel notifications.' } },
+  { id: 'voice-reply-directive', kind: 'directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', timeout: 60 } },
+    sidecar: { purpose: 'UserPromptSubmit hook: voice-reply directive injection + server-side STT.' } },
+  { id: 'telegram_progress', kind: 'handler', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen,
+    sidecar: { purpose: 'Posts the Telegram "processing" indicator when an inbound message starts a turn.' } },
+  { id: 'slack_progress', kind: 'handler', script: 'scripts/hooks/slack_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen,
+    sidecar: { purpose: 'Posts the Slack "processing" indicator when an inbound message starts a turn.' } },
+  { id: 'marveen-commands', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 45, ...open, override: subOpen,
+    sidecar: { purpose: 'Answers the owner\'s slash commands without a model turn.' } },
+  { id: 'taskstate-stub', kind: 'capture', script: 'scripts/hooks/taskstate-stub.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'UserPromptSubmit hook: write a minimal task-state stub when a prompt arrives and no live record exists for the agent.' } },
+  { id: 'directive-verify', kind: 'directive', script: 'scripts/hooks/directive-verify.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'UserPromptSubmit hook: verify a [SYSTEM-DIREKTIVA msg_id:N] directive before the agent acts on it.' } },
 
   // PostToolUse / PostToolUseFailure
-  { id: 'ledger-outbound', kind: 'capture', script: 'scripts/hooks/ledger-outbound.py', scope: 'main', events: ['PostToolUse'], matcher: 'mcp__plugin_[^_]+_[^_]+__reply', timeout: 15, ...open },
-  { id: 'tool-log-capture', kind: 'capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 5, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', matcher: '*', timeout: 10 } } },
-  { id: 'persona-change-notify', kind: 'handler', script: 'scripts/hooks/persona-change-notify.py', scope: 'main', events: ['PostToolUse'], timeout: 15, ...open },
-  { id: 'telegram_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open, override: subOpen },
-  { id: 'browser-content-notice', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } } },
+  { id: 'ledger-outbound', kind: 'capture', script: 'scripts/hooks/ledger-outbound.py', scope: 'main', events: ['PostToolUse'], matcher: 'mcp__plugin_[^_]+_[^_]+__reply', timeout: 15, ...open,
+    sidecar: { purpose: 'Records the text of every outbound channel reply into the conversation ledger.' } },
+  { id: 'tool-log-capture', kind: 'capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 5, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', matcher: '*', timeout: 10 } },
+    sidecar: { purpose: 'PostToolUse + PostToolUseFailure hook: log every tool call to /api/tool-log for the activity dashboard.' } },
+  { id: 'persona-change-notify', kind: 'handler', script: 'scripts/hooks/persona-change-notify.py', scope: 'main', events: ['PostToolUse'], timeout: 15, ...open,
+    sidecar: { purpose: 'Notifies the owner when an agent\'s persona file (CLAUDE.md / SOUL.md) is changed.' } },
+  { id: 'telegram_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open, override: subOpen,
+    sidecar: { purpose: 'Clears the Telegram progress placeholder as soon as a reply is actually sent.' } },
+  { id: 'browser-content-notice', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } },
+    sidecar: { purpose: 'PostToolUse hook: envelope browser / search payloads as untrusted content.' } },
   // Hand-added on five sub-agents (skill playwright-mcp-agens), written by no code path. Measured
   // 2026-11-07 23:17 on the live files: bella and lilla without a timeout, kevin, margot, tom with 10.
   // C3-3 renders it behind a browser capability flag; until then it is data only.
@@ -298,23 +341,64 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
     matcher: 'mcp__playwright__browser_.*', wrapper: 'bare', failMode: 'open', rendered: false,
     perAgent: { bella: {}, kevin: { timeout: 10 }, lilla: {}, margot: { timeout: 10 }, tom: { timeout: 10 } },
   },
-  { id: 'slack_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open, override: subOpen },
-  { id: 'skill-usage-capture', kind: 'capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'both', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open, override: subOpen },
-  { id: 'memory-frontmatter-bash-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
+  { id: 'slack_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open, override: subOpen,
+    sidecar: { purpose: 'Clears the Slack progress placeholder as soon as a reply is actually sent.' } },
+  { id: 'skill-usage-capture', kind: 'capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'both', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'PostToolUse hook: log skill usage to the persistent skill_usage table.' } },
+  { id: 'memory-frontmatter-bash-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen,
+    sidecar: {
+      purpose: {
+        PostToolUse: 'Memory frontmatter check for memory files written from Bash (after the write).',
+        PostToolUseFailure: 'Memory frontmatter check for memory files written from Bash (failed tool call).',
+        PreToolUse: 'Memory frontmatter check for memory files written from Bash (before the write).',
+      },
+    } },
 
   // PreToolUse
   // Main: fail-open while the fleet runs; a missing script blocks only while
   // frozen, the one state in which this gate stops anything. Sub: plain fail-open.
-  { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExecUnquoted', failMode: 'open' } } },
-  { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } } },
-  { id: 'email-approval-gate', kind: 'security-gate', script: 'scripts/hooks/email-approval-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS], timeout: 10, wrapper: 'failClosedRun', failMode: 'closed' },
-  { id: 'channel-image-resize', kind: 'handler', script: 'scripts/hooks/channel-image-resize.sh', scope: 'both', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open, override: subOpen },
-  { id: 'egress-gate', kind: 'security-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
-  { id: 'memory-frontmatter-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'both', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open, override: subOpen },
-  { id: 'db-write-gate', kind: 'security-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
-  { id: 'shell-rescan-guard', kind: 'guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
-  { id: 'child-claude-channel-guard', kind: 'guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, wrapper: 'failOpenNodeProbe', failMode: 'open', override: { sub: { wrapper: 'failClosedNodeBin', failMode: 'closed' } } },
-  { id: 'token-argv-guard', kind: 'guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
+  { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExecUnquoted', failMode: 'open' } },
+    sidecar: { purpose: 'PreToolUse hook (matcher "*"), KILLSWITCH1022: while the fleet is frozen (store/fleet-freeze.json exists), every tool call is denied with exit 2.' } },
+  { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } },
+    sidecar: {
+      purpose: [
+        'Copy QA gate on outgoing email sent from Bash.',
+        'Copy QA gate on outgoing email (send_email tools).',
+        'Copy QA gate on outgoing email (manage_email tools).',
+        'Copy QA gate on outgoing email (Gmail connector tools).',
+        'Copy QA gate on outgoing email drafts (draft_email tools).',
+        'Copy QA gate on outgoing email (send / draft / reply / forward tool family).',
+        'Copy QA gate on outgoing Telegram reply / edit_message text.',
+        'Copy QA gate on outgoing Discord reply / edit_message text.',
+      ],
+      labels: [null, 'send-email', 'manage-email', 'gmail', 'draft-email', 'mail-tool-family', 'telegram-reply', 'discord-reply'],
+    } },
+  { id: 'email-approval-gate', kind: 'security-gate', script: 'scripts/hooks/email-approval-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS], timeout: 10, wrapper: 'failClosedRun', failMode: 'closed',
+    sidecar: {
+      purpose: [
+        'Level-aware approval gate on outgoing email sent from Bash (EMAILKAPU901).',
+        'Level-aware approval gate on outgoing email (send_email tools).',
+        'Level-aware approval gate on outgoing email (manage_email tools).',
+        'Level-aware approval gate on outgoing email (Gmail connector tools).',
+        'Level-aware approval gate on outgoing email drafts (draft_email tools).',
+        'Level-aware approval gate on outgoing email (send / draft / reply / forward tool family).',
+      ],
+      labels: [null, 'send-email', 'manage-email', 'gmail', 'draft-email', 'mail-tool-family'],
+    } },
+  { id: 'channel-image-resize', kind: 'handler', script: 'scripts/hooks/channel-image-resize.sh', scope: 'both', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open, override: subOpen,
+    sidecar: { purpose: 'PreToolUse hook: auto-resize channel-received large images before Read.' } },
+  { id: 'egress-gate', kind: 'security-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } },
+    sidecar: { purpose: 'PreToolUse hook: WebFetch egress allowlist enforcement.' } },
+  { id: 'memory-frontmatter-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'both', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'Blocks Write/Edit/MultiEdit on memory files whose frontmatter is missing or malformed.' } },
+  { id: 'db-write-gate', kind: 'security-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } },
+    sidecar: { purpose: 'PreToolUse gate: agent writes to the dashboard\'s SECURITY surface (APPROVALDBGATE1030), for EVERY agent, the main agent included.' } },
+  { id: 'shell-rescan-guard', kind: 'guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'PreToolUse gate: refuse a Bash command whose own TEXT will be re-scanned by the shell, because that is how prose becomes an executed command.' } },
+  { id: 'child-claude-channel-guard', kind: 'guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, wrapper: 'failOpenNodeProbe', failMode: 'open', override: { sub: { wrapper: 'failClosedNodeBin', failMode: 'closed' } },
+    sidecar: { purpose: 'PreToolUse hook (matcher: Bash): a session whose Telegram poller can be killed must not start a child `claude` that would kill it (CHILDCLAUDEPOLLER1010).' } },
+  { id: 'token-argv-guard', kind: 'guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'PreToolUse hook (matcher: Bash): warn when a command puts the dashboard token on a process argv.' } },
   { id: 'email-send-gate', script: 'scripts/email-send-gate.mjs', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, threadReplyArgs: ['--allow-thread-reply'], ...nodeGate },
   { id: 'self-pace-gate', script: 'scripts/self-pace-gate.mjs', events: ['PreToolUse'], matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit', ...nodeGate },
   { id: 'kanban-write-gate', script: 'scripts/kanban-write-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
@@ -326,18 +410,28 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   { id: 'bash-egress-parser', script: 'scripts/hooks/bash-egress-parser.mjs', events: ['PreToolUse'], matcher: 'Bash', ...nodeGate },
 
   // Stop / StopFailure
-  { id: 'telegram-reply-guard', kind: 'enforcer', script: 'scripts/hooks/telegram-reply-guard.py', scope: 'main', events: ['Stop'], timeout: 10, ...open },
-  { id: 'telegram_progress_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
-  { id: 'slack_progress_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
-  { id: 'marveen-commands-stop', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['Stop'], args: ['--stop'], timeout: 10, ...open, override: subOpen },
-  { id: 'ledger-turn-failure', kind: 'capture', script: 'scripts/hooks/ledger-turn-failure.py', scope: 'main', events: ['StopFailure'], timeout: 10, ...open },
+  { id: 'telegram-reply-guard', kind: 'enforcer', script: 'scripts/hooks/telegram-reply-guard.py', scope: 'main', events: ['Stop'], timeout: 10, ...open,
+    sidecar: { purpose: 'Stop hook: ENFORCE that an inbound Telegram message is answered through the reply tool before the turn ends.' } },
+  { id: 'telegram_progress_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen,
+    sidecar: { purpose: 'At turn end: clears the Telegram progress placeholder and owns the per-session progress state.' } },
+  { id: 'slack_progress_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen,
+    sidecar: { purpose: 'At turn end: clears the Slack progress placeholder and owns the per-session progress state.' } },
+  { id: 'marveen-commands-stop', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['Stop'], args: ['--stop'], timeout: 10, ...open, override: subOpen,
+    sidecar: { purpose: 'Slash-command bookkeeping at turn end (--stop).' } },
+  { id: 'ledger-turn-failure', kind: 'capture', script: 'scripts/hooks/ledger-turn-failure.py', scope: 'main', events: ['StopFailure'], timeout: 10, ...open,
+    sidecar: { purpose: 'StopFailure hook: leave a trace when a turn that owed a channel reply died on an API error.' } },
 
   // SessionStart / SessionEnd / PreCompact
-  { id: 'ledger-replay', kind: 'directive', script: 'scripts/hooks/ledger-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'startup|resume|clear', timeout: 15, ...open },
-  { id: 'taskstate-replay', kind: 'directive', script: 'scripts/hooks/taskstate-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
-  { id: 'clear-replay', kind: 'directive', script: 'scripts/hooks/clear-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
-  { id: 'marveen-commands-session-start', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['SessionStart'], args: ['--session-start'], timeout: 10, ...open },
-  { id: 'clear-capture', kind: 'capture', script: 'scripts/hooks/clear-capture.py', scope: 'both', events: ['SessionEnd'], timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
+  { id: 'ledger-replay', kind: 'directive', script: 'scripts/hooks/ledger-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'startup|resume|clear', timeout: 15, ...open,
+    sidecar: { purpose: 'Replays the recent conversation ledger into a fresh, resumed or cleared session.' } },
+  { id: 'taskstate-replay', kind: 'directive', script: 'scripts/hooks/taskstate-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } },
+    sidecar: { purpose: 'Re-injects a sub-agent\'s in-flight TASK-STATE after a compact, resume or respawn.' } },
+  { id: 'clear-replay', kind: 'directive', script: 'scripts/hooks/clear-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } },
+    sidecar: { purpose: 'SessionStart hook: hand the cleared thread to the fresh session.' } },
+  { id: 'marveen-commands-session-start', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['SessionStart'], args: ['--session-start'], timeout: 10, ...open,
+    sidecar: { purpose: 'Slash-command bookkeeping at session start (--session-start).' } },
+  { id: 'clear-capture', kind: 'capture', script: 'scripts/hooks/clear-capture.py', scope: 'both', events: ['SessionEnd'], timeout: 15, ...open, override: { sub: { wrapper: 'bare' } },
+    sidecar: { purpose: 'SessionEnd hook: save the thread a /clear is about to erase.' } },
   // The prompt text (about 3 KB, from templates/settings.json.template) is passed in by the caller.
   { id: 'precompact', kind: 'prompt', script: 'precompact', scope: 'sub', events: ['PreCompact'], matcher: 'auto', timeout: 180, wrapper: 'agentPrompt', failMode: 'advisory' },
 ]
@@ -551,12 +645,80 @@ function checkPlainPath(what: string, value: string): void {
   if (!PLAIN_ABS_PATH_RE.test(value)) throw new Error(`hook manifest: ${what} must be an absolute path of plain characters, got: ${value}`)
 }
 
+const SIDECAR_LABEL_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+function isSentence(s: unknown): s is string {
+  return typeof s === 'string' && s !== '' && s.trim() === s && !/[\r\n]/.test(s)
+}
+
+/** Main scope: a rendered entry carries complete sidecar text, any other entry none. */
+function checkSidecarText(e: HookManifestEntry, spec: HookSpec): void {
+  const text = e.sidecar
+  if (!placedIn(e, 'main')) {
+    if (text !== undefined) throw new Error(`hook manifest: ${e.id}: sidecar text is for entries the main agent renders only`)
+    return
+  }
+  if (text === undefined) throw new Error(`hook manifest: ${e.id}: needs sidecar text (purpose)`)
+  const matchers = Array.isArray(spec.matcher) ? spec.matcher : undefined
+  const { purpose, labels } = text
+  if (typeof purpose === 'string') {
+    if (!isSentence(purpose)) throw new Error(`hook manifest: ${e.id}: sidecar purpose must be one non-empty, trimmed line`)
+  } else if (Array.isArray(purpose)) {
+    if (!matchers) throw new Error(`hook manifest: ${e.id}: a sidecar purpose array needs a matcher array`)
+    if (purpose.length !== matchers.length) {
+      throw new Error(`hook manifest: ${e.id}: ${purpose.length} sidecar purposes for ${matchers.length} matcher groups`)
+    }
+    if (!purpose.every(isSentence)) throw new Error(`hook manifest: ${e.id}: sidecar purpose must be one non-empty, trimmed line`)
+  } else {
+    const keys = Object.keys(purpose).sort()
+    if (JSON.stringify(keys) !== JSON.stringify([...spec.events].sort())) {
+      throw new Error(`hook manifest: ${e.id}: sidecar purposes by event must name exactly its events (${spec.events.join(', ')})`)
+    }
+    if (!Object.values(purpose).every(isSentence)) throw new Error(`hook manifest: ${e.id}: sidecar purpose must be one non-empty, trimmed line`)
+  }
+  if (!matchers) {
+    if (labels !== undefined) throw new Error(`hook manifest: ${e.id}: sidecar labels are for a matcher array only`)
+    return
+  }
+  if (labels === undefined) throw new Error(`hook manifest: ${e.id}: a matcher array needs sidecar labels`)
+  if (labels.length !== matchers.length) {
+    throw new Error(`hook manifest: ${e.id}: ${labels.length} sidecar labels for ${matchers.length} matcher groups`)
+  }
+  if (labels[0] !== null) throw new Error(`hook manifest: ${e.id}: the first sidecar label must be null (the bare id)`)
+  const rest = labels.slice(1)
+  if (!rest.every((l) => typeof l === 'string' && SIDECAR_LABEL_RE.test(l))) {
+    throw new Error(`hook manifest: ${e.id}: a sidecar label after the first must be lower-case kebab-case`)
+  }
+  if (new Set(rest).size !== rest.length) throw new Error(`hook manifest: ${e.id}: duplicate sidecar label`)
+}
+
+/**
+ * The sidecar id and purpose of one main matcher group: the group the entry
+ * renders under `event` for its `matcherIndex`-th matcher (0 when the matcher
+ * is not an array). The id is `<event in kebab-case>/<script stem>`, plus
+ * `/<label>` after the first matcher group; the stem is the hook name
+ * hook_switches.normalize gives (file name, no extension, lower-case).
+ */
+export function sidecarGroupText(e: HookManifestEntry, event: HookEvent, matcherIndex: number): { id: string; purpose: string } {
+  const text = e.sidecar
+  if (!text) throw new Error(`hook manifest: ${e.id}: no sidecar text`)
+  const stem = basenameOf(e.script).replace(/\.(py|mjs|sh)$/, '').toLowerCase()
+  const label = text.labels?.[matcherIndex] ?? null
+  const id = `${event.replace(/(?<!^)(?=[A-Z])/g, '-').toLowerCase()}/${stem}${label === null ? '' : `/${label}`}`
+  const p = text.purpose
+  const purpose = typeof p === 'string' ? p : Array.isArray(p) ? p[matcherIndex] : (p as Partial<Record<HookEvent, string>>)[event]
+  if (purpose === undefined) throw new Error(`hook manifest: ${e.id}: no sidecar purpose for ${event} matcher group ${matcherIndex}`)
+  return { id, purpose }
+}
+
 /**
  * Structural check of a manifest for one scope; throws on the first problem.
  * Ids unique, script paths and args plain, every layout slot names a rendered
  * entry of this scope that is registered under that event, every (entry, event)
  * of the scope is placed exactly once, profile and agent conditions only on
  * sub-only entries, and a not-rendered entry carries per-agent data and no place.
+ * Main only: every rendered entry carries its sidecar text (purpose, and labels
+ * for a matcher array, each array as long as the matcher array), no other does.
  */
 export function validateManifest(m: HookManifest, scope: HookScope): void {
   const byId = new Map<string, HookManifestEntry>()
@@ -587,6 +749,7 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
     } else if (e.perAgent !== undefined) {
       throw new Error(`hook manifest: ${e.id}: perAgent is for not-rendered entries only`)
     }
+    if (scope === 'main') checkSidecarText(e, spec)
   }
   const layout = m.layout[scope]
   if (!layout) throw new Error(`hook manifest: no layout for scope ${scope}`)
