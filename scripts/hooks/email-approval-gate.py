@@ -1147,18 +1147,30 @@ def canonical_forms_text() -> str:
 _SCRIPT_NOTE = ""
 
 
+_NOTE_PATH_MAX = 200  # characters of the script path echoed in the deny lead
+
+
 def script_reason_note(reasons) -> str:
     """The deny lead for the first fail-closed (reason, script) of script_run_sends, or "" when there is none."""
     if not reasons:
         return ""
     reason, script = reasons[0]
+    # EGATEREASON1108 r1 (Ron N-2): the echoed path is the caller's own token, bounded only by the command length;
+    # cut it, then repr() the cut part, so the escaping still holds and the deny stays short.
+    shown = repr(script[:_NOTE_PATH_MAX])
+    if len(script) > _NOTE_PATH_MAX:
+        shown += f"...(+{len(script) - _NOTE_PATH_MAX} karakter levagva)"
     if reason == "not_literal":
-        why = (f"a futtatott szkript utja nem szo szerinti ({script!r}: valtozo, glob vagy kapcsos zarojel, "
+        why = (f"a futtatott szkript utja nem szo szerinti ({shown}: valtozo, glob vagy kapcsos zarojel, "
                "vagy relativ ut egy nem szo szerinti cd utan), igy a kapu nem tudja elolvasni, mi fut")
     else:
-        why = (f"a futtatott szkript ({script!r}) a hivas pillanataban nem olvashato (nem letezik, vagy "
+        why = (f"a futtatott szkript ({shown}) a hivas pillanataban nem olvashato (nem letezik, vagy "
                "ugyanez a parancs irja meg, pl. heredockal), igy a kapu nem tudja elolvasni, mi fut")
-    return ("Az ok: " + why + ", ezert KULDESNEK veszi (fail-closed). A tiltas NEM a szkript tartalmarol szol.\n"
+    # Ron N-1: the scan stops at the first part it calls a send, so the lead speaks of THAT part only; a later
+    # part of the same command (a real content send) is judged on its own once this one is fixed.
+    return ("Az elso tiltott resz oka: " + why + ", ezert KULDESNEK veszi (fail-closed). Ennek a resznek a "
+            "tiltasa NEM a szkript tartalmarol szol; a parancs tobbi reszet a kapu ettol fuggetlenul is "
+            "tilthatja.\n"
             "Megoldas: szo szerinti abszolut uttal futtass egy MAR LETEZO fajlt: elobb ird meg a Write "
             "eszkozzel, es kulon hivasban futtasd (python3 -I /abszolut/ut/x.py).")
 

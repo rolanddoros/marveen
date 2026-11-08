@@ -65,7 +65,10 @@ READ_ONLY = ("import json, sys, urllib.request\n"
 SMTP_SEND = "import smtplib\ns = smtplib.SMTP('localhost')\n"
 
 NOT_LITERAL, NOT_READABLE = ocg.SCRIPT_NOT_LITERAL, ocg.SCRIPT_NOT_READABLE
-LEAD_LITERAL = "Az ok: a futtatott szkript utja nem szo szerinti"
+LEAD_LITERAL = "Az elso tiltott resz oka: a futtatott szkript utja nem szo szerinti"
+# Ron N-1 / mutant G15: the lead is about the first refused part only, never an absolute verdict on the content
+CLAUSE = ("Ennek a resznek a tiltasa NEM a szkript tartalmarol szol; a parancs tobbi reszet a kapu ettol "
+          "fuggetlenul is tilthatja.")
 LEAD_READABLE = "a hivas pillanataban nem olvashato"
 FIX = "Megoldas: szo szerinti abszolut uttal futtass egy MAR LETEZO fajlt"
 
@@ -134,14 +137,43 @@ try:
             check(f"EGATEREASON1108 hook level {level} still DENIES: {what}", code == 2, f"exit={code}")
             body = err.split("\n", 1)[1] if "\n" in err else ""
             check(f"EGATEREASON1108 hook level {level} leads with the reason: {what}",
-                  body.startswith("Az ok:") and lead in err and repr(script) in err and FIX in err, f"err={err[:400]!r}")
+                  body.startswith("Az elso tiltott resz oka:") and lead in err and repr(script) in err and FIX in err,
+                  f"err={err[:400]!r}")
+            check(f"EGATEREASON1108 hook level {level} says it is about the first refused part only: {what}",
+                  CLAUSE in err, f"err={err[:400]!r}")
         code, err = run_gate(cmd, 1, cwd)
         check(f"EGATEREASON1108 hook level 1 keeps the level text: {what}",
               "autonomia-szint 1" in err, f"err={err[:400]!r}")
 
     code, err = run_gate(f"python3 -I {D}/smtp-send.py", 1)
     check("EGATEREASON1108 hook: a content send is DENIED without the fail-closed lead",
-          code == 2 and "Az ok:" not in err and "autonomia-szint 1" in err, f"exit={code} err={err[:300]!r}")
+          code == 2 and "tiltott resz oka" not in err and "autonomia-szint 1" in err, f"exit={code} err={err[:300]!r}")
+
+    # Ron N-1: a mixed command. The scan stops at the first fail-closed part; the lead names that part and says the
+    # rest may still be refused. With that part fixed, the real content send behind it is refused on its own.
+    mixed = f"S={D}; python3 -I $S/x.py; python3 -I {D}/smtp-send.py"
+    code, err = run_gate(mixed, 1)
+    check("EGATEREASON1108 mixed command: DENIED, the lead names the first (non-literal) part",
+          code == 2 and LEAD_LITERAL in err and repr("$S/x.py") in err, f"exit={code} err={err[:400]!r}")
+    check("EGATEREASON1108 mixed command: the lead says the rest of the command may still be refused",
+          CLAUSE in err, f"err={err[:400]!r}")
+    code, err = run_gate(f"python3 -I {D}/sched_patch.py {D}/out.json; python3 -I {D}/smtp-send.py", 1)
+    check("EGATEREASON1108 mixed command, first part fixed: the content send is DENIED on its own, no fail-closed lead",
+          code == 2 and "tiltott resz oka" not in err and "autonomia-szint 1" in err, f"exit={code} err={err[:300]!r}")
+
+    # Ron N-2: the echoed path is cut at 200 characters, with a marker; the cut part is still repr()-escaped
+    long_script = "/" + "a" * 5000 + ".py"
+    code, err = run_gate(f"python3 -I {long_script}", 1)
+    lead_line = err.split("\n")[1] if err.count("\n") >= 1 else ""
+    check("EGATEREASON1108 a 5000-character path: still DENIED", code == 2, f"exit={code}")
+    check("EGATEREASON1108 a 5000-character path: the first 200 characters, then the cut marker",
+          repr(long_script[:200]) + "...(+4804 karakter levagva)" in err, f"lead={lead_line[:300]!r}")
+    check("EGATEREASON1108 a 5000-character path: the lead line stays short (under 700 characters)",
+          0 < len(lead_line) < 700 and long_script[:201] not in err, f"len={len(lead_line)}")
+    edge = "/" + "b" * 196 + ".py"  # exactly 200 characters: echoed whole, no marker
+    code, err = run_gate(f"python3 -I {edge}", 1)
+    check("EGATEREASON1108 a path of exactly 200 characters: echoed whole, no cut marker",
+          len(edge) == 200 and repr(edge) in err and "levagva" not in err, f"err={err[:300]!r}")
     code, err = run_gate(f"python3 -I {D}/sched_patch.py {D}/out.json", 1)
     check("EGATEREASON1108 hook: the read-only script by its literal path passes, Hungarian mail words and all",
           code == 0, f"exit={code} err={err[:300]!r}")
