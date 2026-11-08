@@ -35,6 +35,7 @@ import {
   HOOK_MANIFEST, renderHooks, specFor, validateManifest,
   type FailMode, type HookManifest, type HookManifestEntry, type RenderContext, type RenderedHooks,
 } from '../web/hooks/manifest.js'
+import { ownerOf } from '../web/hooks/sub-generator.js'
 
 const LIVE_INSTALL_ROOT = '/root/marveen'
 const PROBE_PREFIX = 'hook-manifest-probe-'
@@ -221,14 +222,11 @@ function failModeFromText(event: string, hook: { type: string; command?: string 
   throw new Error(`unclassified wrapper under ${event}: ${cmd.slice(0, 120)}`)
 }
 
-// Event, script and ownMatchers decide the entry: two entries share browser-content-notice.py.
+// The generator's own ownership rule (event, script, ownMatchers): two entries share browser-content-notice.py.
 function entryOf(event: string, matcher: string | undefined, hook: { type: string; command?: string }): HookManifestEntry {
-  const script = hook.type === 'agent' ? 'precompact' : SCRIPT_IN_COMMAND.exec(hook.command ?? '')?.[1]
-  const hits = HOOK_MANIFEST.entries.filter((e) => e.scope !== 'main' && e.script === script
-    && specFor(e, 'sub').events.includes(event as never)
-    && (!e.ownMatchers || (matcher !== undefined && e.ownMatchers.includes(matcher))))
-  if (hits.length !== 1) throw new Error(`${event}: ${hits.length} entries for ${script}`)
-  return hits[0]
+  const e = ownerOf(HOOK_MANIFEST, event, matcher, hook)
+  if (!e) throw new Error(`${event}: no entry owns ${SCRIPT_IN_COMMAND.exec(hook.command ?? '')?.[1] ?? hook.type}`)
+  return e
 }
 
 describe('hook manifest failMode, sub scope', () => {
@@ -257,6 +255,29 @@ describe('hook manifest failMode, sub scope', () => {
     const counts = { closed: 0, open: 0, advisory: 0 }
     for (const e of HOOK_MANIFEST.entries.filter((x) => x.scope !== 'main')) counts[specFor(e, 'sub').failMode]++
     expect(counts).toEqual({ closed: 13, open: 29, advisory: 1 })
+  })
+})
+
+describe('RenderContext.skip (the generator names the entries it does not render this time)', () => {
+  it('drops exactly the named entries: a whole group, and one hook of a shared group', () => {
+    const full = renderHooks(HOOK_MANIFEST, 'sub', ctxFor(DEFAULT))
+    const skip = new Set(['egress-gate', 'staleness-guard'])
+    const less = renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), skip })
+    const gone = (h: FlatHook) => /\/(egress-gate\.mjs|staleness-guard\.py)\b/.test(String(h.command ?? ''))
+    expect(flatten(full).filter(gone)).toHaveLength(2)
+    expect(sorted(flatten(less))).toEqual(sorted(flatten(full).filter((h) => !gone(h))))
+    // The shared UserPromptSubmit group stays one group, one hook shorter.
+    expect(less.UserPromptSubmit).toHaveLength(1)
+    expect(less.UserPromptSubmit![0].hooks).toHaveLength(full.UserPromptSubmit![0].hooks.length - 1)
+    expect(less.PreToolUse!.some((g) => g.matcher === 'WebFetch')).toBe(false)
+  })
+
+  it('skipping every entry of a shared group drops the group, and an unknown or inactive id changes nothing', () => {
+    const full = renderHooks(HOOK_MANIFEST, 'sub', ctxFor(DEFAULT))
+    const stop = new Set(['telegram_progress_clear', 'slack_progress_clear'])
+    const less = renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), skip: stop })
+    expect(less.Stop).toHaveLength(full.Stop!.length - 1)
+    expect(renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), skip: new Set(['no-such-id', 'destructive-gate']) })).toEqual(full)
   })
 })
 
