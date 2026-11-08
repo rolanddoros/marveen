@@ -8,13 +8,14 @@
 // C3-5a: a hook that only gets another wrapper or timeout is REWRAPPED, not
 // dropped and added (isRewrap). Both commands must be KNOWN spellings
 // (spellings.ts: a fixed template per wrapper kind, retired ones included) that
-// run the same interpreter on the same script with the same arguments; any
-// other text is a drift (Ron 14094). A rewrap is listed as wrapper kind,
-// gate deadline and timeout, each before -> after, and counted apart; the exit
-// stays 0. What exit 0 proves: every changed hook moved from one manifest
-// spelling to another around the same run. Which kinds and deadlines are the
-// right ones is NOT judged here: the window check compares the listed pairs
-// with the plan.
+// run the same interpreter on the same script with the same arguments, with
+// the same fail mode (C3-5a-3: open, closed, or closed while frozen); any other
+// text, or a fail-mode change, is a drift (Ron 14094, 14109). A rewrap is
+// listed as wrapper kind, gate deadline and timeout, each before -> after, and
+// counted apart; the exit stays 0. What exit 0 proves: every changed hook moved
+// from one template-shaped manifest spelling to another of the same fail mode
+// around the same run. Which kinds and deadlines are the right ones is NOT
+// judged here: the window check compares the listed pairs with the plan.
 
 import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -211,8 +212,9 @@ function spellingOf(p: PlacedHook): Spelling | null {
  * C3-5a: `after` is `before` with another wrapper or timeout, nothing else. All of: the same event and matcher;
  * both command hooks; every field but command and timeout equal; a manifest entry owns `before` (ownerOf, never an
  * operator's own hook); BOTH commands are known spellings (spellings.ts: fixed templates, so any other text, a hand
- * edit included, is a drift); and their slots run the same interpreter on the same script path with the same
- * arguments. The same entry then owns `after` too: ownerOf reads only the event, the matcher and the script's file
+ * edit included, is a drift); their slots run the same interpreter on the same script path with the same
+ * arguments; and both spellings have the same fail mode (C3-5a-3, Ron 14109: an open wrapper on a closed gate is
+ * a drift, not a rewrap). The same entry then owns `after` too: ownerOf reads only the event, the matcher and the script's file
  * name, and all three are equal by now (Ron 14094).
  */
 export function isRewrap(before: PlacedHook, after: PlacedHook, m: HookManifest = HOOK_MANIFEST): boolean {
@@ -222,7 +224,7 @@ export function isRewrap(before: PlacedHook, after: PlacedHook, m: HookManifest 
   if (ownerOf(m, before.event, before.matcher, before.hook) === null) return false
   const b = spellingOf(before)
   const a = spellingOf(after)
-  return b !== null && a !== null && b.interpreter === a.interpreter && b.path === a.path && canonical(b.args) === canonical(a.args)
+  return b !== null && a !== null && b.failMode === a.failMode && b.interpreter === a.interpreter && b.path === a.path && canonical(b.args) === canonical(a.args)
 }
 
 /** Pairs each added hook with one dropped hook it rewraps (isRewrap), one to one; the rest stay added or dropped. */

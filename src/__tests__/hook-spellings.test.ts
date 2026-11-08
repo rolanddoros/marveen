@@ -26,7 +26,7 @@ const P = (script: string) => `${ROOT}/scripts/hooks/${script}`
 
 describe('the known spellings are the manifest\'s', () => {
   for (const scope of ['main', 'sub'] as HookScope[]) {
-    it(`every ${scope} command classifies as its entry's wrapper kind, script, arguments and deadline`, () => {
+    it(`every ${scope} command classifies as its entry's wrapper kind, fail mode, script, arguments and deadline`, () => {
       const rendered = renderHooks(HOOK_MANIFEST, scope, scope === 'sub' ? ALL_ON : {})
       const root = scope === 'sub' ? ROOT : '$CLAUDE_PROJECT_DIR'
       const seen = new Set<string>()
@@ -44,6 +44,9 @@ describe('the known spellings are the manifest\'s', () => {
             const spec = specFor(e!, scope)
             const args = [...(spec.args ?? []), ...(scope === 'sub' ? e!.threadReplyArgs ?? [] : []), ...(scope === 'sub' && e!.agentFlag === 'senderRolePolicy' ? [POLICY] : [])]
             expect([e!.id, s!.kind, s!.args, s!.deadline]).toEqual([e!.id, spec.wrapper, args, WITH_DEADLINE.includes(spec.wrapper) ? gateDeadlineSec(spec.timeout!) : undefined])
+            // The spelling's fail mode is the one the manifest records for the entry (C3-5a-3); the kill switch's
+            // closed-while-frozen spelling is its own mode, recorded as closed.
+            expect([e!.id, s!.failMode]).toEqual([e!.id, spec.wrapper === 'failOpenExecClosedWhenFrozen' ? 'closedWhileFrozen' : spec.failMode])
             seen.add(spec.wrapper)
           }
         }
@@ -79,7 +82,7 @@ describe('the known spellings are the manifest\'s', () => {
 
   it('the planned C3-5b sub spelling (failOpenExec with the absolute root) is known already, so a revert of C3-5b classifies', () => {
     expect(classifySpelling(`bash -c '[ -f "${P('staleness-guard.py')}" ] && exec python3 "${P('staleness-guard.py')}"; exit 0'`, 10, 'UserPromptSubmit'))
-      .toEqual({ kind: 'failOpenExec', interpreter: 'python3', path: P('staleness-guard.py'), args: [] })
+      .toEqual({ kind: 'failOpenExec', failMode: 'open', interpreter: 'python3', path: P('staleness-guard.py'), args: [] })
   })
 })
 
@@ -127,5 +130,98 @@ describe('classifySpelling: what is not a known spelling', () => {
     const open = `bash -c '[ -f "${P('x.py')}" ] && exec python3 "${P('x.py')}"; exit 0'`
     expect(classifySpelling(open, 10, 'Stop')).not.toBeNull()
     for (const c of [` ${open}`, `${open} `, `${open}; true`, `X=1 ${open}`, 'echo no script here', '']) expect(classifySpelling(c, 10, 'Stop')).toBeNull()
+  })
+
+  // C3-5a-3, from Ron's probe2 (14109): a known spelling is template-shaped, and each slot only takes what the
+  // manifest can render.
+  const S = P('staleness-guard.py')
+  const unquoted = (p: string, a = '') => `bash -c '[ -f ${p} ] && exec python3 ${p}${a}; exit 0'`
+  const quoted = (p: string, a = '') => `bash -c '[ -f "${p}" ] && exec python3 "${p}"${a}; exit 0'`
+
+  it('an unquoted path of other than PLAIN_ABS_PATH_RE characters: glob, brace, blank, quote, operator, control byte', () => {
+    expect(classifySpelling(unquoted(S), 10, 'Stop')?.kind).toBe('failOpenExecUnquoted')
+    expect(classifySpelling(unquoted(`${ROOT}/scripts/hooks/a+b_c-1.2.py`), 10, 'Stop')?.kind).toBe('failOpenExecUnquoted')
+    for (const c of ['*', '{a,b}', '?', '[a]', '~', '@', '%', ';', '&', '|', '\\', "'", '"', '$x', '\x1b', '\x00', '\n', ' ']) {
+      const p = `${ROOT}/scripts/hooks/a${c}b.py`
+      expect(classifySpelling(unquoted(p), 10, 'Stop'), JSON.stringify(c)).toBeNull()
+      expect(classifySpelling(`python3 ${p}`, 10, 'PostToolUse'), JSON.stringify(c)).toBeNull()
+    }
+    expect(classifySpelling(unquoted(`${ROOT}/scripts/*/x.py`), 10, 'Stop')).toBeNull()
+  })
+
+  it('no control character in a quoted path, the frozen root or an argument; no shell-live character in a quoted path', () => {
+    for (const c of ['\x00', '\x01', '\x1b', '\x7f', '\n', '\t']) {
+      expect(classifySpelling(quoted(`${ROOT}/scripts/hooks/a${c}b.py`), 10, 'Stop'), JSON.stringify(c)).toBeNull()
+      expect(classifySpelling(quoted(S, ` --a${c}b`), 10, 'Stop'), JSON.stringify(c)).toBeNull()
+    }
+    for (const c of [';', '&', '|', '<', '>', '(', ')', '$', '`', '\\', '"', "'", ' ']) {
+      expect(classifySpelling(quoted(`${ROOT}/scripts/hooks/a${c}b.py`), 10, 'Stop'), JSON.stringify(c)).toBeNull()
+    }
+    const frozen = renderHooks(HOOK_MANIFEST, 'main', { root: '/srv/m' }).PreToolUse!.flatMap((g) => g.hooks).find((h) => h.type === 'command' && h.command.includes('fleet-freeze.json'))!
+    if (frozen.type !== 'command') throw new Error('unreachable')
+    expect(classifySpelling(frozen.command, frozen.timeout, 'PreToolUse', 'main')?.kind).toBe('failOpenExecClosedWhenFrozen')
+    // The script path must start with the marker's root, so a control byte has to sit in both to be the only change.
+    for (const c of ['\x1b', '\x00']) {
+      expect(classifySpelling(frozen.command.replaceAll('/srv/m', `/srv/m${c}`), frozen.timeout, 'PreToolUse', 'main'), JSON.stringify(c)).toBeNull()
+    }
+  })
+
+  it('$CLAUDE_PROJECT_DIR only in the main file: in a sub-agent file it would resolve to the agent\'s own directory', () => {
+    const d = '$CLAUDE_PROJECT_DIR/scripts/hooks/staleness-guard.py'
+    expect(classifySpelling(quoted(d), 10, 'Stop', 'main')?.path).toBe(d)
+    expect(classifySpelling(quoted(d), 10, 'Stop', 'sub')).toBeNull()
+    expect(classifySpelling(unquoted(d), 10, 'Stop', 'sub')).toBeNull()
+    expect(classifySpelling(`python3 "${d}"`, 10, 'PostToolUse', 'sub')).toBeNull()
+    expect(classifySpelling(pythonGateCommand(d, [], 10), 10, 'PreToolUse', 'sub')).toBeNull()
+    expect(classifySpelling(pythonGateCommand(d, [], 10), 10, 'PreToolUse', 'main')?.kind).toBe('failClosedPythonProbe')
+  })
+
+  // Arguments: each word in the manifest's ARG_RE set ([A-Za-z0-9_=.:-]+): validateManifest and gateInvocation throw
+  // on any other, so no rendered command carries one. Not a fixed word list, because the sender-role policy is an
+  // agent's config value and a retired argument must still classify on a rollback.
+  it('an argument word outside the manifest\'s ARG_RE set, or an empty word', () => {
+    expect(classifySpelling(quoted(S, ' --a=b:c.d_1 -x'), 10, 'Stop')?.args).toEqual(['--a=b:c.d_1', '-x'])
+    const gate = pythonGateCommand(P('g.py'), [], 10)
+    for (const a of [' --x=$(id)', ' a;b', ' a&b', ' a|b', ' "q"', " 'q'", ' /etc/passwd', ' *', ' a,b', ' ~', ' a+b', ' a@b', '  a', ' a ', ' ']) {
+      expect(classifySpelling(quoted(S, a), 10, 'Stop'), JSON.stringify(a)).toBeNull()
+      expect(classifySpelling(unquoted(S, a), 10, 'Stop'), JSON.stringify(a)).toBeNull()
+      expect(classifySpelling(gate.replaceAll(`"${P('g.py')}";`, `"${P('g.py')}"${a};`), 10, 'PreToolUse'), JSON.stringify(a)).toBeNull()
+    }
+  })
+
+  it('a gate deadline of 0 or with a leading zero, on either side; a fractional timeout floors like gateDeadlineSec', () => {
+    const node = nodeGateCommand(NODE_BIN, P('egress-gate.mjs'), [], 10)
+    const python = pythonGateCommand(P('outgoing-copy-gate.py'), [], 10)
+    for (const gate of [node, python]) {
+      expect(classifySpelling(gate, 10, 'PreToolUse')?.deadline).toBe(8)
+      for (const d of ['0', '00', '08', '008', '000008']) {
+        expect(classifySpelling(gate.replaceAll(/timeout -k 1 \d+/g, `timeout -k 1 ${d}`), 10, 'PreToolUse'), d).toBeNull()
+      }
+      // A timeout of 2 derives deadline 1 (at least one), never 0.
+      expect(classifySpelling(gate.replaceAll(/timeout -k 1 \d+/g, 'timeout -k 1 1'), 2, 'PreToolUse')?.deadline).toBe(1)
+      expect(classifySpelling(gate.replaceAll(/timeout -k 1 \d+/g, 'timeout -k 1 0'), 2, 'PreToolUse')).toBeNull()
+      expect(classifySpelling(gate, 10.9, 'PreToolUse')?.deadline).toBe(8)
+      expect(classifySpelling(gate.replaceAll(/timeout -k 1 \d+/g, 'timeout -k 1 9'), 10.9, 'PreToolUse')).toBeNull()
+    }
+  })
+
+  it('every template has one fail mode: failOpen* and bare* open, failClosed* closed, the kill switch closed while frozen', () => {
+    const open = [quoted(S), unquoted(S)].map((c) => classifySpelling(c, 10, 'Stop')?.failMode)
+    const bare = [`python3 ${S}`, `python3 "${S}"`].map((c) => classifySpelling(c, 10, 'PostToolUse')?.failMode)
+    const closed = [pythonGateCommand(P('g.py'), [], 10), nodeGateCommand(NODE_BIN, P('g.mjs'), [], 10)].map((c) => classifySpelling(c, 10, 'PreToolUse')?.failMode)
+    const frozen = renderHooks(HOOK_MANIFEST, 'main').PreToolUse!.flatMap((g) => g.hooks).find((h) => h.type === 'command' && h.command.includes('fleet-freeze.json'))!
+    if (frozen.type !== 'command') throw new Error('unreachable')
+    const killSwitch = classifySpelling(frozen.command, frozen.timeout, 'PreToolUse', 'main')?.failMode
+    expect([open, bare, closed, killSwitch]).toEqual([['open', 'open'], ['open', 'open'], ['closed', 'closed'], 'closedWhileFrozen'])
+  })
+
+  it('a path of 100000 characters or a long argument list classifies in well under a second (no catastrophic backtracking)', () => {
+    const long = `/${'a'.repeat(100_000)}`
+    const t0 = performance.now()
+    for (const c of [quoted(long), unquoted(long), unquoted(`${long}.py`, ' a'.repeat(50_000)), `python3 ${'/a'.repeat(50_000)}!`, `test -x "${long}" || { echo`]) {
+      classifySpelling(c, 10, 'PostToolUse')
+      classifySpelling(c, 10, 'Stop')
+    }
+    expect(performance.now() - t0).toBeLessThan(1000)
   })
 })
