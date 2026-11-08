@@ -5,7 +5,7 @@
  * install (the guard refuses before anything is written).
  */
 import { describe, it, expect, afterAll } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENTS_BASE_DIR, listAllAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy } from '../web/agent-config.js'
@@ -112,5 +112,54 @@ describe('sub-inputs readers = the dashboard readers', () => {
     probe('listed', {})
     expect(listSubAgents(PROJECT_ROOT, mainAgentIdOf(PROJECT_ROOT)).sort()).toEqual(listAllAgentNames().sort())
     expect(mainAgentIdOf(PROJECT_ROOT)).toBe(MAIN_AGENT_ID)
+  })
+})
+
+// C3-3a-3 (Ron, 13848): two reader rules no test pinned, on a tree of their own.
+describe('sub-inputs readers on a constructed tree', () => {
+  function tree(): string {
+    return realpathSync(mkdtempSync(join(tmpdir(), 'hook-sub-inputs-tree-')))
+  }
+
+  it('profileFlagsOf: a missing or unreadable profile falls back to default.json; no default -> every switch off', () => {
+    const root = tree()
+    try {
+      const dir = join(root, 'templates', 'profiles')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'default.json'), JSON.stringify({ destructiveGate: true, secondReviewer: true }))
+      writeFileSync(join(dir, 'own.json'), JSON.stringify({ credentialGate: true }))
+      writeFileSync(join(dir, 'broken.json'), '{ not json')
+      const fromDefault = { destructiveGate: true, credentialGate: false, secondReviewer: true }
+      expect(profileFlagsOf(root, 'own')).toEqual({ destructiveGate: false, credentialGate: true, secondReviewer: false })
+      expect(profileFlagsOf(root, 'missing')).toEqual(fromDefault)
+      expect(profileFlagsOf(root, 'broken')).toEqual(fromDefault)
+      expect(profileFlagsOf(root, 'default')).toEqual(fromDefault)
+      rmSync(join(dir, 'default.json'))
+      const off = { destructiveGate: false, credentialGate: false, secondReviewer: false }
+      expect(profileFlagsOf(root, 'missing')).toEqual(off)
+      expect(profileFlagsOf(root, 'default')).toEqual(off)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('listSubAgents: directories, not the main id; an alias symlink into agents/ is not an agent (ROSTERALIAS1026)', () => {
+    const root = tree()
+    try {
+      const agents = join(root, 'agents')
+      for (const d of ['alpha', 'beta', 'mainbot']) mkdirSync(join(agents, d), { recursive: true })
+      mkdirSync(join(root, 'elsewhere', 'gamma'), { recursive: true })
+      writeFileSync(join(agents, 'notes.txt'), '')
+      writeFileSync(join(root, 'elsewhere', 'file.txt'), '')
+      symlinkSync(join(agents, 'alpha'), join(agents, 'alias'))
+      symlinkSync(agents, join(agents, 'self'))
+      symlinkSync(join(root, 'elsewhere', 'gamma'), join(agents, 'gamma'))
+      symlinkSync(join(root, 'elsewhere', 'file.txt'), join(agents, 'filelink'))
+      symlinkSync(join(root, 'nowhere'), join(agents, 'dangling'))
+      expect(listSubAgents(root, 'mainbot').sort()).toEqual(['alpha', 'beta', 'gamma'])
+      expect(listSubAgents(root, 'none').sort()).toEqual(['alpha', 'beta', 'gamma', 'mainbot'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

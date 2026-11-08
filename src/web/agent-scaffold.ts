@@ -20,7 +20,7 @@ import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand, renderSubHook, specFor, type HookManifestEntry, type RenderContext } from './hooks/manifest.js'
-import { envelopeToolsCovered } from './hooks/sub-generator.js'
+import { ENVELOPE_TOOLS, envelopeToolsCovered } from './hooks/sub-generator.js'
 import { isUnsafeHookCommand, resolveHookNodeBin } from './hooks/sub-inputs.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
@@ -2084,7 +2084,7 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // call (it exits 0 on any error), so it is a plain command, not a fail-closed
 // gate. Browser MCP matchers stay operator-wired (the doc shows how).
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
-export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
+export { ENVELOPE_TOOLS }
 export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 
 // A settings.json hook command, not text in a CLAUDE.md: after a host move the

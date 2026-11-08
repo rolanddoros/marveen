@@ -31,11 +31,17 @@ function readJson(path: string): unknown {
   try { return JSON.parse(readFileSync(path, 'utf-8')) } catch { return undefined }
 }
 
+// claude-md/dry-run.ts has its own readMainAgentId and listSubAgents (the CLAUDE.md dry-run, C1 8a). They differ
+// on purpose in one place: that listSubAgents mirrors listAgentNames (hidden agents left out, they get no CLAUDE.md
+// sections), this one mirrors listAllAgentNames, because the boot hook pass seeds hidden agents too (the heartbeat
+// worker needs its gates, HBGATEWIRE826). The main id is read the same way: only MAIN_AGENT_ID is kept from .env,
+// which also holds secrets.
+
 /** The main agent's id: MAIN_AGENT_ID of <root>/.env, as config.ts reads it. */
 export function mainAgentIdOf(root: string): string {
   let text: string
   try { text = readFileSync(join(root, '.env'), 'utf-8') } catch { return DEFAULT_MAIN_AGENT_ID }
-  return parseEnvContent(text).MAIN_AGENT_ID ?? DEFAULT_MAIN_AGENT_ID
+  return parseEnvContent(text, ['MAIN_AGENT_ID']).MAIN_AGENT_ID ?? DEFAULT_MAIN_AGENT_ID
 }
 
 /** agent-config.ts listAllAgentNames (hidden agents included, as in the boot hook pass), against `root`. */

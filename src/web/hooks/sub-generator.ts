@@ -53,7 +53,8 @@ export interface SubHookPlan {
 }
 
 const ENVELOPE_ID = 'browser-content-notice'
-const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
+/** The two tools the managed envelope covers (agent-scaffold.ts re-exports it for its callers). */
+export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
 
 /** The script file a hook command runs (e.g. "staleness-guard.py"); the first path with a script extension. */
 export function scriptBasename(command: string): string | null {
