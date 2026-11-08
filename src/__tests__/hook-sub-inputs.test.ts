@@ -5,7 +5,7 @@
  * install (the guard refuses before anything is written).
  */
 import { describe, it, expect, afterAll } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENTS_BASE_DIR, listAllAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy } from '../web/agent-config.js'
@@ -17,9 +17,16 @@ import { capabilitiesOf, listSubAgents, mainAgentIdOf, profileFlagsOf, profileId
 const PREFIX = 'hook-sub-inputs-probe-'
 const MARKER = '.hook-sub-inputs-probe'
 const made: string[] = []
+// A fresh checkout (CI, an export) has no agents/ dir: the probe creates it, and removes it again at the end.
+let madeBase = false
 
 function probe(suffix: string, config: Record<string, unknown>): string {
-  if (realpathSync(PROJECT_ROOT) === '/root/marveen' || realpathSync(AGENTS_BASE_DIR) === '/root/marveen/agents') throw new Error('refusing: live install')
+  if (realpathSync(PROJECT_ROOT) === '/root/marveen') throw new Error('refusing: live install')
+  if (!existsSync(AGENTS_BASE_DIR)) {
+    mkdirSync(AGENTS_BASE_DIR)
+    madeBase = true
+  }
+  if (realpathSync(AGENTS_BASE_DIR) === '/root/marveen/agents') throw new Error('refusing: live install')
   const name = `${PREFIX}${suffix}`
   const dir = join(AGENTS_BASE_DIR, name)
   if (existsSync(dir) && !existsSync(join(dir, MARKER))) throw new Error(`refusing: ${dir} is not a probe`)
@@ -32,6 +39,7 @@ function probe(suffix: string, config: Record<string, unknown>): string {
 
 afterAll(() => {
   for (const dir of made) if (existsSync(join(dir, MARKER))) rmSync(dir, { recursive: true, force: true })
+  if (madeBase && readdirSync(AGENTS_BASE_DIR).length === 0) rmdirSync(AGENTS_BASE_DIR)
 })
 
 describe('sub-inputs readers = the dashboard readers', () => {
