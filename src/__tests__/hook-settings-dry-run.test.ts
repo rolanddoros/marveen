@@ -411,10 +411,88 @@ describe('the report', () => {
       // Guards: the canary group is inside the printed hunk (as its tag), and that hunk starts at the block's first
       // line, where a key printed before hooks would show.
       expect(r.agents[0].diff).toContain('\n@@ -1,')
-      expect(r.agents[0].diff).toContain(`"command": "command #${createHash('sha256').update(secretHook).digest('hex').slice(0, 8)}"`)
+      expect(r.agents[0].diff).toMatch(/"command": "command #[0-9a-f]{8}"/)
+      expect(r.agents[0].diff).not.toContain(createHash('sha256').update(secretHook).digest('hex').slice(0, 8))
       // The hooks key only: the env key is not in the diff, its context lines included.
       expect(r.agents[0].diff).not.toContain('"env"')
       expect(r.agents[0].diff).not.toContain('"permissions"')
+    })
+  })
+
+  // The diff prints only hunks with 3 context lines, so a leak test puts its canaries where the first hunk is: extra
+  // event keys first, then PreToolUse with the canary groups first in it (the generator moves both). Each test then
+  // checks, as a guard, that its canaries are in the printed hunk as tags.
+  function atTop(s: Record<string, any>, groups: unknown[], events: Record<string, unknown> = {}): void {
+    const { PreToolUse, ...rest } = s.hooks
+    s.hooks = { ...events, PreToolUse: [...groups, ...PreToolUse], ...rest }
+  }
+  function everyMode(agent: string): Array<[string, string]> {
+    const modes = [[], ['--json'], ['--diff'], ['--json', '--diff'], ['--redact-names'], ['--redact-names', '--json'], ['--redact-names', '--diff'], ['--redact-names', '--json', '--diff']]
+    return modes.map((extra) => {
+      const out: string[] = []
+      runHookSettingsCli(['--dry-run', '--root', install, '--node-bin', NODE, '--agent', agent, ...extra], (x) => out.push(x), (x) => out.push(x))
+      return [`mode ${extra.join(' ')}`, out.join('')]
+    })
+  }
+
+  it('hook fields off the short list are tags in every mode: url, headers, prompt, statusMessage, odd values (Ron N6)', () => {
+    const c = 'CANARY-n6f1e2d3'
+    withSettings('sub-03', (s) => atTop(s, [
+      { matcher: 'Bash', note: `${c}-group-key`, hooks: [
+        { type: 'http', url: `https://${c}-url.example.invalid/hook`, headers: { Authorization: `Bearer ${c}-hdr` }, timeout: 5, async: true },
+        { type: 'agent', prompt: `${c}-prompt` },
+        { type: 'command', command: '/opt/x/scripts/plain.py', statusMessage: `${c}-status`, timeout: `${c}-timeout` },
+        { type: `${c}-type`, command: '/opt/x/scripts/odd.py' },
+        `${c}-hook-string`,
+      ] },
+      `${c}-group-string`,
+    ]), () => {
+      for (const [mode, text] of everyMode('sub-03')) expect(text, mode).not.toContain(c.slice(0, 10))
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true }).agents[0]
+      for (const f of ['url', 'headers', 'prompt', 'statusMessage', 'timeout', 'type', 'note']) expect(r.diff, f).toMatch(new RegExp(`"${f}": "#[0-9a-f]{8}"`))
+      expect(r.diff).toMatch(/^[-+ ] {8}"#[0-9a-f]{8}",?$/m)
+      expect(r.diff).toMatch(/^[-+ ] {4}"#[0-9a-f]{8}",?$/m)
+      for (const plain of ['"type": "http"', '"timeout": 5', '"async": true', '"type": "agent"']) expect(r.diff).toContain(plain)
+      expect(r.kept).toContainEqual(expect.stringMatching(/^PreToolUse \[Bash\] plain\.py timeout=#[0-9a-f]{8}$/))
+      expect(r.kept).toContainEqual(expect.stringMatching(/^PreToolUse \[Bash\] odd\.py timeout=-$/))
+      expect(r.kept).toContain('PreToolUse [Bash] agent timeout=-')
+    })
+  })
+
+  it('a non-list event is named only when it is a known event, never by its key from the file (Ron N7)', () => {
+    const c = 'CANARY-n7a9b8c7'
+    withSettings('sub-03', (s) => { s.hooks[`${c}-event`] = 'x' }, () => {
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+      expect(r.exit).toBe(1)
+      expect(r.agents[0].error).toMatch(/^hooks\.event #[0-9a-f]{8} is not a list; the generator leaves this file alone$/)
+      for (const [mode, text] of everyMode('sub-03')) expect(text, mode).not.toContain(c.slice(0, 10))
+    })
+    withSettings('sub-03', (s) => { s.hooks.Stop = 'x' }, () => {
+      expect(dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] }).agents[0].error).toBe('hooks.Stop is not a list; the generator leaves this file alone')
+    })
+  })
+
+  it('an unknown event key with hooks is a tag in the labels and in --diff (Ron N7)', () => {
+    const c = 'CANARY-n7e6f5a4'
+    withSettings('sub-03', (s) => atTop(s, [], { [`${c}-event`]: [{ hooks: [{ type: 'command', command: '/opt/x/scripts/own.py' }] }] }), () => {
+      for (const [mode, text] of everyMode('sub-03')) expect(text, mode).not.toContain(c.slice(0, 10))
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true }).agents[0]
+      expect(r.kept).toContainEqual(expect.stringMatching(/^event #[0-9a-f]{8} \[-\] own\.py timeout=-$/))
+      expect(r.diff).toMatch(/^[-+ ] {2}"event #[0-9a-f]{8}": \[$/m)
+    })
+  })
+
+  it('tags come from a per-run key that is never printed: the same within a run, new each run, not the plain sha256 (Ron 13906)', () => {
+    const cmd = "curl -sf -H 'Authorization: Bearer 123456' https://hooks.example.invalid/notify"
+    withSettings('sub-03', (s) => atTop(s, [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }]), () => {
+      const run = () => dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true })
+      const tagOf = (r: ReturnType<typeof dryRun>) => /^PreToolUse \[Bash\] command #([0-9a-f]{8}) /.exec(r.agents[0].kept.find((k) => k.startsWith('PreToolUse [Bash] command #'))!)![1]
+      const [r1, r2] = [run(), run()]
+      // The label's tag (the generated side) is the diff's tag (the current side): the same value, the same tag.
+      expect(r1.agents[0].diff).toContain(`"command": "command #${tagOf(r1)}"`)
+      expect(tagOf(r2)).not.toBe(tagOf(r1))
+      const plain = createHash('sha256').update(cmd).digest('hex').slice(0, 8)
+      for (const r of [r1, r2]) expect(JSON.stringify(r)).not.toContain(plain)
     })
   })
 
