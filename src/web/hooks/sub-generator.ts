@@ -143,7 +143,6 @@ export function generateSubHooks(existing: unknown, inputs: SubHookInputs, m: Ho
   const keptGroups: Record<string, Group[]> = {}
   const kept: KeptHook[] = []
   let prompt: string | undefined
-  let promptSeen = false
   for (const [event, groups] of Object.entries(current)) {
     if (!Array.isArray(groups)) throw new HookShapeError(event)
     for (const g of groups as unknown[]) {
@@ -155,11 +154,11 @@ export function generateSubHooks(existing: unknown, inputs: SubHookInputs, m: Ho
         const hook = isObject(h) ? h : {}
         let owner = owners[i]
         if (owner && specFor(owner, 'sub').wrapper === 'agentPrompt') {
-          // The first agent hook is the prompt the render keeps; a further one is the operator's: kept as a
-          // foreign hook and listed, never dropped (Ron N3, Johnny 13927).
-          if (!promptSeen) {
-            promptSeen = true
-            if (typeof hook.prompt === 'string') prompt = hook.prompt
+          // The first agent hook WITH a string prompt is the prompt the render keeps; any other agent hook (a
+          // further prompt, or one without a prompt) is the operator's: kept as a foreign hook and listed, never
+          // dropped (Ron N3, Johnny 13927; Ron N-H: a prompt-less first hook must not push the real prompt out).
+          if (prompt === undefined && typeof hook.prompt === 'string') {
+            prompt = hook.prompt
             return
           }
           owner = null

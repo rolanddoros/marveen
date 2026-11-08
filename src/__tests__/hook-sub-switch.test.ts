@@ -9,7 +9,7 @@
  * same guards as the other wiring suites. The sender-role store points at a temp file.
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const { GATES } = vi.hoisted(() => {
@@ -22,6 +22,16 @@ vi.mock('../web/sender-role-gate-store.js', async (orig) => ({
   ...(await orig<typeof import('../web/sender-role-gate-store.js')>()),
   senderRoleGatesPath: () => GATES,
 }))
+// Ron N-A: a profile that turns the three profile gates on (no shipped profile does); every other id as it is.
+vi.mock('../web/profiles.js', async (orig) => {
+  const o = await orig<typeof import('../web/profiles.js')>()
+  return {
+    ...o,
+    loadProfileTemplate: (id: string) => (id === 'c33b1b-all-gates'
+      ? { ...o.loadProfileTemplate('default'), id, destructiveGate: true, credentialGate: true, secondReviewer: true }
+      : o.loadProfileTemplate(id)),
+  }
+})
 import * as S from '../web/agent-scaffold.js'
 import { AGENTS_BASE_DIR, readAgentCapabilities, readAgentSenderRoleGatePolicy } from '../web/agent-config.js'
 import { loadProfileTemplate, type ProfileTemplate } from '../web/profiles.js'
@@ -315,5 +325,110 @@ describe('Ron N2 and N3 (Johnny 13927): kept, never dropped, and reported', () =
     expect(plan.kept).toEqual([{ event: 'PreCompact', matcher: 'auto', hook: second, inManagedGroup: true }])
     const prompts = plan.hooks.PreCompact.flatMap((g) => (g.hooks as Array<{ prompt?: string }>).map((h) => h.prompt))
     expect(prompts).toEqual(['the prompt', 'an operator prompt'])
+  })
+})
+
+// C3-3b-1b (Ron's 3b-1 review, Kevin 13959): what the boot writer still needs pinned before the go-live.
+describe('C3-3b-1b: the boot writer, pinned', () => {
+  const tplPrompt = () => (JSON.parse(S.resolveTemplatePlaceholders(readFileSync(join(PROJECT_ROOT, 'templates', 'settings.json.template'), 'utf-8')))
+    .hooks.PreCompact[0].hooks[0].prompt as string)
+  const promptOf = (hooks: unknown) => (hooks as Hooks).PreCompact.flatMap((g) => g.hooks ?? []).find((h) => h.type === 'agent')?.prompt as string
+  const withPrompt = (prompt: string) => ({ ...liveBlock('sub-01'), PreCompact: [{ matcher: 'auto', hooks: [{ type: 'agent', prompt, timeout: 180 }] }] })
+  const bootHooks = (name: string, hooks: unknown, config?: Record<string, unknown>) => {
+    const path = probe(name, { permissions: { allow: ['Read'] }, hooks }, config)
+    S.ensureSubHookBlock(name, NO_EXTRAS)
+    return readJson(path).hooks
+  }
+
+  it('N-A: the boot renders the gates of the profile the agent resolves to', () => {
+    const file = JSON.stringify(bootHooks(`${PREFIX}profile`, liveBlock('sub-01'), { securityProfile: 'c33b1b-all-gates' }))
+    for (const script of ['destructive-gate.py', 'credential-gate.py', 'second-reviewer-gate.py']) expect(file).toContain(script)
+  })
+
+  it('N-B: an unreadable settings.json (a directory, a symlink to one) is left as it is and nothing is written', () => {
+    for (const kind of ['directory', 'symlink'] as const) {
+      const name = `${PREFIX}unreadable-${kind}`
+      removeProbe(name)
+      created.add(name)
+      const dir = join(AGENTS_BASE_DIR, name)
+      mkdirSync(join(dir, '.claude'), { recursive: true })
+      writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({ securityProfile: 'default' }))
+      const path = S.agentSettingsPath(name)
+      if (kind === 'directory') mkdirSync(path)
+      else { mkdirSync(join(dir, 'real-dir')); symlinkSync(join(dir, 'real-dir'), path) }
+      const warn = vi.spyOn(logger, 'warn')
+      expect(S.ensureSubHookBlock(name, NO_EXTRAS)).toBe(false)
+      expect(kind === 'directory' ? lstatSync(path).isDirectory() : lstatSync(path).isSymbolicLink()).toBe(true)
+      expect(warn).toHaveBeenCalledWith({ agent: name, error: 'unexpected error (Error)' }, 'sub-agent hook block NOT written, settings.json left as it is (C3-3b)')
+      warn.mockRestore()
+    }
+  })
+
+  it('N-E: duplicate JSON keys are logged with their paths only, and the block is still written', () => {
+    const warn = vi.spyOn(logger, 'warn')
+    const block = JSON.stringify({ hooks: liveBlock('sub-01') }, null, 2)
+    const raw = block.replace('"hooks": {', '"hooks": {\n    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "echo CANARY-dup" }] }],')
+    const path = probe(`${PREFIX}dupkeys`, raw)
+    expect(S.ensureSubHookBlock(`${PREFIX}dupkeys`, NO_EXTRAS)).toBe(true)
+    expect(warn).toHaveBeenCalledWith({ agent: `${PREFIX}dupkeys`, dupKeys: ['hooks.PreToolUse'] },
+      'duplicate JSON keys in settings.json: JSON.parse keeps only the last occurrence, hooks in the earlier block are silently dead')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('CANARY-dup')
+    expect(readFileSync(path, 'utf-8')).not.toContain('CANARY-dup')
+  })
+
+  // N-M: one stale fixture per migration of migrateSubHookBlock. The three prompt passes change the prompt the
+  // generator keeps; the command and matcher passes touch only template hooks, which the generator recognises by
+  // their script and renders fresh, so their fixtures pin that no stale form survives (see the PR text).
+  it('N-M: the task-state header pass upgrades an operator-edited prompt', () => {
+    const anchor = "/api/agent-taskstate/SAJAT_NEVED -H 'Content-Type: application/json'"
+    const out = promptOf(bootHooks(`${PREFIX}mig-header`, withPrompt(`my own words\ncurl -s -X POST http://h${anchor} -d @f\n`)))
+    expect(out).toContain(`${anchor} -H 'X-Agent-Id: SAJAT_NEVED' -d @f`)
+  })
+
+  it('N-M: the recipes-to-helper pass rewrites the curl save recipes of an operator-edited prompt', () => {
+    const old = S.resolveTemplatePlaceholders(readFileSync(join(PROJECT_ROOT, 'src', '__tests__', 'fixtures', 'precompact-prompt-pre2338.txt'), 'utf-8'))
+    expect(old).toMatch(/\bcurl\b.*\/api\/memories\b/)
+    const out = promptOf(bootHooks(`${PREFIX}mig-recipes`, withPrompt(`my own words\n${old}`)))
+    expect(out.startsWith('my own words\n')).toBe(true)
+    expect(out).not.toMatch(/\bcurl\b.*\/api\/(?:memories|daily-log|agent-taskstate)\b/)
+    expect(out).toContain('marveen-api.sh')
+  })
+
+  it('N-M: every shipped retired stock prompt becomes the current template prompt', () => {
+    const retired = S.readRetiredHookPrompts().PreCompact
+    expect(retired.length).toBeGreaterThan(0)
+    const wrong = retired.map((stock, i) => [i, promptOf(bootHooks(`${PREFIX}mig-retired-${i}`, withPrompt(stock)))] as const)
+      .filter(([, out]) => out !== tplPrompt()).map(([i]) => i)
+    expect(wrong).toEqual([])
+  }, 60_000)
+
+  // The legacy-command pass and the matcher sync change only template hooks, which the generator renders fresh;
+  // what they still decide is the matcher of an operator's non-command hook in a template group (the sync compares
+  // commands only, and a legacy command matches the template's only after the legacy pass).
+  it('N-M: a legacy command and a stale matcher in a template group an operator extended: as the old chain does', () => {
+    const hooks = liveBlock('sub-01')
+    const g = hooks.SessionStart.find((x) => JSON.stringify(x).includes('taskstate-replay.py'))!
+    const tplMatcher = g.matcher
+    g.matcher = 'compact|resume'
+    // A legacy spelling: the same script from an older install path (the template's form is `python3 <root>/...`).
+    const legacy = 'python3 /opt/old-marveen/scripts/hooks/taskstate-replay.py'
+    g.hooks!.find((x) => String(x.command).includes('taskstate-replay.py'))!.command = legacy
+    g.hooks!.push({ type: 'http', url: 'https://ops.example.invalid/session' })
+    const settings = { permissions: { allow: [] }, hooks }
+    const fresh = newChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT) as Hooks
+    expect(multiset(fresh)).toEqual(multiset(oldChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT)))
+    expect(fresh.SessionStart.find((x) => x.hooks?.some((h) => h.type === 'http'))?.matcher).toBe(tplMatcher)
+    expect(JSON.stringify(fresh)).not.toContain(legacy)
+  })
+
+  it('N-H: a first agent hook without a prompt does not push the real prompt out; both kept, as the old chain does', () => {
+    const noPrompt = { type: 'agent', timeout: 180 }
+    const real = { type: 'agent', prompt: 'the real prompt', timeout: 180 }
+    const plan = generateSubHooks({ PreCompact: [{ matcher: 'auto', hooks: [noPrompt, real] }] },
+      { root: PROJECT_ROOT, nodeBin: S.HOOK_NODE_BIN, prompts: { precompact: 'seed' } })
+    expect(promptOf(plan.hooks)).toBe('the real prompt')
+    expect(plan.kept).toEqual([{ event: 'PreCompact', matcher: 'auto', hook: noPrompt, inManagedGroup: true }])
+    const settings = { permissions: { allow: [] }, hooks: { ...liveBlock('sub-01'), PreCompact: [{ matcher: 'auto', hooks: [noPrompt, real] }] } }
+    expect(multiset(newChain(`${PREFIX}n-h`, settings, DEFAULT))).toEqual(multiset(oldChain(`${PREFIX}n-h`, settings, DEFAULT)))
   })
 })

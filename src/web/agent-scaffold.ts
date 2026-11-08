@@ -1325,6 +1325,10 @@ export function ensureSubHookBlock(name: string, extraHooksPath = extraHooksConf
     }
     const settings: unknown = raw === null ? {} : JSON.parse(raw)
     if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) throw new TypeError('not a JSON object')
+    // JSON.parse keeps only the last of a duplicated key, so the hooks of an earlier "PreToolUse" block are silently
+    // dead; only the raw text shows it (Ron N-E, as ensureAgentHooks logged it). Key paths only, never a value.
+    const dupKeys = raw === null ? [] : findDuplicateJsonKeys(raw)
+    if (dupKeys.length > 0) logger.warn({ agent: name, dupKeys }, 'duplicate JSON keys in settings.json: JSON.parse keeps only the last occurrence, hooks in the earlier block are silently dead')
     const plan = subSettingsHooks(name, settings as Record<string, unknown>, loadProfileTemplate(resolveAgentSecurityProfile(name)), extraHooksPath)
     reportManagedGroupHooks(name, plan.kept)
     const next = JSON.stringify({ ...settings, hooks: plan.hooks }, null, 2)
