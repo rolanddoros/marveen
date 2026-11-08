@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
 import { basename, dirname, join } from 'node:path'
@@ -16,11 +16,12 @@ import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
-import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
-import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand, renderSubHook, type HookManifestEntry, type RenderContext } from './hooks/manifest.js'
+import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand, renderSubHook, specFor, type HookManifestEntry, type RenderContext } from './hooks/manifest.js'
+import { envelopeToolsCovered } from './hooks/sub-generator.js'
+import { isUnsafeHookCommand, resolveHookNodeBin } from './hooks/sub-inputs.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -175,22 +176,9 @@ export function agentRunsStrict(name: string, profile?: ProfileTemplate): boolea
 // major bump, so after `brew upgrade node` the gates run on the new major
 // until the next restart (node@N formulas stay on their major). That is still
 // node >= the engines floor, and better than every gate blocking.
-const BREW_CELLAR_NODE_RE = /^(.+)\/Cellar\/([^/]+)\/[^/]+\/bin\/node$/
-
-export function resolveHookNodeBin(
-  execPath: string,
-  fs: { existsSync: (p: string) => boolean; realpathSync: (p: string) => string } = { existsSync, realpathSync },
-): string {
-  const m = BREW_CELLAR_NODE_RE.exec(execPath)
-  if (!m) return execPath
-  const stable = `${m[1]}/opt/${m[2]}/bin/node`
-  try {
-    if (fs.existsSync(stable) && fs.realpathSync(stable) === fs.realpathSync(execPath)) return stable
-  } catch {
-    // An unreadable link is no better than the pinned path; keep execPath.
-  }
-  return execPath
-}
+// The function itself lives in hooks/sub-inputs.ts since C3-3a (the read-only dry-run needs it without
+// this module's imports); re-exported here for the existing callers.
+export { resolveHookNodeBin }
 
 export const HOOK_NODE_BIN = resolveHookNodeBin(process.execPath)
 
@@ -351,12 +339,8 @@ type HookEntry = { matcher?: string; hooks?: Array<{ command?: string; timeout?:
  * functions so that a scratchpad / staging checkout can never pollute the
  * fleet's shared ~/.claude/settings.json with stale paths.
  */
-export function isUnsafeHookCommand(command: string): boolean {
-  if (_TMP_PREFIXES.some((p) => command.includes(p))) return true
-  const m = command.match(/\/[^\s'"]+\.(?:py|mjs|js|sh)\b/)
-  if (m && !existsSync(m[0])) return true
-  return false
-}
+// The function lives in hooks/sub-inputs.ts since C3-3a (the read-only dry-run applies the same guard).
+export { isUnsafeHookCommand }
 
 /** Extracts the script file basename from a hook command string (e.g. "staleness-guard.py"). */
 function _hookScriptBasename(command: string): string | null {
@@ -1475,7 +1459,7 @@ function injectSubHook(
   const file = basename(entry.script)
   const drop = opts.drop ?? ((e: unknown) => JSON.stringify(e).includes(file))
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [...prev.filter((e) => !drop(e)), { matcher: entry.override?.sub?.matcher ?? entry.matcher, hooks: [hook] }]
+  hooks.PreToolUse = [...prev.filter((e) => !drop(e)), { matcher: specFor(entry, 'sub').matcher, hooks: [hook] }]
 }
 
 function subManifestEntry(id: string): HookManifestEntry {
@@ -2116,25 +2100,8 @@ function webSearchEnvelopeCommand(): string {
 // operator's own hook sharing a WebSearch group stays), then adds the managed
 // group -- unless an operator already wired the envelope under a matcher that
 // covers the tool (e.g. the docs' "...|WebSearch" browser pattern), where a
-// second copy would run the hook twice. Returns whether anything changed.
-function envelopeToolsCovered(matcher: unknown): Set<string> {
-  // Claude Code's PostToolUse matching, as the shipped CLI does it: a missing, '' or '*' matcher matches every
-  // tool; a plain name list (letters, digits, _ | , space -) matches the exact names split on | or ,; anything
-  // else is an UNANCHORED regex, and an invalid one matches nothing. A non-string matcher (null included) fails
-  // the CLI's settings schema, so that group never runs: it covers nothing and the managed group is added.
-  if (matcher === undefined || matcher === '' || matcher === '*') return new Set(ENVELOPE_TOOLS)
-  if (typeof matcher !== 'string') return new Set()
-  if (/^[a-zA-Z0-9_|, -]+$/.test(matcher)) {
-    const names = matcher.split(/[|,]/).map((n) => n.trim()).filter(Boolean)
-    return new Set(ENVELOPE_TOOLS.filter((t) => names.includes(t)))
-  }
-  const covered = new Set<string>()
-  for (const tool of ENVELOPE_TOOLS) {
-    try { if (new RegExp(matcher).test(tool)) covered.add(tool) } catch { /* invalid regex covers nothing */ }
-  }
-  return covered
-}
-
+// second copy would run the hook twice (envelopeToolsCovered, hooks/sub-generator.ts).
+// Returns whether anything changed.
 export function injectWebSearchEnvelope(existing: Record<string, unknown>): boolean {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks

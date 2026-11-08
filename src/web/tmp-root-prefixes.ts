@@ -2,7 +2,7 @@
 //
 // Two separate guards need the same list, and they must never drift apart:
 //
-//  1. `isUnsafeHookCommand` (agent-scaffold.ts) refuses to write a hook command
+//  1. `isUnsafeHookCommand` (hooks/sub-inputs.ts, re-exported by agent-scaffold.ts) refuses to write a hook command
 //     containing one of these into the shared ~/.claude/settings.json. When /tmp
 //     is cleared on the next reboot the referenced script is gone, the hook exits
 //     non-zero, and Claude Code blocks every prompt -- the 2026-07-14 silent
