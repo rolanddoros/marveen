@@ -19,9 +19,11 @@
 #  16  GitHub reports merge conflicts (criss-cross, #56): PR left open, manual step printed
 #  17  gh pr merge failed            18 merged, but main^{tree} != --tree or main^2 != head
 #  19  git fetch failed (step 2: nothing done yet; step 6: the PR WAS merged, verify by hand)
-#  20  PR open, its mergeable state not verified (gh pr view failed, or still UNKNOWN after the polls)
+#  20  PR open, its mergeable state not verified (gh pr view failed, still UNKNOWN after the polls,
+#      or any state other than MERGEABLE)
 # Step 6 reads the remote main TIP: a push by anyone else right after the merge also gives 18 (then
-# check the PR's merge commit by hand). --branch must not be main, develop or upstream-main.
+# check the PR's merge commit by hand). --branch must not be main, develop or upstream-main, nor start
+# with refs/.
 # No token handling: gh uses its own auth. No eval; every value is a literal argument.
 set -euo pipefail
 
@@ -55,6 +57,7 @@ command -v git >/dev/null 2>&1 || die 2 "git not on PATH"
 command -v gh >/dev/null 2>&1 || die 2 "gh not on PATH"
 case "$BRANCH" in
   main|develop|upstream-main) die 2 "--branch $BRANCH is a protected fork branch; give the PR branch" ;;
+  refs/*) die 2 "--branch is a branch name, not a ref (got: $BRANCH)" ;;
 esac
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 && [ "$(git check-ref-format --branch "$BRANCH")" = "$BRANCH" ] \
   || die 2 "--branch is not a valid branch name: $BRANCH"
@@ -65,7 +68,11 @@ g() { git -C "$WT" "$@"; }
 protected_paths() {
   local p
   while IFS= read -r -d '' p; do
-    case "$p" in .github/*|.claude/*|*/.github/*|*/.claude/*) printf '%s\n' "$p" ;; esac
+    # the directory contents, and an entry named exactly .github / .claude (a file or a symlink, Ron R-1)
+    case "$p" in
+      .github/*|.claude/*|*/.github/*|*/.claude/*) printf '%s\n' "$p" ;;
+      .github|.claude|*/.github|*/.claude) printf '%s\n' "$p" ;;
+    esac
   done
 }
 
@@ -138,6 +145,12 @@ done
 [ "$state" != "CONFLICTING" ] || conflict_stop
 if [ "$state" = "UNKNOWN" ]; then
   loud "PR #$PR is open, but GitHub still reports mergeable=UNKNOWN after $POLLS polls. Not merged (fail-closed).
+Check it by hand (gh pr view $PR -R $REPO --json mergeable) before any merge."
+  die 20 "mergeable state of PR #$PR not verified"
+fi
+if [ "$state" != "MERGEABLE" ]; then
+  # anything but MERGEABLE (empty, an unexpected word) is not a verified state: fail-closed (Ron R-2)
+  loud "PR #$PR is open, but GitHub reports mergeable='$state', not MERGEABLE. Not merged (fail-closed).
 Check it by hand (gh pr view $PR -R $REPO --json mergeable) before any merge."
   die 20 "mergeable state of PR #$PR not verified"
 fi

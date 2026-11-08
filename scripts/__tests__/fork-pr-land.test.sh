@@ -56,7 +56,7 @@ case "$1 $2" in
     [ -z "${STUB_BREAK_LS:-}" ] || git config --file "$STUB_BREAK_LS" remote.fork.uploadpack /nonexistent-upload-pack
     [ "${STUB_GH_VIEW:-ok}" != fail ] || { echo "stub: HTTP 502" >&2; exit 1; }
     n="$(grep -c '^pr view' "$GH_LOG")"
-    if [ "${STUB_GH_UNKNOWN_FIRST:-0}" = 1 ] && [ "$n" -eq 1 ]; then echo UNKNOWN; else echo "${STUB_GH_MERGEABLE:-MERGEABLE}"; fi ;;
+    if [ "${STUB_GH_UNKNOWN_FIRST:-0}" = 1 ] && [ "$n" -eq 1 ]; then echo UNKNOWN; else m="${STUB_GH_MERGEABLE:-MERGEABLE}"; [ "$m" != __EMPTY__ ] || m=""; echo "$m"; fi ;;
   "pr merge")
     case "${STUB_GH_MERGE:-ok}" in
       fail) echo "stub: GraphQL: something else went wrong" >&2; exit 1 ;;
@@ -87,6 +87,11 @@ chmod +x "$SANDBOX/bin/gh"
 export PATH="$SANDBOX/bin:$PATH"
 # The suite is only hermetic if the stub is the gh that runs.
 [ "$(command -v gh)" = "$SANDBOX/bin/gh" ] || { echo "FATAL: stub gh is not first on PATH" >&2; exit 2; }
+
+REAL_GIT="$(command -v git)"
+mkdir -p "$SANDBOX/gitfail"
+printf '#!/bin/sh\ncase " $* " in *" diff --name-only "*) echo "wrapper: diff fails" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$REAL_GIT" > "$SANDBOX/gitfail/git"
+chmod +x "$SANDBOX/gitfail/git"
 
 # --- fixture ---------------------------------------------------------------------------
 BR="tools/x"
@@ -173,6 +178,23 @@ check "nested protected file with a non-ASCII name: exit 13" is "$RC" 13
 check "nested non-ASCII protected file: no push, no gh" no_push_no_gh
 mk_case nested; wt_commit "agents/x/.claude/settings.json" "{}"; finish; land
 check "nested .claude path: exit 13" is "$RC" 13
+mk_case nestedgithub; wt_commit "a/b/.github/workflows/x.yml" "on: push"; finish; land
+check "nested .github path: exit 13" is "$RC" 13; check "nested .github path: no push, no gh" no_push_no_gh
+mk_case symtop; mkdir -p "$WT/docs"; printf 'x\n' > "$WT/docs/settings.json"; ln -s docs "$WT/.github"
+git -C "$WT" add docs .github; git -C "$WT" commit -qm "symlink named .github"; finish; land
+check "a top-level symlink named exactly .github: exit 13" is "$RC" 13
+check "top-level .github symlink: no push, no gh" no_push_no_gh
+mk_case symnested; mkdir -p "$WT/sub" "$WT/docs"; printf 'x\n' > "$WT/docs/settings.json"; ln -s ../docs "$WT/sub/.claude"
+git -C "$WT" add docs sub; git -C "$WT" commit -qm "nested symlink named .claude"; finish; land
+check "a nested symlink named exactly .claude: exit 13" is "$RC" 13
+check "nested .claude symlink: no push, no gh" no_push_no_gh
+mk_case filetop; wt_commit .claude "not a dir"; finish; land
+check "a top-level regular file named exactly .claude: exit 13" is "$RC" 13
+mk_case lookalike; wt_commit "docs/x.github" "x"; wt_commit "docs/.githubx/y" "y"; finish; land
+check "look-alike names (x.github, .githubx/) are not protected: exit 0" is "$RC" 0
+mk_case difffail; wt_commit feature.txt "feature"; finish; PATH="$SANDBOX/gitfail:$PATH" land
+check "the protected-path listing fails: exit 13" is "$RC" 13
+check "the protected-path listing fails: named, no push, no gh" bash -c 'grep -qF "cannot list the changed paths" "$1" && [ -z "$2" ] && [ ! -s "$3" ]' _ "$C/err" "$(fork_branch)" "$GH_LOG"
 mk_case mainside; wt_commit feature.txt "feature"; main_commit .github/workflows/y.yml "on: pr"; finish; land
 check ".github only on main (not landing): exit 0" is "$RC" 0
 mk_case allowed; wt_commit .github/workflows/x.yml "on: push"; finish; land --allow-protected-paths
@@ -209,6 +231,11 @@ mk_case unknown; wt_commit feature.txt "feature"; finish; FORK_PR_LAND_POLLS=3 S
 check "mergeable still UNKNOWN after the polls: exit 20" is "$RC" 20
 check "UNKNOWN: polled exactly 3 times, no merge call" is "$(gh_calls view)$(gh_calls merge)" 30
 check "UNKNOWN: loud line names the PR" grep -qF "PR #7 is open, but GitHub still reports mergeable=UNKNOWN" "$C/err"
+mk_case emptystate; wt_commit feature.txt "feature"; finish; STUB_GH_MERGEABLE=__EMPTY__ land
+check "mergeable comes back empty: exit 20" is "$RC" 20; check "empty mergeable: no merge call" is "$(gh_calls merge)" 0
+check "empty mergeable: the loud line quotes the state" grep -qF "reports mergeable='', not MERGEABLE" "$C/err"
+mk_case oddstate; wt_commit feature.txt "feature"; finish; STUB_GH_MERGEABLE=SOMETHING_NEW land
+check "an unexpected mergeable state: exit 20" is "$RC" 20; check "unexpected mergeable: no merge call" is "$(gh_calls merge)" 0
 mk_case viewfail; wt_commit feature.txt "feature"; finish; STUB_GH_VIEW=fail land
 check "gh pr view fails: exit 20" is "$RC" 20
 check "gh pr view fails: no merge call" is "$(gh_calls merge)" 0
@@ -251,7 +278,7 @@ check "short --head: exit 2" is "$RC" 2; check "short --head: no push, no gh" no
 mk_case norepo; wt_commit feature.txt "feature"; finish; RC=0
 "$LAND" --worktree "$WT" --head "$HEADSHA" --tree "$TREE" --branch "$BR" --title T --body-file "$C/body.md" > "$C/out" 2> "$C/err" || RC=$?
 check "missing --repo: exit 2" is "$RC" 2; check "missing --repo: no push, no gh" no_push_no_gh
-for bad in main develop upstream-main "bad..name" "x y" "-x" "@{-1}" HEAD; do
+for bad in main develop upstream-main refs/heads/main refs/heads/tools/x "bad..name" "x y" "-x" "@{-1}" HEAD; do
   mk_case "br$(printf '%s' "$bad" | tr -c 'A-Za-z0-9' '_')"; wt_commit feature.txt "feature"; finish; MAIN_BEFORE="$(fork_main)"
   # run from inside the worktree: there @{-1} expands to the previous branch (main), so only the
   # "the name is unchanged by check-ref-format" rule refuses it
