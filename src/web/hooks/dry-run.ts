@@ -5,14 +5,14 @@
 // hook object): EMPTY for every agent; order and grouping may change (the first
 // render normalises them, Johnny 13728).
 
-import { createHash } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { unifiedDiff, splitRaw, type DiffLine } from '../claude-md/line-diff.js'
 import { isAgentName } from '../claude-md/agent-name.js'
-import { loadExtraHookEntries } from '../extra-hook-entries.js'
-import { nodeGateCommand, pythonGateCommand } from './manifest.js'
-import { generateSubHooks, scriptBasename } from './sub-generator.js'
+import { EXTRA_HOOK_EVENTS, loadExtraHookEntries } from '../extra-hook-entries.js'
+import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand } from './manifest.js'
+import { generateSubHooks, HookShapeError, scriptBasename } from './sub-generator.js'
 import { isUnsafeHookCommand, listSubAgents, mainAgentIdOf, resolveHookNodeBin, subHookFlags } from './sub-inputs.js'
 
 export class UsageError extends Error {}
@@ -70,26 +70,57 @@ type Flat = { key: string; label: string }
 /** A stand-in where an agent has no PreCompact prompt yet: the boot seeds the template's, the dry-run shows it as added. */
 const SEED_PROMPT = '(the template PreCompact prompt, seeded by the boot)'
 
-const hash8 = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 8)
+// This output is evidence that gets pasted into PRs and logs, so no value from an agent's settings file is printed
+// as it is, in any mode, unless it is on a short list: an operator's hook can carry a credential in its command, an
+// http hook's url or headers, an agent hook's prompt (Ron N1, N6). Printed as they are: the group's matcher (by
+// design: the labels name it), a known event name, and the hook fields below, each only with its expected type.
+// Everything else is a tag.
 
-/**
- * How the output names a hook command: the script file it runs, else `command #<sha256, 8 hex>`. Never the
- * command's text, in any mode: an operator's hook can carry a credential (Ron N1: a `curl -H 'Authorization:
- * Bearer ...'` hook), and this output is evidence that gets pasted into PRs and logs.
- */
-function commandTag(command: string): string {
-  return scriptBasename(command) ?? `command #${hash8(command)}`
+/** Event names printed as they are: the manifest's and the extra-hooks file's; any other key of a file is a tag (Ron N7). */
+const KNOWN_EVENTS: ReadonlySet<string> = new Set([...EXTRA_HOOK_EVENTS, ...HOOK_MANIFEST.entries.flatMap((e) => e.events)])
+/** Hook types printed as they are (the manifest renders command and agent hooks; prompt and http are Claude Code's others). */
+const HOOK_TYPES: ReadonlySet<string> = new Set(['command', 'agent', 'prompt', 'http'])
+/** The hook fields printed as they are, each with the one value type it may have; statusMessage is free text, so a tag. */
+const PLAIN_FIELDS: Readonly<Record<string, (v: unknown) => boolean>> = {
+  type: (v) => typeof v === 'string' && HOOK_TYPES.has(v),
+  timeout: (v) => typeof v === 'number' && Number.isFinite(v),
+  async: (v) => typeof v === 'boolean',
 }
 
-/** The hooks block as --diff shows it: every field as it is, each command replaced by its tag plus a hash. */
-function taggedHooks(hooks: unknown): unknown {
-  if (typeof hooks !== 'object' || hooks === null) return hooks
-  return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [event, !Array.isArray(groups) ? groups
-    : (groups as Group[]).map((g) => (typeof g !== 'object' || g === null || !Array.isArray(g.hooks) ? g : {
-      ...g,
-      hooks: (g.hooks as Record<string, unknown>[]).map((h) => (typeof h?.command === 'string'
-        ? { ...h, command: `${scriptBasename(h.command) ?? 'command'} #${hash8(h.command)}` } : h)),
-    }))]))
+type Tagger = (value: unknown) => string
+
+/**
+ * `#` + 8 hex of an HMAC-SHA256 under a random key made for this run and never printed (Ron 13906: an unsalted hash
+ * of a command is a guessing oracle for a weak secret in a known template). Within one run the same value gets the
+ * same tag, so before and after line up; across runs nothing can be matched, and nothing can be guessed offline.
+ */
+function newTagger(): Tagger {
+  const key = randomBytes(32)
+  return (value) => `#${createHmac('sha256', key).update(JSON.stringify(value) ?? String(value)).digest('hex').slice(0, 8)}`
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const eventName = (event: string, tag: Tagger): string => (KNOWN_EVENTS.has(event) ? event : `event ${tag(event)}`)
+
+/** How a hook command is named in a label: the script file it runs, else `command #<tag>`. Never its text. */
+function commandTag(command: string, tag: Tagger): string {
+  return scriptBasename(command) ?? `command ${tag(command)}`
+}
+
+function hookField(field: string, value: unknown, tag: Tagger): unknown {
+  if (field === 'command' && typeof value === 'string') return `${scriptBasename(value) ?? 'command'} ${tag(value)}`
+  return PLAIN_FIELDS[field]?.(value) ? value : tag(value)
+}
+
+/** The hooks block as --diff shows it: the printable values as they are, every other value a tag. */
+function shownHooks(hooks: Record<string, unknown>, tag: Tagger): unknown {
+  const group = (g: unknown) => (!isRecord(g) ? tag(g) : Object.fromEntries(Object.entries(g).map(([k, v]) => [k,
+    k === 'matcher' && typeof v === 'string' ? v
+      : k === 'hooks' && Array.isArray(v)
+        ? v.map((h) => (isRecord(h) ? Object.fromEntries(Object.entries(h).map(([f, x]) => [f, hookField(f, x, tag)])) : tag(h)))
+        : tag(v)])))
+  return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [eventName(event, tag),
+    Array.isArray(groups) ? groups.map(group) : tag(groups)]))
 }
 
 /**
@@ -97,7 +128,7 @@ function taggedHooks(hooks: unknown): unknown {
  * other field (async, statusMessage, ...). A change to any of them is a drift, so a changed field can never read
  * as EMPTY.
  */
-function flatten(hooks: unknown): Flat[] {
+function flatten(hooks: unknown, tag: Tagger): Flat[] {
   const out: Flat[] = []
   if (typeof hooks !== 'object' || hooks === null) return out
   for (const [event, groups] of Object.entries(hooks)) {
@@ -105,8 +136,9 @@ function flatten(hooks: unknown): Flat[] {
     for (const g of groups as Group[]) {
       for (const h of Array.isArray(g?.hooks) ? (g.hooks as Record<string, unknown>[]) : []) {
         const o = { event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), ...h } as Record<string, unknown>
-        const what = typeof h?.command === 'string' ? commandTag(h.command) : String(h?.type)
-        out.push({ key: JSON.stringify(o, Object.keys(o).sort()), label: `${event} [${typeof g.matcher === 'string' ? g.matcher : '-'}] ${what} timeout=${h?.timeout ?? '-'}` })
+        const what = typeof h?.command === 'string' ? commandTag(h.command, tag) : hookField('type', h?.type, tag)
+        const timeout = h?.timeout === undefined ? '-' : hookField('timeout', h.timeout, tag)
+        out.push({ key: JSON.stringify(o, Object.keys(o).sort()), label: `${eventName(event, tag)} [${typeof g.matcher === 'string' ? g.matcher : '-'}] ${what} timeout=${timeout}` })
       }
     }
   }
@@ -131,18 +163,20 @@ function shape(hooks: Record<string, unknown>, event: string): string {
   return `[${groups.map((g) => (Array.isArray(g?.hooks) ? g.hooks.length : 0)).join(',')}]`
 }
 
-function normalised(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+function normalised(before: Record<string, unknown>, after: Record<string, unknown>, tag: Tagger): string[] {
   const out: string[] = []
   if (Object.keys(before).join('\n') !== Object.keys(after).join('\n')) out.push('event order')
-  const keys = (hooks: Record<string, unknown>, event: string) => flatten({ [event]: hooks[event] }).map((f) => f.key).join('\n')
+  const keys = (hooks: Record<string, unknown>, event: string) => flatten({ [event]: hooks[event] }, tag).map((f) => f.key).join('\n')
   for (const event of Object.keys(after)) {
     const a = shape(before, event)
     const b = shape(after, event)
-    if (a !== b) out.push(`${event} ${a} -> ${b}`)
-    else if (keys(before, event) !== keys(after, event)) out.push(`${event} order`)
+    if (a !== b) out.push(`${eventName(event, tag)} ${a} -> ${b}`)
+    else if (keys(before, event) !== keys(after, event)) out.push(`${eventName(event, tag)} order`)
   }
   return out
 }
+
+class SettingsReadError extends Error {}
 
 // The errors name the problem, never the file's text or path: a JSON parse error quotes the text around the fault,
 // and the path carries the agent's real name (--redact-names).
@@ -153,15 +187,15 @@ function readSettings(path: string): Record<string, unknown> | null {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code
     if (code === 'ENOENT') return null
-    throw new Error(`settings.json is not readable (${code ?? 'unknown error'})`)
+    throw new SettingsReadError(`settings.json is not readable (${code ?? 'unknown error'})`)
   }
   let v: unknown
   try {
     v = JSON.parse(raw)
   } catch {
-    throw new Error('settings.json is not valid JSON')
+    throw new SettingsReadError('settings.json is not valid JSON')
   }
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('settings.json is not a JSON object')
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new SettingsReadError('settings.json is not a JSON object')
   return v as Record<string, unknown>
 }
 
@@ -176,6 +210,13 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
   const names = opts.agents?.length ? [...opts.agents] : all
   const alias = new Map(all.map((n, i) => [n, `sub-${String(i + 1).padStart(2, '0')}`]))
   const show = (s: string) => s.replaceAll(nodeBin, '${NODE_BIN}').replaceAll(root, '${ROOT}')
+  const tag = newTagger()
+  // An error text from the agent's file is never printed (Ron N7: the non-list event's key); the manifest's own
+  // errors carry only shipped text and the install's paths (shown as ${ROOT}, ${NODE_BIN}).
+  const errorText = (err: unknown): string => (err instanceof SettingsReadError ? err.message
+    : err instanceof HookShapeError ? `hooks.${eventName(err.event, tag)} is not a list; the generator leaves this file alone`
+      : err instanceof Error && err.message.startsWith('hook manifest: ') ? show(err.message)
+        : `unexpected error (${err instanceof Error ? err.name : typeof err})`)
   const extras = loadExtraHookEntries(join(root, 'store', 'extra-hooks.json'), {
     projectRoot: root,
     shippedScriptsDir: join(root, 'scripts'),
@@ -201,24 +242,23 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
         isUnsafe: isUnsafeHookCommand, extras: extras.entries,
       })
       const after = plan.hooks as Record<string, unknown>
-      const fb = flatten(before)
-      const fa = flatten(after)
+      const fb = flatten(before, tag)
+      const fa = flatten(after, tag)
       const report: AgentDryRun = {
         ...base, profile: flags.profileId, before: fb.length, after: fa.length,
         added: minus(fa, fb), dropped: minus(fb, fa),
-        kept: plan.kept.map((k) => flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] })[0].label),
-        normalised: normalised(before, after), unsafe: plan.unsafe,
+        kept: plan.kept.map((k) => flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] }, tag)[0].label),
+        normalised: normalised(before, after, tag), unsafe: plan.unsafe,
       }
       if (opts.diff) {
         // The `hooks` key only (Ron N2: the whole object put neighbouring keys' values into the context lines),
-        // commands as tags.
-        const lines = (o: unknown): DiffLine[] => splitRaw(show(JSON.stringify(taggedHooks(o), null, 2))).map((raw) => ({ raw, tag: '' }))
+        // every value off the short list as a tag.
+        const lines = (o: Record<string, unknown>): DiffLine[] => splitRaw(show(JSON.stringify(shownHooks(o, tag), null, 2))).map((raw) => ({ raw, tag: '' }))
         report.diff = unifiedDiff(lines(before), lines(after), { from: `${shown}/settings.json hooks`, to: `${shown}/settings.json hooks (generated)` })
       }
       agents.push(report)
     } catch (err) {
-      const msg = show((err as Error).message)
-      agents.push({ ...base, status: 'error', error: opts.redactNames ? msg.replaceAll(name, shown) : msg })
+      agents.push({ ...base, status: 'error', error: errorText(err) })
     }
   }
   const compared = agents.filter((a) => a.status === 'ok')

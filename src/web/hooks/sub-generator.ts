@@ -101,6 +101,13 @@ export function ownerOf(m: HookManifest, event: string, matcher: unknown, hook: 
   return null
 }
 
+/** An event of the current block that is not a list: the caller leaves the file alone. `event` is the file's key, as is. */
+export class HookShapeError extends Error {
+  constructor(readonly event: string) {
+    super(`hooks.${event} is not a list; the generator leaves this file alone`)
+  }
+}
+
 /**
  * The hooks block the generator writes for one sub-agent, from its current
  * block (`existing`, anything: a missing or malformed block is none) and its
@@ -119,7 +126,7 @@ export function generateSubHooks(existing: unknown, inputs: SubHookInputs, m: Ho
   const kept: KeptHook[] = []
   let prompt: string | undefined
   for (const [event, groups] of Object.entries(current)) {
-    if (!Array.isArray(groups)) throw new Error(`hooks.${event} is not a list; the generator leaves this file alone`)
+    if (!Array.isArray(groups)) throw new HookShapeError(event)
     for (const g of groups as unknown[]) {
       const keep = (group: unknown) => (keptGroups[event] ??= []).push(group as Group)
       if (!isObject(g) || !Array.isArray(g.hooks) || isExtraHookGroup(g)) { keep(g); continue }
