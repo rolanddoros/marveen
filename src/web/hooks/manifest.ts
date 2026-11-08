@@ -863,6 +863,17 @@ export function renderSubHook(e: HookManifestEntry, ctx: RenderContext): Rendere
   return renderHook(e, 'sub', root, nodeBin, ctx)
 }
 
+/**
+ * The kill switch as a sub-agent gets it, for an install root: the dashboard worker's own settings carry the same
+ * hook (agent-worker.ts, withFleetFreezeGate), so there is one spelling, closed while frozen. The gate runs no node,
+ * so no node binary is needed; the root gets the frozen render's own plain-path check.
+ */
+export function fleetFreezeGateHook(root: string): RenderedHook {
+  const e = HOOK_MANIFEST.entries.find((x) => x.id === 'fleet-freeze-gate')
+  if (!e) throw new Error('hook manifest: no fleet-freeze-gate entry')
+  return renderHook(e, 'sub', root, '', {})
+}
+
 function renderHook(e: HookManifestEntry, scope: HookScope, root: string, nodeBin: string, ctx: RenderContext): RenderedHook {
   const spec = specFor(e, scope)
   const withTimeout = <T extends RenderedHook>(h: T): T => (spec.timeout === undefined ? h : { ...h, timeout: spec.timeout })

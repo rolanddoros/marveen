@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -290,17 +290,89 @@ describe("the dashboard's own Claude calls and the worker session", () => {
   })
 
   it("the worker's own settings get the gate first in PreToolUse, once, and keep everything else", async () => {
-    const { withFleetFreezeGate, WORKER_FREEZE_GATE_CMD } = await import('../web/agent-worker.js')
+    const { withFleetFreezeGate } = await import('../web/agent-worker.js')
+    const { fleetFreezeGateHook } = await import('../web/hooks/manifest.js')
     const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo other' }] }
-    const once = withFleetFreezeGate({ enabledPlugins: { x: false }, hooks: { PreToolUse: [other], Stop: [{ hooks: [] }] } })
+    // A worker settings file written before: the old bare gate entry is replaced, not kept next to the new one.
+    const bare = { matcher: '*', hooks: [{ type: 'command', command: `bash "${join(ROOT, 'scripts', 'hooks', 'fleet-freeze-gate.sh')}"`, timeout: 5 }] }
+    const once = withFleetFreezeGate({ enabledPlugins: { x: false }, hooks: { PreToolUse: [bare, other], Stop: [{ hooks: [] }] } })
     const twice = withFleetFreezeGate(once)
     const pre = (twice.hooks as any).PreToolUse
     expect(pre).toHaveLength(2)
-    expect(pre[0]).toEqual({ matcher: '*', hooks: [{ type: 'command', command: WORKER_FREEZE_GATE_CMD, timeout: 5 }] })
+    expect(pre[0]).toEqual({ matcher: '*', hooks: [fleetFreezeGateHook(ROOT)] })
     expect(pre[1]).toEqual(other)
     expect((twice.hooks as any).Stop).toEqual([{ hooks: [] }])
     expect(twice.enabledPlugins).toEqual({ x: false })
-    expect(WORKER_FREEZE_GATE_CMD).toContain(join('scripts', 'hooks', 'fleet-freeze-gate.sh'))
+    expect(JSON.stringify(twice)).not.toContain('bash "')
+  })
+
+  // Owner decision 3 for the worker (Kevin 14231, Johnny 14228): the worker's gate is the sub-agents' one, closed
+  // while frozen. Before, a bare `bash <gate>` exited 127 on a missing script, which does not block.
+  describe("the worker's gate, executed: closed while frozen, the sub-agents' spelling", () => {
+    const REPO_GATE = join(__dirname, '..', '..', 'scripts', 'hooks', 'fleet-freeze-gate.sh')
+    let n = 0
+    const project = (): string => {
+      const p = join(ROOT, `worker-proj-${n++}`)
+      mkdirSync(join(p, 'scripts', 'hooks'), { recursive: true })
+      mkdirSync(join(p, 'store'), { recursive: true })
+      return p
+    }
+    const workerGate = async (proj: string): Promise<string> => {
+      const { withFleetFreezeGate } = await import('../web/agent-worker.js')
+      return ((withFleetFreezeGate({}, proj).hooks as any).PreToolUse[0].hooks[0]).command
+    }
+    const run = (shell: string, command: string, proj: string) => {
+      const r = spawnSync(shell, ['-c', command], { input: '{"tool_name":"Bash"}', cwd: proj, encoding: 'utf-8', timeout: 30_000,
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: proj } })
+      return { rc: r.status, stderr: r.stderr }
+    }
+    const freeze = (proj: string) => writeFileSync(join(proj, 'store', 'fleet-freeze.json'), '{}')
+    const realGate = (proj: string) => writeFileSync(join(proj, 'scripts', 'hooks', 'fleet-freeze-gate.sh'), readFileSync(REPO_GATE, 'utf-8'))
+
+    it('is the sub render of the fleet-freeze-gate for the same root, with the root burnt in', async () => {
+      const { HOOK_MANIFEST, renderHooks } = await import('../web/hooks/manifest.js')
+      const proj = project()
+      const sub = renderHooks(HOOK_MANIFEST, 'sub', { root: proj, nodeBin: process.execPath, profile: {}, agent: {}, prompts: { precompact: 'x' } })
+        .PreToolUse!.flatMap((g) => g.hooks).find((h) => h.type === 'command' && h.command.includes('fleet-freeze-gate.sh'))
+      const cmd = await workerGate(proj)
+      expect(cmd).toBe(sub?.type === 'command' ? sub.command : '')
+      expect(cmd).toContain(`[ -e "${proj}/store/fleet-freeze.json" ] && { echo "fleet-freeze-gate (fail-closed while frozen)`)
+    })
+
+    for (const shell of ['/bin/sh', '/bin/bash']) {
+      it(`${shell}: frozen + script missing = rc 2 with the fix named; not frozen + missing = rc 0`, async () => {
+        const proj = project()
+        const cmd = await workerGate(proj)
+        expect(run(shell, cmd, proj).rc).toBe(0)
+        freeze(proj)
+        const r = run(shell, cmd, proj)
+        expect(r.rc).toBe(2)
+        expect(r.stderr).toContain('restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard')
+      })
+
+      it(`${shell}: script present: frozen = rc 2 (KILLSWITCH1022), not frozen = rc 0`, async () => {
+        const proj = project()
+        realGate(proj)
+        const cmd = await workerGate(proj)
+        expect(run(shell, cmd, proj).rc).toBe(0)
+        freeze(proj)
+        const r = run(shell, cmd, proj)
+        expect(r.rc).toBe(2)
+        expect(r.stderr).toContain('KILLSWITCH1022')
+      })
+
+      it(`${shell}: an unreadable flag file counts as frozen: with the script missing, rc 2`, async () => {
+        const proj = project()
+        freeze(proj)
+        chmodSync(join(proj, 'store', 'fleet-freeze.json'), 0o000)
+        expect(run(shell, await workerGate(proj), proj).rc).toBe(2)
+      })
+    }
+
+    it('a root the render refuses throws when the worker settings are written (withFleetFreezeGate)', async () => {
+      const { withFleetFreezeGate } = await import('../web/agent-worker.js')
+      expect(() => withFleetFreezeGate({}, "/root/x'y")).toThrow(/ctx.root must be/)
+    })
   })
 
   it('ensureWorkerCwd writes the worker settings through withFleetFreezeGate', () => {
