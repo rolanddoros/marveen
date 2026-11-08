@@ -121,6 +121,10 @@ STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex
 # .../suite/tmp.provtest.*") failed the 2026-11-08 nightly backup with exit 6.
 # So the directory is expanded here and the scratch is never listed: it is
 # neither on the manifest (no false MISSING) nor handed to cp (no race).
+# phase-e/rollback-* is skipped the same way (Johnny 13877, 2026-11-08): the
+# cutover rollback copies (a full claudeclaw.db each, 506 MB for two) are a
+# backup inside the backup, like store/backups; they stay on disk, and the
+# rest of phase-e (the runbook) stays in the archive.
 # Every path is a quoted read -r line, never word-split or globbed, so spaces
 # and glob characters in run names are safe; a name with a newline still
 # breaks the line-based manifest and fails the run loudly, like any store/ name.
@@ -128,6 +132,13 @@ list_fork_audit() {  # list_fork_audit <listfile>
   local list="$1" top run e
   while IFS= read -r top; do
     case "${top##*/}" in scratch-*|node_modules) continue ;; esac
+    if [[ "${top##*/}" == phase-e && -d "${top}" && ! -L "${top}" ]]; then
+      while IFS= read -r e; do
+        case "${e##*/}" in rollback-*) continue ;; esac
+        echo "${e}" >> "${list}"
+      done < <(find "${top}" -mindepth 1 -maxdepth 1)
+      continue
+    fi
     if [[ "${top##*/}" != tom-runs || ! -d "${top}" || -L "${top}" ]]; then
       echo "${top}" >> "${list}"; continue
     fi

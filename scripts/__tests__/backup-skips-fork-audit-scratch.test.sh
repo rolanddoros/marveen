@@ -1,7 +1,8 @@
 #!/bin/bash
 # Regression test: scripts/backup.sh must keep the scratch of sealed test runs
-# under store/fork-audit out of the manifest AND away from cp, while the audit
-# notes and every run's result files stay in the archive.
+# under store/fork-audit (and the phase-e/rollback-* cutover copies) out of the
+# manifest AND away from cp, while the audit notes, the rest of phase-e and
+# every run's result files stay in the archive.
 # Run: bash scripts/__tests__/backup-skips-fork-audit-scratch.test.sh
 #
 # The 2026-11-08 nightly backup exited 6: store/fork-audit was one manifest
@@ -59,10 +60,15 @@ KEEP="$FA/PLAN.md
 $FA/phase-b/notes.md
 $FA/odd dir [a]*/n.md
 $FA/tom-runs/c1-build.sh
-$FA/tom-runs/scratch-not-top.sh"
-# Excluded: work trees and each run's sealed copy, home, bin, tmp and tmux.
+$FA/tom-runs/scratch-not-top.sh
+$FA/phase-e/CUTOVER-RUNBOOK.md
+$FA/phase-e/pre-rollback notes.md"
+# Excluded: work trees, the phase-e cutover rollback copies (Johnny 13877), and
+# each run's sealed copy, home, bin, tmp and tmux.
 SKIP="$FA/scratch-stuart/big.bin
-$FA/scratch-x y [z]*/f"
+$FA/scratch-x y [z]*/f
+$FA/phase-e/rollback-20261107-1003/claudeclaw.db
+$FA/phase-e/rollback-odd name [q]*/dist.tgz"
 for RUN in c33a2 "run 2 [x]*"; do
   KEEP="$KEEP
 $FA/tom-runs/$RUN/steps/results.tsv
@@ -86,7 +92,9 @@ printf '%s\n' "$SKIP" | while IFS= read -r p; do put "$p" scratch; done
 # The excluded directories themselves (cp must never be handed one, or an
 # ancestor of one).
 SKIP_DIRS="$FA/scratch-stuart
-$FA/scratch-x y [z]*"
+$FA/scratch-x y [z]*
+$FA/phase-e/rollback-20261107-1003
+$FA/phase-e/rollback-odd name [q]*"
 for RUN in c33a2 "run 2 [x]*"; do
   for d in suite home bin tmp tmux; do SKIP_DIRS="$SKIP_DIRS
 $FA/tom-runs/$RUN/$d"; done
@@ -144,7 +152,7 @@ done
 if [ -s "$TMP/lost" ]; then
   fail "kept files missing from the archive: $(tr '\n' '|' < "$TMP/lost")"
 else
-  pass "notes, root scripts and every run's result files are in the archive"
+  pass "notes, phase-e runbook, root scripts and every run's result files are in the archive"
 fi
 
 # Excluded paths: not in the archive, not on the manifest (prefix match, so a
@@ -161,9 +169,9 @@ while IFS= read -r line; do
   done < "$TMP/skip-dirs"
 done < "$MAN"
 if [ -s "$TMP/leaks" ]; then
-  fail "run scratch reached the archive or the manifest: $(sort -u "$TMP/leaks" | tr '\n' '|')"
+  fail "run scratch or a rollback copy reached the archive or the manifest: $(sort -u "$TMP/leaks" | tr '\n' '|')"
 else
-  pass "no run scratch in the archive or on the manifest"
+  pass "no run scratch or rollback copy in the archive or on the manifest"
 fi
 
 # cp sources: none is an excluded directory or an ancestor of one.
