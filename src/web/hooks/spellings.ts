@@ -61,7 +61,21 @@ const TEMPLATES: readonly Template[] = [
   {
     // The kill switch, both scopes since owner decision 3 (a sub-agent's root is a plain path; spellings of an
     // earlier sub file, the open failOpenExec, still classify, so a dry-run names the change as a fail-mode drift).
+    // Since Johnny 14265 any gate failure blocks while frozen, not only a missing script (no exec, the rc read);
+    // a 0 while frozen too (Ron 14290: an empty or shebang-only gate exits 0).
     kind: 'failOpenExecClosedWhenFrozen', failMode: 'closedWhileFrozen', scopes: ['main', 'sub'],
+    text: `bash -c 'if [ -f "{P}" ]; then if command -v timeout >/dev/null 2>&1; then timeout -k 1 {D} {I} "{P}"{A}; `
+      + `else {I} "{P}"{A}; fi; rc=$?; else rc=missing; fi; [ "$rc" = 2 ] && exit 2; `
+      + '[ -e "{R}/store/fleet-freeze.json" ] && { echo "fleet-freeze-gate (fail-closed while frozen): the gate script is '
+      + 'missing or failed (rc=$rc) and store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore '
+      + 'scripts/hooks/fleet-freeze-gate.sh (it must run and exit 0 or 2) or unfreeze from the dashboard." >&2; exit 2; }; '
+      + `[ "$rc" = missing ] && exit 0; exit "$rc"'`,
+  },
+  {
+    // Retired by Johnny 14265: the frozen spelling of owner decision 3, a missing script only (exec, so a gate that
+    // fails any other way passed its rc through). Kept so a file written before still classifies: the same fail mode,
+    // so the dry-run pairs it with the current spelling as a rewrap.
+    kind: 'failOpenExecClosedWhenFrozenMissingOnly', failMode: 'closedWhileFrozen', scopes: ['main', 'sub'],
     text: `bash -c '[ -f "{P}" ] && exec {I} "{P}"{A}; [ -e "{R}/store/fleet-freeze.json" ] && { echo "fleet-freeze-gate `
       + '(fail-closed while frozen): the gate script is missing and store/fleet-freeze.json exists, so every tool call is '
       + `blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard." >&2; exit 2; }; exit 0'`,

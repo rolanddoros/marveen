@@ -51,8 +51,8 @@ export type HookScope = 'main' | 'sub'
  *   advisory -- the hook never blocks (a prompt-type hook)
  *
  * One named case: the fleet-freeze-gate is recorded `closed` in both scopes
- * (owner decision 3, Roland TG 2967), but its wrapper lets a missing script through while the fleet runs and
- * blocks only while store/fleet-freeze.json exists, the one state in which
+ * (owner decision 3, Roland TG 2967), but its wrapper lets a missing or failing gate through while the fleet runs
+ * and blocks only while store/fleet-freeze.json exists, the one state in which
  * the gate stops anything. So `closed` there means "closed while frozen", not
  * the failClosed behaviour (any broken gate blocks, always).
  */
@@ -96,8 +96,10 @@ export type HookKind =
  *                                 then the run under `timeout -k 1 D`; any status other than 0 or
  *                                 2 becomes 2. The probe: `command -v python3` / `command -v node`
  *                                 (PATH), on a sub-agent's node gate `test -x <HOOK_NODE_BIN>`
- *   failOpenExecClosedWhenFrozen  failOpenExec, but a missing script blocks while
- *                                 store/fleet-freeze.json exists (the fleet-freeze-gate only, both scopes)
+ *   failOpenExecClosedWhenFrozen  the run under `timeout -k 1 D`, its status read (no exec): 2 passes
+ *                                 through; a missing script or any other result (0 included) blocks while
+ *                                 store/fleet-freeze.json exists, else keeps its outcome (the
+ *                                 fleet-freeze-gate only, both scopes and the dashboard worker)
  *   agentPrompt                   a prompt-type hook (`type: agent`), no command
  * The retired spellings (C3-5) are listed in spellings.ts, so the settings
  * dry-run still classifies a file written before.
@@ -345,8 +347,8 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
     } },
 
   // PreToolUse
-  // Both scopes (owner decision 3): fail-open while the fleet runs; a missing script
-  // blocks only while frozen, the one state in which this gate stops anything.
+  // Both scopes (owner decision 3): fail-open while the fleet runs; a missing or failing
+  // gate blocks only while frozen (Johnny 14265), the one state in which this gate stops anything.
   { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed',
     sidecar: { purpose: 'PreToolUse hook (matcher "*"), KILLSWITCH1022: while the fleet is frozen (store/fleet-freeze.json exists), every tool call is denied with exit 2.' } },
   { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosed', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT } }, ownMatchers: [TELEGRAM_REPLY_EDIT],
@@ -514,9 +516,11 @@ const PLAIN_ABS_PATH_RE = /^(?:\/[A-Za-z0-9_.+-]+)+$/
 const DQ_SAFE_ABS_PATH_RE = /^(?:\/|[A-Za-z]:[\\/])[^"$`\x00-\x1f\x7f]*[^"$`\x00-\x1f\x7f\\/]$/
 export const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
 const FLEET_FREEZE_MARKER = 'store/fleet-freeze.json'
-const FLEET_FREEZE_MISSING_MSG = 'fleet-freeze-gate (fail-closed while frozen): the gate script is missing and '
-  + 'store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh '
-  + 'or unfreeze from the dashboard.'
+// The kill switch's reason while frozen: missing or failed (any result but 0 or 2), the rc from the wrapper's own
+// shell. Names only the gate script and the flag file, no command text.
+const FLEET_FREEZE_FAILED_MSG = 'fleet-freeze-gate (fail-closed while frozen): the gate script is missing or failed '
+  + '(rc=$rc) and store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore '
+  + 'scripts/hooks/fleet-freeze-gate.sh (it must run and exit 0 or 2) or unfreeze from the dashboard.'
 // One message template for a missing interpreter: what is missing, that the gate blocks, the fix (C3-5).
 const MAIN_NODE_MISSING_MSG = 'governance-kapu: a hook interpretere nem talalhato (node nincs a PATH-on). A kapu ezert '
   + 'BLOKKOL. Javitas: telepitsd a node-ot, vagy inditsd ujra a dashboardot.'
@@ -602,12 +606,21 @@ function hookCommandFor(spec: HookSpec, script: string, args: readonly string[],
       // Inside the single-quoted bash -c: a sub root of plain characters only (the main root is checked apart).
       if (scope === 'sub') checkPlainPath('ctx.root', root)
       return `bash -c '[ -f "${p}" ] && exec ${interp} "${p}"${a}; exit 0'`
-    case 'failOpenExecClosedWhenFrozen':
+    case 'failOpenExecClosedWhenFrozen': {
       // Both scopes (owner decision 3). The root sits inside the single-quoted bash -c twice: on a sub-agent it
       // gets the same plain-path check as failOpenExec (the main root is checked apart).
       if (scope === 'sub') checkPlainPath('ctx.root', root)
-      return `bash -c '[ -f "${p}" ] && exec ${interp} "${p}"${a}; [ -e "${root}/${FLEET_FREEZE_MARKER}" ] && `
-        + `{ echo "${FLEET_FREEZE_MISSING_MSG}" >&2; exit 2; }; exit 0'`
+      // No exec (Johnny 14265): the wrapper reads the gate's rc. 2 (the gate's own deny) passes through; while
+      // frozen anything else blocks, 0 included (an intact gate answers 2 while frozen, so a 0 is an empty or
+      // half-written gate, Ron 14290), as do 1, 126, 127, a signal, the inner deadline or a missing script.
+      // Unfrozen keeps today's outcome (a missing script 0, else the gate's own rc, which blocks nothing).
+      const d = gateDeadlineSec(requireTimeout(spec, script))
+      const run = `${interp} "${p}"${a}`
+      return `bash -c 'if [ -f "${p}" ]; then if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${d} ${run}; `
+        + `else ${run}; fi; rc=$?; else rc=missing; fi; [ "$rc" = 2 ] && exit 2; `
+        + `[ -e "${root}/${FLEET_FREEZE_MARKER}" ] && { echo "${FLEET_FREEZE_FAILED_MSG}" >&2; exit 2; }; `
+        + `[ "$rc" = missing ] && exit 0; exit "$rc"'`
+    }
     case 'failClosed': {
       const timeout = requireTimeout(spec, script)
       if (interp === 'python3') return pythonGateCommand(p, args, timeout)

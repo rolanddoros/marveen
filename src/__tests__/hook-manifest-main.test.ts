@@ -66,17 +66,18 @@ describe('hook manifest, main scope', () => {
 // independent of the manifest's wrapper field (Ron N1: failMode is data that
 // nothing else reads, so it is pinned here against what the wrapper does).
 const FAIL_CLOSED_TAIL = /rc=\$\?; \[ "\$rc" = 0 \] \|\| \[ "\$rc" = 2 \] \|\| \{ echo "[^"]*" >&2; exit 2; \}; exit "\$rc"$/
-const CLOSED_WHILE_FROZEN = /\[ -e "[^"]*\/store\/fleet-freeze\.json" \] && \{ echo "[^"]*" >&2; exit 2; \}; exit 0'$/
+// The kill switch since Johnny 14265: the gate's rc read (no exec); 2 passes, anything else (0 included) or a missing
+// script blocks only while the frozen marker exists.
+const CLOSED_WHILE_FROZEN = /^bash -c 'if \[ -f "[^"]+" \]; then .*rc=\$\?; else rc=missing; fi; \[ "\$rc" = 2 \] && exit 2; \[ -e "[^"]*\/store\/fleet-freeze\.json" \] && \{ echo "[^"]*" >&2; exit 2; \}; \[ "\$rc" = missing \] && exit 0; exit "\$rc"'$/
 
 function failModeFromText(hook: { type: string; command?: string }): FailMode {
   if (hook.type !== 'command') return 'advisory'
   const cmd = hook.command ?? ''
   // Not wrapped in bash -c, every status other than 0 and 2 becomes exit 2.
   if (!cmd.startsWith("bash -c '") && FAIL_CLOSED_TAIL.test(cmd)) return 'closed'
-  if (cmd.startsWith("bash -c '[ -f ") && cmd.endsWith("; exit 0'")) {
-    // A missing script falls through to exit 0, unless the frozen marker turns it into exit 2.
-    return CLOSED_WHILE_FROZEN.test(cmd) ? 'closed' : 'open'
-  }
+  if (CLOSED_WHILE_FROZEN.test(cmd)) return 'closed'
+  // A missing script falls through to exit 0.
+  if (cmd.startsWith("bash -c '[ -f ") && cmd.endsWith("; exit 0'") && !cmd.includes('fleet-freeze.json')) return 'open'
   throw new Error(`unclassified wrapper: ${cmd.slice(0, 120)}`)
 }
 

@@ -247,7 +247,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f \"$CLAUDE_PROJECT_DIR/scripts/hooks/fleet-freeze-gate.sh\" ] && exec bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/fleet-freeze-gate.sh\"; [ -e \"$CLAUDE_PROJECT_DIR/store/fleet-freeze.json\" ] && { echo \"fleet-freeze-gate (fail-closed while frozen): the gate script is missing and store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard.\" >&2; exit 2; }; exit 0'",
+            "command": "bash -c 'if [ -f \"$CLAUDE_PROJECT_DIR/scripts/hooks/fleet-freeze-gate.sh\" ]; then if command -v timeout >/dev/null 2>&1; then timeout -k 1 3 bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/fleet-freeze-gate.sh\"; else bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/fleet-freeze-gate.sh\"; fi; rc=$?; else rc=missing; fi; [ \"$rc\" = 2 ] && exit 2; [ -e \"$CLAUDE_PROJECT_DIR/store/fleet-freeze.json\" ] && { echo \"fleet-freeze-gate (fail-closed while frozen): the gate script is missing or failed (rc=$rc) and store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh (it must run and exit 0 or 2) or unfreeze from the dashboard.\" >&2; exit 2; }; [ \"$rc\" = missing ] && exit 0; exit \"$rc\"'",
             "timeout": 5
           }
         ]

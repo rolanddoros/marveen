@@ -43,7 +43,10 @@ path in a sub-agent's file.
   `node` is not on a hook's PATH), then the run under `timeout -k 1 D`
   (D = timeout - 2, at least 1); any status other than 0 or 2 becomes 2.
 - `closed` while frozen = `failOpenExecClosedWhenFrozen`: the kill switch only,
-  in both scopes (below).
+  in both scopes and in the dashboard worker's own settings (below). No `exec`:
+  the run under `timeout -k 1 D` (without `timeout` on PATH, the bare run), its
+  status read; 2 passes through, anything else (0 included) or a missing script
+  blocks while frozen and keeps the unfrozen outcome.
 - `advisory` = `agentPrompt`: a prompt-type hook, no command.
 
 The spellings retired by C3-5 (an unquoted path, a bare `python3 P`, a node
@@ -90,7 +93,25 @@ may.
 Owner decision 3 (Roland, 2026-11-08): the kill switch is closed while frozen on
 the sub-agents too, the same wrapper as on the main agent. With the fleet frozen
 and the gate script missing, every agent blocks the call and says why; unfrozen,
-a missing script lets the call through on every agent.
+a missing script lets the call through on every agent. The dashboard worker's
+own settings carry the same hook.
+
+Extended (Johnny, 2026-11-08): while frozen, ANY gate failure blocks, not only a
+missing script: a gate that exits with anything but 2 (1, 126 for a file it
+cannot run or read, a signal, and 0: an intact gate answers 2 while frozen, so a 0
+comes from an empty or half-written file) or runs past its deadline
+(D = timeout - 2) blocks with the reason. Unfrozen, every case keeps its outcome:
+a missing script 0, any other result the gate's own status, which blocks nothing
+(the visible differences, both non-blocking: a gate killed by a signal now shows
+exit 128 + n from the wrapper, 137 for SIGKILL, instead of the signal itself; a hang
+ends at the inner deadline with 124 instead of Claude Code's own timeout). Without `timeout` on
+PATH, a gate that hangs falls to Claude Code's own hook timeout, which does not
+block.
+
+Known limit: exit 2 is ambiguous. bash itself exits 2 on a syntax error, so a
+gate script with a syntax error blocks every call even while the fleet is NOT
+frozen; the wrapper cannot tell it from the gate's own deny without reading its
+output. Unchanged by the extension; the fix is restoring the script.
 
 ## Names that mislead
 

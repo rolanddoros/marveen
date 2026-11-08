@@ -230,7 +230,7 @@ describe('hook manifest, sub scope, against the live shape', () => {
 
 // The fail mode a command's own text gives it (Ron N1, sub wrappers), independent of the manifest's wrapper field.
 const FAIL_CLOSED = /^(?:test -x "[^"]+"|command -v python3 >\/dev\/null 2>&1) \|\| \{ echo "[^"]*" >&2; exit 2; \}; .*rc=\$\?; \[ "\$rc" = 0 \] \|\| \[ "\$rc" = 2 \] \|\| \{ echo "[^"]*" >&2; exit 2; \}; exit "\$rc"$/
-const CLOSED_WHILE_FROZEN_TEXT = /^bash -c '\[ -f "[^"]+" \] && exec \S+ "[^"]+"; \[ -e "[^"]+\/store\/fleet-freeze\.json" \] && \{ echo "[^"]*" >&2; exit 2; \}; exit 0'$/
+const CLOSED_WHILE_FROZEN_TEXT = /^bash -c 'if \[ -f "[^"]+" \]; then .*rc=\$\?; else rc=missing; fi; \[ "\$rc" = 2 \] && exit 2; \[ -e "[^"]+\/store\/fleet-freeze\.json" \] && \{ echo "[^"]*" >&2; exit 2; \}; \[ "\$rc" = missing \] && exit 0; exit "\$rc"'$/
 const SCRIPT_IN_COMMAND = /\/(scripts\/[\w./-]+\.(?:py|mjs|sh))/
 
 function failModeFromText(event: string, hook: { type: string; command?: string }): FailMode {

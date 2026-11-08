@@ -347,7 +347,8 @@ describe("the dashboard's own Claude calls and the worker session", () => {
         freeze(proj)
         const r = run(shell, cmd, proj)
         expect(r.rc).toBe(2)
-        expect(r.stderr).toContain('restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard')
+        expect(r.stderr).toContain('missing or failed (rc=missing)')
+        expect(r.stderr).toContain('or unfreeze from the dashboard')
       })
 
       it(`${shell}: script present: frozen = rc 2 (KILLSWITCH1022), not frozen = rc 0`, async () => {
