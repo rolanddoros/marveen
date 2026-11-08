@@ -20,7 +20,10 @@
 //
 // Recorded as found, not fixed: every wrapper spelling, timeout and fail mode
 // below is what the settings carry today, including the main/sub differences
-// the audit lists. Normalising them is C3-5; the fail-mode policy is C3-2.
+// the audit lists. Normalising them is C3-5. Which fail mode each hook SHOULD
+// have is the policy in docs/hook-fail-modes.md (C3-2): every entry carries its
+// `kind`, and src/__tests__/hook-fail-mode-policy.test.ts checks the recorded
+// failMode against the policy of that kind, with a named exception list.
 
 import type { ProfileTemplate } from '../profiles.js'
 
@@ -51,6 +54,30 @@ export type HookScope = 'main' | 'sub'
  * the failClosedRun behaviour (any broken gate blocks, always).
  */
 export type FailMode = 'closed' | 'open' | 'advisory'
+
+/**
+ * The role a hook plays, which decides the fail mode it SHOULD have
+ * (FAIL_MODE_POLICY in fail-mode-policy.ts, reasons in docs/hook-fail-modes.md):
+ *   security-gate -- PreToolUse gate on a trust boundary or governance rule      (closed)
+ *   kill-switch   -- the fleet freeze: blocks every call while frozen             (closed while frozen)
+ *   guard         -- PreToolUse check against an accident, not a trust boundary   (open)
+ *   enforcer      -- holds the turn open until a rule is met (Stop)              (open)
+ *   directive     -- puts a directive, nudge, notice, replay or inbox into context (open)
+ *   capture       -- records: ledger, logs, task state                           (open)
+ *   handler       -- does work for the agent: owner commands, image resize, progress messages (open)
+ *   prompt        -- a prompt-type hook                                          (advisory)
+ * One kind per entry, the same in both scopes: a main/sub difference in the
+ * fail mode is a recorded exception, not a second role.
+ */
+export type HookKind =
+  | 'security-gate'
+  | 'kill-switch'
+  | 'guard'
+  | 'enforcer'
+  | 'directive'
+  | 'capture'
+  | 'handler'
+  | 'prompt'
 
 /**
  * The command spellings in use today. Each one is reproduced byte for byte by
@@ -132,6 +159,8 @@ export interface HookManifestEntry extends HookSpec {
    * them (marveen-commands-stop).
    */
   id: string
+  /** The hook's role; the fail-mode policy is keyed by it (docs/hook-fail-modes.md). */
+  kind: HookKind
   /** Script path relative to the project root (e.g. scripts/hooks/x.py); for agentPrompt the prompt key. */
   script: string
   scope: HookScope | 'both'
@@ -236,56 +265,56 @@ const open = { wrapper: 'failOpenExec', failMode: 'open' } as const
 /** The template's spelling of a fail-open hook on the sub-agents. */
 const subOpen = { sub: { wrapper: 'failOpenExecUnquoted' } } as const
 /** hookCommand() / pythonHookCommand() gates, sub-agents only. */
-const nodeGate = { scope: 'sub', timeout: 10, wrapper: 'failClosedNodeBin', failMode: 'closed' } as const
-const pythonGate = { scope: 'sub', timeout: 10, wrapper: 'failClosedPythonProbe', failMode: 'closed' } as const
+const nodeGate = { scope: 'sub', kind: 'security-gate', timeout: 10, wrapper: 'failClosedNodeBin', failMode: 'closed' } as const
+const pythonGate = { scope: 'sub', kind: 'security-gate', timeout: 10, wrapper: 'failClosedPythonProbe', failMode: 'closed' } as const
 
 export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   // UserPromptSubmit
-  { id: 'ledger-capture', script: 'scripts/hooks/ledger-capture.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
-  { id: 'inbox-drain', script: 'scripts/hooks/inbox-drain.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
-  { id: 'telegram-reply-directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'provenance-gate', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'staleness-guard', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'memory-lookup-nudge', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open, override: subOpen },
-  { id: 'channel-inbox-drain', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open, override: subOpen },
-  { id: 'voice-reply-directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', timeout: 60 } } },
-  { id: 'telegram_progress', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
-  { id: 'slack_progress', script: 'scripts/hooks/slack_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
-  { id: 'marveen-commands', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 45, ...open, override: subOpen },
-  { id: 'taskstate-stub', script: 'scripts/hooks/taskstate-stub.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
-  { id: 'directive-verify', script: 'scripts/hooks/directive-verify.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'ledger-capture', kind: 'capture', script: 'scripts/hooks/ledger-capture.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
+  { id: 'inbox-drain', kind: 'directive', script: 'scripts/hooks/inbox-drain.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open },
+  { id: 'telegram-reply-directive', kind: 'directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'provenance-gate', kind: 'directive', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'staleness-guard', kind: 'directive', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'memory-lookup-nudge', kind: 'directive', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open, override: subOpen },
+  { id: 'channel-inbox-drain', kind: 'directive', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open, override: subOpen },
+  { id: 'voice-reply-directive', kind: 'directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', timeout: 60 } } },
+  { id: 'telegram_progress', kind: 'handler', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
+  { id: 'slack_progress', kind: 'handler', script: 'scripts/hooks/slack_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen },
+  { id: 'marveen-commands', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 45, ...open, override: subOpen },
+  { id: 'taskstate-stub', kind: 'capture', script: 'scripts/hooks/taskstate-stub.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
+  { id: 'directive-verify', kind: 'directive', script: 'scripts/hooks/directive-verify.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen },
 
   // PostToolUse / PostToolUseFailure
-  { id: 'ledger-outbound', script: 'scripts/hooks/ledger-outbound.py', scope: 'main', events: ['PostToolUse'], matcher: 'mcp__plugin_[^_]+_[^_]+__reply', timeout: 15, ...open },
-  { id: 'tool-log-capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 5, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', matcher: '*', timeout: 10 } } },
-  { id: 'persona-change-notify', script: 'scripts/hooks/persona-change-notify.py', scope: 'main', events: ['PostToolUse'], timeout: 15, ...open },
-  { id: 'telegram_progress_reply_clear', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open, override: subOpen },
-  { id: 'browser-content-notice', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } } },
+  { id: 'ledger-outbound', kind: 'capture', script: 'scripts/hooks/ledger-outbound.py', scope: 'main', events: ['PostToolUse'], matcher: 'mcp__plugin_[^_]+_[^_]+__reply', timeout: 15, ...open },
+  { id: 'tool-log-capture', kind: 'capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 5, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', matcher: '*', timeout: 10 } } },
+  { id: 'persona-change-notify', kind: 'handler', script: 'scripts/hooks/persona-change-notify.py', scope: 'main', events: ['PostToolUse'], timeout: 15, ...open },
+  { id: 'telegram_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open, override: subOpen },
+  { id: 'browser-content-notice', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } } },
   // Hand-added on five sub-agents (skill playwright-mcp-agens), written by no code path. Measured
   // 2026-11-07 23:17 on the live files: bella and lilla without a timeout, kevin, margot, tom with 10.
   // C3-3 renders it behind a browser capability flag; until then it is data only.
   {
-    id: 'browser-content-notice-playwright', script: 'scripts/hooks/browser-content-notice.py', scope: 'sub', events: ['PostToolUse'],
+    id: 'browser-content-notice-playwright', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'sub', events: ['PostToolUse'],
     matcher: 'mcp__playwright__browser_.*', wrapper: 'bare', failMode: 'open', rendered: false,
     perAgent: { bella: {}, kevin: { timeout: 10 }, lilla: {}, margot: { timeout: 10 }, tom: { timeout: 10 } },
   },
-  { id: 'slack_progress_reply_clear', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open, override: subOpen },
-  { id: 'skill-usage-capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'both', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open, override: subOpen },
-  { id: 'memory-frontmatter-bash-gate', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
+  { id: 'slack_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open, override: subOpen },
+  { id: 'skill-usage-capture', kind: 'capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'both', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open, override: subOpen },
+  { id: 'memory-frontmatter-bash-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
 
   // PreToolUse
   // Main: fail-open while the fleet runs; a missing script blocks only while
   // frozen, the one state in which this gate stops anything. Sub: plain fail-open.
-  { id: 'fleet-freeze-gate', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExecUnquoted', failMode: 'open' } } },
-  { id: 'outgoing-copy-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } } },
-  { id: 'email-approval-gate', script: 'scripts/hooks/email-approval-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS], timeout: 10, wrapper: 'failClosedRun', failMode: 'closed' },
-  { id: 'channel-image-resize', script: 'scripts/hooks/channel-image-resize.sh', scope: 'both', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open, override: subOpen },
-  { id: 'egress-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
-  { id: 'memory-frontmatter-gate', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'both', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open, override: subOpen },
-  { id: 'db-write-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
-  { id: 'shell-rescan-guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
-  { id: 'child-claude-channel-guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, wrapper: 'failOpenNodeProbe', failMode: 'open', override: { sub: { wrapper: 'failClosedNodeBin', failMode: 'closed' } } },
-  { id: 'token-argv-guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
+  { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExecUnquoted', failMode: 'open' } } },
+  { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } } },
+  { id: 'email-approval-gate', kind: 'security-gate', script: 'scripts/hooks/email-approval-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS], timeout: 10, wrapper: 'failClosedRun', failMode: 'closed' },
+  { id: 'channel-image-resize', kind: 'handler', script: 'scripts/hooks/channel-image-resize.sh', scope: 'both', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open, override: subOpen },
+  { id: 'egress-gate', kind: 'security-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
+  { id: 'memory-frontmatter-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'both', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open, override: subOpen },
+  { id: 'db-write-gate', kind: 'security-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } } },
+  { id: 'shell-rescan-guard', kind: 'guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
+  { id: 'child-claude-channel-guard', kind: 'guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, wrapper: 'failOpenNodeProbe', failMode: 'open', override: { sub: { wrapper: 'failClosedNodeBin', failMode: 'closed' } } },
+  { id: 'token-argv-guard', kind: 'guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen },
   { id: 'email-send-gate', script: 'scripts/email-send-gate.mjs', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, threadReplyArgs: ['--allow-thread-reply'], ...nodeGate },
   { id: 'self-pace-gate', script: 'scripts/self-pace-gate.mjs', events: ['PreToolUse'], matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit', ...nodeGate },
   { id: 'kanban-write-gate', script: 'scripts/kanban-write-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
@@ -297,20 +326,20 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   { id: 'bash-egress-parser', script: 'scripts/hooks/bash-egress-parser.mjs', events: ['PreToolUse'], matcher: 'Bash', ...nodeGate },
 
   // Stop / StopFailure
-  { id: 'telegram-reply-guard', script: 'scripts/hooks/telegram-reply-guard.py', scope: 'main', events: ['Stop'], timeout: 10, ...open },
-  { id: 'telegram_progress_clear', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
-  { id: 'slack_progress_clear', script: 'scripts/hooks/slack_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
-  { id: 'marveen-commands-stop', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['Stop'], args: ['--stop'], timeout: 10, ...open, override: subOpen },
-  { id: 'ledger-turn-failure', script: 'scripts/hooks/ledger-turn-failure.py', scope: 'main', events: ['StopFailure'], timeout: 10, ...open },
+  { id: 'telegram-reply-guard', kind: 'enforcer', script: 'scripts/hooks/telegram-reply-guard.py', scope: 'main', events: ['Stop'], timeout: 10, ...open },
+  { id: 'telegram_progress_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
+  { id: 'slack_progress_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen },
+  { id: 'marveen-commands-stop', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['Stop'], args: ['--stop'], timeout: 10, ...open, override: subOpen },
+  { id: 'ledger-turn-failure', kind: 'capture', script: 'scripts/hooks/ledger-turn-failure.py', scope: 'main', events: ['StopFailure'], timeout: 10, ...open },
 
   // SessionStart / SessionEnd / PreCompact
-  { id: 'ledger-replay', script: 'scripts/hooks/ledger-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'startup|resume|clear', timeout: 15, ...open },
-  { id: 'taskstate-replay', script: 'scripts/hooks/taskstate-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
-  { id: 'clear-replay', script: 'scripts/hooks/clear-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
-  { id: 'marveen-commands-session-start', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['SessionStart'], args: ['--session-start'], timeout: 10, ...open },
-  { id: 'clear-capture', script: 'scripts/hooks/clear-capture.py', scope: 'both', events: ['SessionEnd'], timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
+  { id: 'ledger-replay', kind: 'directive', script: 'scripts/hooks/ledger-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'startup|resume|clear', timeout: 15, ...open },
+  { id: 'taskstate-replay', kind: 'directive', script: 'scripts/hooks/taskstate-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
+  { id: 'clear-replay', kind: 'directive', script: 'scripts/hooks/clear-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
+  { id: 'marveen-commands-session-start', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['SessionStart'], args: ['--session-start'], timeout: 10, ...open },
+  { id: 'clear-capture', kind: 'capture', script: 'scripts/hooks/clear-capture.py', scope: 'both', events: ['SessionEnd'], timeout: 15, ...open, override: { sub: { wrapper: 'bare' } } },
   // The prompt text (about 3 KB, from templates/settings.json.template) is passed in by the caller.
-  { id: 'precompact', script: 'precompact', scope: 'sub', events: ['PreCompact'], matcher: 'auto', timeout: 180, wrapper: 'agentPrompt', failMode: 'advisory' },
+  { id: 'precompact', kind: 'prompt', script: 'precompact', scope: 'sub', events: ['PreCompact'], matcher: 'auto', timeout: 180, wrapper: 'agentPrompt', failMode: 'advisory' },
 ]
 
 // The main agent's written order (tracked .claude/settings.json). Every group
