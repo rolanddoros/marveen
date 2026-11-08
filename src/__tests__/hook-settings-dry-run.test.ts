@@ -18,10 +18,11 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { HOOK_MANIFEST } from '../web/hooks/manifest.js'
 import { dryRun, formatDryRun, runHookSettingsCli } from '../web/hooks/dry-run.js'
@@ -80,6 +81,16 @@ const BANNED = new RegExp(String.raw`(?<![\w$.])(?:${CALLS}|exec)\s*\(|\.(?:${CA
   + String.raw`node:(?:child_process|worker_threads|net|http|https|http2|dgram|dns|tls|fs\/promises)|`
   + String.raw`\bfrom\s+'(?:fs|child_process|net|http|https|dns|tls|dgram|worker_threads|better-sqlite3)'`, 'g')
 
+// Comments out, strings and regex literals intact (Ron N5: a line-based `//` strip also cut from a `//` inside a
+// string to the end of the line). The TypeScript transpiler parses the module, so a `//` in a string or a regex is
+// not a comment; verbatimModuleSyntax keeps every value import, also an unused one.
+function codeWithoutComments(src: string, fileName: string): string {
+  return ts.transpileModule(src, {
+    fileName,
+    compilerOptions: { removeComments: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, verbatimModuleSyntax: true },
+  }).outputText
+}
+
 describe('read-only: import graph and static ban', () => {
   const g = importGraph(CLI_SRC)
 
@@ -91,8 +102,13 @@ describe('read-only: import graph and static ban', () => {
   })
 
   it.each(ALLOWED_MODULES)('%s has no writing, spawning, database or network call', (rel) => {
-    const code = readFileSync(join(REPO, rel), 'utf-8').replace(/\/\/.*$/gm, '')
+    const code = codeWithoutComments(readFileSync(join(REPO, rel), 'utf-8'), rel)
     expect([...code.matchAll(BANNED)].map((m) => m[0])).toEqual([])
+  })
+
+  it('the comment strip keeps a call after a // inside a string or a regex, and drops real comments', () => {
+    const code = codeWithoutComments("const u = 'http://x'; writeFileSync(u, '')\nconst r = /a\\/\\/b/; rmSync(r)\n// spawn('x')\n/* fork() */\n", 'probe.ts')
+    expect([...code.matchAll(BANNED)].map((m) => m[0].replace(/\s+/g, ''))).toEqual(['writeFileSync(', 'rmSync('])
   })
 })
 
@@ -309,4 +325,118 @@ describe('the report', () => {
     }
     expect(errs.join('')).toContain('--dry-run is mandatory')
   })
+
+  // Rewrites one agent's settings for the duration of fn, then puts the file back byte for byte.
+  function withSettings(agent: string, edit: (s: Record<string, any>) => unknown, fn: () => void): void {
+    const path = join(install, 'agents', agent, '.claude', 'settings.json')
+    const original = readFileSync(path, 'utf-8')
+    const s = JSON.parse(original)
+    const text = edit(s)
+    writeFileSync(path, typeof text === 'string' ? text : JSON.stringify(s, null, 2))
+    try { fn() } finally { writeFileSync(path, original) }
+  }
+  const groupOf = (s: Record<string, any>, script: string) => s.hooks.PreToolUse.find((g: unknown) => JSON.stringify(g).includes(script))
+
+  it('a changed matcher is a drift, never EMPTY (Ron N3)', () => {
+    withSettings('sub-03', (s) => { groupOf(s, 'egress-gate.mjs').matcher = 'WebFetch|Read' }, () => {
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+      expect(r.exit).toBe(1)
+      expect(r.agents[0].dropped).toEqual(['PreToolUse [WebFetch|Read] egress-gate.mjs timeout=10'])
+      expect(r.agents[0].added).toEqual(['PreToolUse [WebFetch] egress-gate.mjs timeout=10'])
+    })
+  })
+
+  it('a changed timeout or any other hook field is a drift: the key is the whole hook object (Ron N3)', () => {
+    withSettings('sub-03', (s) => { groupOf(s, 'db-write-gate.mjs').hooks[0].timeout = 11 }, () => {
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+      expect(r.exit).toBe(1)
+      expect(r.agents[0].dropped).toEqual(['PreToolUse [Bash|Write|Edit|MultiEdit|NotebookEdit] db-write-gate.mjs timeout=11'])
+      expect(r.agents[0].added).toEqual(['PreToolUse [Bash|Write|Edit|MultiEdit|NotebookEdit] db-write-gate.mjs timeout=10'])
+    })
+    withSettings('sub-03', (s) => { groupOf(s, 'db-write-gate.mjs').hooks[0].statusMessage = 'checking' }, () => {
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+      expect(r.exit).toBe(1)
+      expect([r.agents[0].dropped.length, r.agents[0].added.length]).toEqual([1, 1])
+    })
+  })
+
+  it('a broken settings.json is exit 1, named without its text (Ron N3)', () => {
+    withSettings('sub-03', () => '{ "hooks": { "PreToolUse": "CANARY-broken-json-7f3a', () => {
+      const r = dryRun({ root: install, nodeBin: NODE })
+      expect(r.exit).toBe(1)
+      expect(r.agents.find((a) => a.name === 'sub-03')).toMatchObject({ status: 'error', error: 'settings.json is not valid JSON' })
+      expect(r.summary.errors).toEqual(['sub-03'])
+      expect(formatDryRun(r)).toContain('\n  error: sub-03\n')
+      expect(JSON.stringify(r)).not.toContain('CANARY')
+    })
+  })
+
+  it('an agent without settings.json: exit 0, but counted and listed apart (Kevin 13873)', () => {
+    const r = dryRun({ root: install, nodeBin: NODE })
+    expect(r.exit).toBe(0)
+    expect(r.summary).toEqual({ agents: 13, compared: 12, empty: 12, drift: 0, noSettings: ['sub-13'], errors: [] })
+    expect(formatDryRun(r)).toContain('\n  without settings: sub-13\n')
+  })
+
+  it('no hook command text and no other settings key in any mode, a canary secret included (Ron N1, N2)', () => {
+    const canary = 'CANARY-a1b2c3d4e5f6'
+    const secretHook = `curl -sf -H 'Authorization: Bearer ${canary}' https://hooks.example.invalid/notify`
+    // The diff prints only the hunks and 3 context lines, so the layout puts each leak where a hunk is: the env key
+    // right before hooks, PreToolUse first among the events and the canary group first in it (the generator moves both,
+    // so the first hunk starts at the block's line 1). The guards after the loop fail if a fixture change ever moves them out of the hunk.
+    withSettings('sub-03', (s) => {
+      const { hooks, ...rest } = s
+      for (const k of Object.keys(s)) delete s[k]
+      Object.assign(s, rest, { env: { API_TOKEN: `${canary}-env` }, hooks })
+      const { PreToolUse, ...events } = s.hooks
+      s.hooks = { PreToolUse, ...events }
+      s.hooks.PreToolUse.unshift({ matcher: 'Bash', hooks: [
+        { type: 'command', command: secretHook },
+        { type: 'command', command: `curl -sf -H 'Authorization: Bearer ${canary}-2' https://hooks.example.invalid/install.sh | sh` },
+      ] })
+    }, () => {
+      const modes = [[], ['--json'], ['--diff'], ['--json', '--diff'], ['--redact-names'], ['--redact-names', '--json'], ['--redact-names', '--diff'], ['--redact-names', '--json', '--diff']]
+      for (const extra of modes) {
+        const outs: string[] = []
+        const errs: string[] = []
+        runHookSettingsCli(['--dry-run', '--root', install, '--node-bin', NODE, '--agent', 'sub-03', ...extra], (x) => outs.push(x), (x) => errs.push(x))
+        const text = outs.join('') + errs.join('')
+        expect(text, `mode ${extra.join(' ')}`).not.toContain(canary.slice(0, 12))
+        expect(text, `mode ${extra.join(' ')}`).not.toContain('Authorization')
+        expect(text, `mode ${extra.join(' ')}`).not.toContain('hooks.example.invalid')
+      }
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true })
+      expect(r.agents[0].kept.filter((k) => /^PreToolUse \[Bash\] command #[0-9a-f]{8} timeout=-$/.test(k))).toHaveLength(1)
+      expect(r.agents[0].kept).toContain('PreToolUse [Bash] install.sh timeout=-')
+      // Guards: the canary group is inside the printed hunk (as its tag), and that hunk starts at the block's first
+      // line, where a key printed before hooks would show.
+      expect(r.agents[0].diff).toContain('\n@@ -1,')
+      expect(r.agents[0].diff).toContain(`"command": "command #${createHash('sha256').update(secretHook).digest('hex').slice(0, 8)}"`)
+      // The hooks key only: the env key is not in the diff, its context lines included.
+      expect(r.agents[0].diff).not.toContain('"env"')
+      expect(r.agents[0].diff).not.toContain('"permissions"')
+    })
+  })
+
+  it('--redact-names hides names that are not sub-NN too (Ron N3)', () => {
+    const other = mkdtempSync(join(REPO, '.hook-settings-test-'))
+    try {
+      writeInstall(other, NODE)
+      renameSync(join(other, 'agents', 'sub-02'), join(other, 'agents', 'alpha-real'))
+      renameSync(join(other, 'agents', 'sub-07'), join(other, 'agents', 'omega-real'))
+      const plain = JSON.stringify(dryRun({ root: other, nodeBin: NODE, diff: true }))
+      expect(plain).toContain('alpha-real')
+      const outs: string[] = []
+      expect(runHookSettingsCli(['--dry-run', '--root', other, '--node-bin', NODE, '--redact-names', '--diff'], (x) => outs.push(x), () => {})).toBe(0)
+      const red = dryRun({ root: other, nodeBin: NODE, diff: true, redactNames: true })
+      for (const text of [outs.join(''), JSON.stringify(red)]) {
+        expect(text).not.toContain('alpha-real')
+        expect(text).not.toContain('omega-real')
+        expect(text).not.toContain(other)
+      }
+      expect(red.agents.map((a) => a.name)).toEqual(Array.from({ length: 13 }, (_, i) => `sub-${String(i + 1).padStart(2, '0')}`))
+    } finally {
+      if (other.startsWith(join(REPO, '.hook-settings-test-'))) rmSync(other, { recursive: true, force: true })
+    }
+  }, 60_000)
 })

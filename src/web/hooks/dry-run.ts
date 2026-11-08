@@ -5,6 +5,7 @@
 // hook object): EMPTY for every agent; order and grouping may change (the first
 // render normalises them, Johnny 13728).
 
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { unifiedDiff, splitRaw, type DiffLine } from '../claude-md/line-diff.js'
@@ -41,6 +42,17 @@ export interface AgentDryRun {
   diff?: string
 }
 
+export interface DryRunSummary {
+  agents: number
+  /** Agents whose settings were read and compared. */
+  compared: number
+  empty: number
+  drift: number
+  /** Agents without a settings.json: exit stays 0, but the C3-5 go-live gate requires none (Kevin 13873). */
+  noSettings: string[]
+  errors: string[]
+}
+
 export interface DryRunResult {
   root: string
   nodeBin: string
@@ -48,6 +60,7 @@ export interface DryRunResult {
   /** Problems of the install's extra-hooks file (its invalid entries are left out, as the dashboard does). */
   extrasErrors: string[]
   agents: AgentDryRun[]
+  summary: DryRunSummary
   exit: 0 | 1
 }
 
@@ -57,7 +70,34 @@ type Flat = { key: string; label: string }
 /** A stand-in where an agent has no PreCompact prompt yet: the boot seeds the template's, the dry-run shows it as added. */
 const SEED_PROMPT = '(the template PreCompact prompt, seeded by the boot)'
 
-function flatten(hooks: unknown, show: (s: string) => string): Flat[] {
+const hash8 = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 8)
+
+/**
+ * How the output names a hook command: the script file it runs, else `command #<sha256, 8 hex>`. Never the
+ * command's text, in any mode: an operator's hook can carry a credential (Ron N1: a `curl -H 'Authorization:
+ * Bearer ...'` hook), and this output is evidence that gets pasted into PRs and logs.
+ */
+function commandTag(command: string): string {
+  return scriptBasename(command) ?? `command #${hash8(command)}`
+}
+
+/** The hooks block as --diff shows it: every field as it is, each command replaced by its tag plus a hash. */
+function taggedHooks(hooks: unknown): unknown {
+  if (typeof hooks !== 'object' || hooks === null) return hooks
+  return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [event, !Array.isArray(groups) ? groups
+    : (groups as Group[]).map((g) => (typeof g !== 'object' || g === null || !Array.isArray(g.hooks) ? g : {
+      ...g,
+      hooks: (g.hooks as Record<string, unknown>[]).map((h) => (typeof h?.command === 'string'
+        ? { ...h, command: `${scriptBasename(h.command) ?? 'command'} #${hash8(h.command)}` } : h)),
+    }))]))
+}
+
+/**
+ * The multiset key is the event, the group's matcher and the WHOLE hook object: type, command, timeout and any
+ * other field (async, statusMessage, ...). A change to any of them is a drift, so a changed field can never read
+ * as EMPTY.
+ */
+function flatten(hooks: unknown): Flat[] {
   const out: Flat[] = []
   if (typeof hooks !== 'object' || hooks === null) return out
   for (const [event, groups] of Object.entries(hooks)) {
@@ -65,7 +105,7 @@ function flatten(hooks: unknown, show: (s: string) => string): Flat[] {
     for (const g of groups as Group[]) {
       for (const h of Array.isArray(g?.hooks) ? (g.hooks as Record<string, unknown>[]) : []) {
         const o = { event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), ...h } as Record<string, unknown>
-        const what = typeof h?.command === 'string' ? (scriptBasename(h.command) ?? show(h.command).slice(0, 80)) : String(h?.type)
+        const what = typeof h?.command === 'string' ? commandTag(h.command) : String(h?.type)
         out.push({ key: JSON.stringify(o, Object.keys(o).sort()), label: `${event} [${typeof g.matcher === 'string' ? g.matcher : '-'}] ${what} timeout=${h?.timeout ?? '-'}` })
       }
     }
@@ -91,10 +131,10 @@ function shape(hooks: Record<string, unknown>, event: string): string {
   return `[${groups.map((g) => (Array.isArray(g?.hooks) ? g.hooks.length : 0)).join(',')}]`
 }
 
-function normalised(before: Record<string, unknown>, after: Record<string, unknown>, show: (s: string) => string): string[] {
+function normalised(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
   const out: string[] = []
   if (Object.keys(before).join('\n') !== Object.keys(after).join('\n')) out.push('event order')
-  const keys = (hooks: Record<string, unknown>, event: string) => flatten({ [event]: hooks[event] }, show).map((f) => f.key).join('\n')
+  const keys = (hooks: Record<string, unknown>, event: string) => flatten({ [event]: hooks[event] }).map((f) => f.key).join('\n')
   for (const event of Object.keys(after)) {
     const a = shape(before, event)
     const b = shape(after, event)
@@ -104,15 +144,23 @@ function normalised(before: Record<string, unknown>, after: Record<string, unkno
   return out
 }
 
+// The errors name the problem, never the file's text or path: a JSON parse error quotes the text around the fault,
+// and the path carries the agent's real name (--redact-names).
 function readSettings(path: string): Record<string, unknown> | null {
   let raw: string
   try {
     raw = readFileSync(path, 'utf-8')
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
-    throw err
+    const code = (err as NodeJS.ErrnoException)?.code
+    if (code === 'ENOENT') return null
+    throw new Error(`settings.json is not readable (${code ?? 'unknown error'})`)
   }
-  const v = JSON.parse(raw) as unknown
+  let v: unknown
+  try {
+    v = JSON.parse(raw)
+  } catch {
+    throw new Error('settings.json is not valid JSON')
+  }
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('settings.json is not a JSON object')
   return v as Record<string, unknown>
 }
@@ -153,27 +201,37 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
         isUnsafe: isUnsafeHookCommand, extras: extras.entries,
       })
       const after = plan.hooks as Record<string, unknown>
-      const fb = flatten(before, show)
-      const fa = flatten(after, show)
+      const fb = flatten(before)
+      const fa = flatten(after)
       const report: AgentDryRun = {
         ...base, profile: flags.profileId, before: fb.length, after: fa.length,
         added: minus(fa, fb), dropped: minus(fb, fa),
-        kept: plan.kept.map((k) => flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] }, show)[0].label),
-        normalised: normalised(before, after, show), unsafe: plan.unsafe,
+        kept: plan.kept.map((k) => flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] })[0].label),
+        normalised: normalised(before, after), unsafe: plan.unsafe,
       }
       if (opts.diff) {
-        const lines = (o: unknown): DiffLine[] => splitRaw(show(JSON.stringify(o, null, 2))).map((raw) => ({ raw, tag: '' }))
-        report.diff = unifiedDiff(lines(settings), lines({ ...settings, hooks: after }), { from: `${shown}/settings.json`, to: `${shown}/settings.json (generated)` })
+        // The `hooks` key only (Ron N2: the whole object put neighbouring keys' values into the context lines),
+        // commands as tags.
+        const lines = (o: unknown): DiffLine[] => splitRaw(show(JSON.stringify(taggedHooks(o), null, 2))).map((raw) => ({ raw, tag: '' }))
+        report.diff = unifiedDiff(lines(before), lines(after), { from: `${shown}/settings.json hooks`, to: `${shown}/settings.json hooks (generated)` })
       }
       agents.push(report)
     } catch (err) {
-      agents.push({ ...base, status: 'error', error: show((err as Error).message) })
+      const msg = show((err as Error).message)
+      agents.push({ ...base, status: 'error', error: opts.redactNames ? msg.replaceAll(name, shown) : msg })
     }
   }
-  const drift = agents.some((a) => a.status === 'error' || a.added.length > 0 || a.dropped.length > 0)
+  const compared = agents.filter((a) => a.status === 'ok')
+  const drifted = compared.filter((a) => a.added.length > 0 || a.dropped.length > 0)
+  const errors = agents.filter((a) => a.status === 'error').map((a) => a.name)
+  const summary: DryRunSummary = {
+    agents: agents.length, compared: compared.length, empty: compared.length - drifted.length, drift: drifted.length,
+    noSettings: agents.filter((a) => a.status === 'no-settings').map((a) => a.name), errors,
+  }
   return {
     root: opts.redactNames ? '${ROOT}' : root, nodeBin: opts.redactNames ? '${NODE_BIN}' : nodeBin,
-    mainAgentId: opts.redactNames ? '${MAIN}' : mainAgentId, extrasErrors: extras.errors.map(show), agents, exit: drift ? 1 : 0,
+    mainAgentId: opts.redactNames ? '${MAIN}' : mainAgentId, extrasErrors: extras.errors.map(show), agents, summary,
+    exit: drifted.length > 0 || errors.length > 0 ? 1 : 0,
   }
 }
 
@@ -194,10 +252,11 @@ export function formatDryRun(r: DryRunResult): string {
     for (const x of a.dropped) lines.push(`  - ${x}`)
     if (a.diff) lines.push(a.diff.trimEnd())
   }
-  const ok = r.agents.filter((a) => a.status === 'ok')
-  const empty = ok.filter((a) => a.added.length === 0 && a.dropped.length === 0)
-  lines.push(`summary: ${r.agents.length} agent(s), ${empty.length}/${ok.length} multiset EMPTY, `
-    + `${r.agents.filter((a) => a.status === 'no-settings').length} without settings, ${r.agents.filter((a) => a.status === 'error').length} error; exit ${r.exit}`)
+  const s = r.summary
+  lines.push(`summary: ${s.agents} agent(s), ${s.empty}/${s.compared} multiset EMPTY, `
+    + `${s.noSettings.length} without settings, ${s.errors.length} error; exit ${r.exit}`)
+  if (s.noSettings.length) lines.push(`  without settings: ${s.noSettings.join(', ')}`)
+  if (s.errors.length) lines.push(`  error: ${s.errors.join(', ')}`)
   return `${lines.join('\n')}\n`
 }
 
