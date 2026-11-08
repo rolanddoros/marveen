@@ -65,7 +65,7 @@ export const FAIL_MODE_EXCEPTIONS: readonly FailModeException[] = [
   },
 ]
 
-/** The scopes an entry is part of, rendered or not. */
+/** The scopes an entry is part of. */
 export function scopesOf(entry: HookManifestEntry): HookScope[] {
   return entry.scope === 'both' ? ['main', 'sub'] : [entry.scope]
 }
@@ -129,7 +129,7 @@ export function failModePolicyFindings(
 export function closedButNotLocked(m: HookManifest, lockedHooks: ReadonlySet<string>): string[] {
   const out: string[] = []
   for (const e of m.entries) {
-    if (!scopesOf(e).includes('main') || e.rendered === false) continue
+    if (!scopesOf(e).includes('main')) continue
     if (specFor(e, 'main').failMode !== 'closed') continue
     const stem = e.script.slice(e.script.lastIndexOf('/') + 1).replace(/\.[a-z]+$/, '')
     if (!lockedHooks.has(stem)) out.push(`${e.id}: fails closed on the main agent, but the sidecar does not mark ${stem} gate: true`)

@@ -191,14 +191,18 @@ describe('hook manifest, sub scope, against the live shape', () => {
     expect(sorted(rendered)).toEqual(sorted(live))
   })
 
-  it('the hand-added playwright hook is recorded by name, with its per-agent data, and never rendered', () => {
+  it('the playwright hook is rendered only for an agent with the browser capability (C3-3a)', () => {
     const e = HOOK_MANIFEST.entries.find((x) => x.id === 'browser-content-notice-playwright')!
-    expect(e).toMatchObject({ rendered: false, scope: 'sub', matcher: 'mcp__playwright__browser_.*', script: 'scripts/hooks/browser-content-notice.py' })
-    expect(e.perAgent).toEqual({ bella: {}, kevin: { timeout: 10 }, lilla: {}, margot: { timeout: 10 }, tom: { timeout: 10 } })
+    expect(e).toMatchObject({ agentFlag: 'browser', scope: 'sub', matcher: 'mcp__playwright__browser_.*', script: 'scripts/hooks/browser-content-notice.py' })
     const allOn = ctxFor(ALL_SWITCHES, { heartbeat: true, threadReply: true, senderRolePolicy: POLICY })
     for (const text of [JSON.stringify(renderHooks(HOOK_MANIFEST, 'sub', allOn)), readFileSync(FIXTURE, 'utf-8')]) {
       expect(text).not.toContain('mcp__playwright__')
     }
+    const groups = renderHooks(HOOK_MANIFEST, 'sub', ctxFor(DEFAULT, { browser: true })).PostToolUse!
+    expect(groups.filter((g) => g.matcher === 'mcp__playwright__browser_.*')).toEqual([{
+      matcher: 'mcp__playwright__browser_.*',
+      hooks: [{ type: 'command', command: `python3 ${PROJECT_ROOT}/scripts/hooks/browser-content-notice.py`, timeout: 10 }],
+    }])
   })
 })
 
@@ -217,10 +221,12 @@ function failModeFromText(event: string, hook: { type: string; command?: string 
   throw new Error(`unclassified wrapper under ${event}: ${cmd.slice(0, 120)}`)
 }
 
-function entryOf(event: string, hook: { type: string; command?: string }): HookManifestEntry {
+// Event, script and ownMatchers decide the entry: two entries share browser-content-notice.py.
+function entryOf(event: string, matcher: string | undefined, hook: { type: string; command?: string }): HookManifestEntry {
   const script = hook.type === 'agent' ? 'precompact' : SCRIPT_IN_COMMAND.exec(hook.command ?? '')?.[1]
-  const hits = HOOK_MANIFEST.entries.filter((e) => e.scope !== 'main' && e.rendered !== false && e.script === script
-    && specFor(e, 'sub').events.includes(event as never))
+  const hits = HOOK_MANIFEST.entries.filter((e) => e.scope !== 'main' && e.script === script
+    && specFor(e, 'sub').events.includes(event as never)
+    && (!e.ownMatchers || (matcher !== undefined && e.ownMatchers.includes(matcher))))
   if (hits.length !== 1) throw new Error(`${event}: ${hits.length} entries for ${script}`)
   return hits[0]
 }
@@ -229,9 +235,9 @@ describe('hook manifest failMode, sub scope', () => {
   function check(ctx: RenderContext): Record<FailMode, number> {
     const counts = { closed: 0, open: 0, advisory: 0 }
     const mismatches: string[] = []
-    for (const h of flatten(renderHooks(HOOK_MANIFEST, 'sub', ctx)) as Array<{ event: string; type: string; command?: string }>) {
+    for (const h of flatten(renderHooks(HOOK_MANIFEST, 'sub', ctx)) as Array<{ event: string; matcher?: string; type: string; command?: string }>) {
       const actual = failModeFromText(h.event, h)
-      const e = entryOf(h.event, h)
+      const e = entryOf(h.event, h.matcher, h)
       counts[actual]++
       if (actual !== specFor(e, 'sub').failMode) mismatches.push(`${h.event} ${e.id}: wrapper says ${actual}, manifest says ${specFor(e, 'sub').failMode}`)
     }
@@ -243,16 +249,14 @@ describe('hook manifest failMode, sub scope', () => {
     expect(check(ctxFor(DEFAULT))).toEqual({ closed: 7, open: 31, advisory: 1 })
   })
 
-  it('with every condition on: 13 closed, 31 open, 1 advisory (45 settings entries)', () => {
-    expect(check(ctxFor(ALL_SWITCHES, { heartbeat: true, threadReply: true, senderRolePolicy: POLICY }))).toEqual({ closed: 13, open: 31, advisory: 1 })
+  it('with every condition on: 13 closed, 32 open, 1 advisory (46 settings entries)', () => {
+    expect(check(ctxFor(ALL_SWITCHES, { heartbeat: true, threadReply: true, senderRolePolicy: POLICY, browser: true }))).toEqual({ closed: 13, open: 32, advisory: 1 })
   })
 
-  it('counts the sub entries: 13 closed, 28 open, 1 advisory rendered, 1 recorded only', () => {
+  it('counts the sub entries: 13 closed, 29 open, 1 advisory', () => {
     const counts = { closed: 0, open: 0, advisory: 0 }
-    const sub = HOOK_MANIFEST.entries.filter((e) => e.scope !== 'main')
-    for (const e of sub.filter((x) => x.rendered !== false)) counts[specFor(e, 'sub').failMode]++
-    expect(counts).toEqual({ closed: 13, open: 28, advisory: 1 })
-    expect(sub.filter((x) => x.rendered === false).map((x) => x.id)).toEqual(['browser-content-notice-playwright'])
+    for (const e of HOOK_MANIFEST.entries.filter((x) => x.scope !== 'main')) counts[specFor(e, 'sub').failMode]++
+    expect(counts).toEqual({ closed: 13, open: 29, advisory: 1 })
   })
 })
 
@@ -266,20 +270,15 @@ describe('hook manifest validation, sub scope', () => {
     expect(() => validateManifest(HOOK_MANIFEST, 'main')).not.toThrow()
   })
 
-  it('N3: a not-rendered entry needs per-agent data', () => {
-    expect(() => validateManifest(withEntries(replace('browser-content-notice-playwright', { perAgent: undefined })), 'sub')).toThrow(/needs perAgent data/)
-    expect(() => validateManifest(withEntries(replace('browser-content-notice-playwright', { perAgent: {} })), 'sub')).toThrow(/needs perAgent data/)
+  it('two sub entries on one script and event need disjoint ownMatchers (the generator could not tell them apart)', () => {
+    expect(() => validateManifest(withEntries(replace('browser-content-notice-playwright', { ownMatchers: undefined })), 'sub')).toThrow(/need disjoint ownMatchers/)
+    expect(() => validateManifest(withEntries(replace('browser-content-notice-playwright', { ownMatchers: ['WebSearch'] })), 'sub')).toThrow(/need disjoint ownMatchers/)
   })
 
-  it('N3: a not-rendered entry has no place in a layout', () => {
-    const layout = { ...HOOK_MANIFEST.layout, sub: { ...HOOK_MANIFEST.layout.sub, PostToolUse: [...HOOK_MANIFEST.layout.sub!.PostToolUse!, 'browser-content-notice-playwright'] } }
-    expect(() => validateManifest(withEntries(entries, layout), 'sub')).toThrow(/which is not rendered/)
-  })
-
-  it('N3: per-agent data only on a not-rendered entry, with plain agent names and valid timeouts', () => {
-    expect(() => validateManifest(withEntries(replace('bash-egress-parser', { perAgent: { tom: {} } })), 'sub')).toThrow(/not-rendered entries only/)
-    expect(() => validateManifest(withEntries(replace('browser-content-notice-playwright', { perAgent: { 'Bad Name': {} } })), 'sub')).toThrow(/bad agent name/)
-    expect(() => validateManifest(withEntries(replace('browser-content-notice-playwright', { perAgent: { tom: { timeout: 0 } } })), 'sub')).toThrow(/timeout must be/)
+  it('offRemoves only on a conditional entry, ownMatchers only on a sub entry', () => {
+    expect(() => validateManifest(withEntries(replace('self-pace-gate', { offRemoves: true })), 'sub')).toThrow(/offRemoves needs a profile or agent condition/)
+    expect(() => validateManifest(withEntries(replace('ledger-capture', { ownMatchers: ['x'] })), 'sub')).toThrow(/ownMatchers is for sub-agent entries/)
+    expect(() => validateManifest(withEntries(replace('self-pace-gate', { ownMatchers: [] })), 'sub')).toThrow(/empty ownMatchers/)
   })
 
   it('profile and agent conditions only on sub-only entries', () => {
@@ -297,8 +296,21 @@ describe('hook manifest render inputs (Ron N4)', () => {
     }
   })
 
+  // Ron 13754: the node binary only ever stands inside double quotes, so its rule is wider than the root's.
+  const badNodeBin = ['/root/x"y', '/root/$HOME', '/root/`id`', 'relative/path', '/root/x/', 'C:\\nodejs\\', '/root/x\ny', '']
+  const goodNodeBin = ['/opt/homebrew/opt/node@22/bin/node', 'C:\\Program Files\\nodejs\\node.exe', '/Users/John Doe/.nvm/versions/node/v22.11.0/bin/node']
+
+  it('accepts a node binary with @, a space, backslashes or a drive colon, and quotes it in every node gate', () => {
+    for (const nodeBin of goodNodeBin) {
+      const commands = flatten(renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), nodeBin })).map((h) => String(h.command ?? ''))
+      const gates = commands.filter((c) => c.includes('.mjs"'))
+      expect(gates).toHaveLength(6)
+      for (const c of gates) expect(c.startsWith(`test -x "${nodeBin}" || `) && c.includes(`; then timeout -k 1 8 "${nodeBin}" "`)).toBe(true)
+    }
+  })
+
   it('rejects a bad node binary, and a sub render without root or node binary', () => {
-    for (const nodeBin of bad) expect(() => renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), nodeBin })).toThrow(/ctx.nodeBin must be/)
+    for (const nodeBin of badNodeBin) expect(() => renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), nodeBin })).toThrow(/ctx.nodeBin must be/)
     expect(() => renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), root: undefined })).toThrow(/needs ctx.root/)
     expect(() => renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), nodeBin: undefined })).toThrow(/ctx.nodeBin must be/)
   })

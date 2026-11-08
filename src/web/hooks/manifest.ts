@@ -16,9 +16,10 @@
 // The main agent's hooks block of .claude/settings.json and its sidecar
 // .claude/hooks.metadata.json are generated from this module into a checkout
 // (C3-4: main-artifact.ts, npm run hooks:generate; a test fails CI when the
-// committed files differ). No runtime caller yet (C3-3 makes the sub generator
-// render from it). It imports nothing at runtime on purpose,
-// so agent-scaffold.ts can import it later without a cycle.
+// committed files differ). The sub-agents' gate builders in agent-scaffold.ts
+// render from it too (C3-3a-1: injectSubHook); no caller writes a whole sub
+// block from it yet (C3-3b). It imports nothing at runtime on purpose, so
+// agent-scaffold.ts imports it without a cycle.
 //
 // Recorded as found, not fixed: every wrapper spelling, timeout and fail mode
 // below is what the settings carry today, including the main/sub differences
@@ -125,12 +126,13 @@ export type WrapperKind =
 export type HookProfileFlag = keyof Pick<ProfileTemplate, 'destructiveGate' | 'credentialGate' | 'secondReviewer'>
 
 /**
- * Per-agent conditions that are not profile switches: the heartbeat agent, and
- * an agent with a sender-role policy (the policy rides on the command as the
- * last argument). The email thread-reply capability changes arguments only,
- * see HookManifestEntry.threadReplyArgs.
+ * Per-agent conditions that are not profile switches: the heartbeat agent, an
+ * agent with a sender-role policy (the policy rides on the command as the last
+ * argument), and an agent with the `browser` capability (a Playwright MCP). The
+ * email thread-reply capability changes arguments only, see
+ * HookManifestEntry.threadReplyArgs.
  */
-export type HookAgentFlag = 'heartbeat' | 'senderRolePolicy'
+export type HookAgentFlag = 'heartbeat' | 'senderRolePolicy' | 'browser'
 
 /** How one scope renders an entry. */
 export interface HookSpec {
@@ -140,15 +142,8 @@ export interface HookSpec {
   matcher?: string | readonly string[]
   /** Extra arguments after the script path (plain flag characters only). */
   args?: readonly string[]
-  /** Seconds; absent: the hook object carries no timeout key. */
+  /** Seconds; absent: the hook object carries no timeout key. A fail-closed wrapper's own deadline is this minus 2. */
   timeout?: number
-  /**
-   * Seconds the fail-closed wrapper's own deadline is computed from (minus 2),
-   * where the command was built with another value than `timeout`. No entry
-   * sets it today: second-reviewer-gate did (10, its gate cut at 8 s inside a
-   * 180 s hook) until its builder passed the hook's own timeout.
-   */
-  wrapperTimeout?: number
   wrapper: WrapperKind
   failMode: FailMode
 }
@@ -175,13 +170,18 @@ export interface HookManifestEntry extends HookSpec {
   /** Where one scope differs from the fields above today. Each override is a recorded main/sub difference. */
   override?: Partial<Record<HookScope, Partial<HookSpec>>>
   /**
-   * false: a hook some agents carry today that no code path writes (added by
-   * hand). Recorded by name so a generator cannot drop it unnoticed, never
-   * rendered, never placed in a layout; `perAgent` says who carries it and how.
+   * Sub-agents only (the generator, sub-generator.ts): an existing hook that runs
+   * this script belongs to this entry only under one of these matchers. Under any
+   * other matcher it is an operator's own wiring and stays as it is. Absent: the
+   * script alone decides, under any matcher of this entry's events.
    */
-  rendered?: false
-  /** rendered:false only: the agents carrying the hook today; timeout absent = the hook has no timeout key. */
-  perAgent?: Readonly<Record<string, { timeout?: number }>>
+  ownMatchers?: readonly string[]
+  /**
+   * Sub-agents only, a conditional entry: when its switch is off, the generator
+   * removes an existing copy. Absent: an existing copy stays as it is, because
+   * switching a gate off is not a teardown (profiles.ts, destructiveGate).
+   */
+  offRemoves?: true
   /**
    * The entry's text in .claude/hooks.metadata.json (the sidecar of the main
    * settings, HOOKDRIFT926). Required on every entry the main agent renders,
@@ -237,18 +237,21 @@ export type RenderedHooks = Partial<Record<HookEvent, RenderedGroup[]>>
 export interface RenderContext {
   /**
    * Path prefix of every script. Main default: the literal $CLAUDE_PROJECT_DIR.
-   * Sub (required): the absolute project root. Plain path characters only, it
-   * lands inside a single-quoted bash -c string.
+   * Sub (required): the absolute project root. Plain path characters only where
+   * it lands unquoted (the template wrappers, inside a single-quoted bash -c);
+   * the gate wrappers quote it, see DQ_SAFE_ABS_PATH_RE.
    */
   root?: string
-  /** Sub (required): the node binary hookCommand() burns in (HOOK_NODE_BIN); plain path characters only. */
+  /** Sub (required): the node binary hookCommand() burns in (HOOK_NODE_BIN), see DQ_SAFE_ABS_PATH_RE. */
   nodeBin?: string
   /** Sub: the agent's profile (only the gate switches are read). */
   profile?: Pick<ProfileTemplate, HookProfileFlag>
   /** Sub: per-agent conditions. */
-  agent?: { heartbeat?: boolean; threadReply?: boolean; senderRolePolicy?: string | null }
+  agent?: { heartbeat?: boolean; threadReply?: boolean; senderRolePolicy?: string | null; browser?: boolean }
   /** Sub: prompt texts of agentPrompt entries, keyed by the entry's script field. */
   prompts?: Record<string, string>
+  /** Sub: ids not rendered this time (the generator's registration guard and covered envelope). */
+  skip?: ReadonlySet<string>
 }
 
 const MAIN_ROOT = '$CLAUDE_PROJECT_DIR'
@@ -285,9 +288,9 @@ const SUB_EMAIL_MATCHER = ['Bash', ...MAIN_MAIL_MATCHERS].join('|')
 // same script under the same event; `override.sub` is then the recorded
 // difference (C3-5 removes those, here every one stays as found). Main: 41
 // entries, 56 settings entries (three hooks sit under more than one event, the
-// two mail gates under several matchers). Sub: 42 rendered entries, 36 of them
-// unconditional (39 settings entries on every sub-agent today), 6 behind a
-// profile switch or an agent property, plus one recorded but not rendered.
+// two mail gates under several matchers). Sub: 43 entries, 36 of them
+// unconditional (39 settings entries on every sub-agent today), 7 behind a
+// profile switch or an agent property.
 
 const open = { wrapper: 'failOpenExec', failMode: 'open' } as const
 /** The template's spelling of a fail-open hook on the sub-agents. */
@@ -334,15 +337,16 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
     sidecar: { purpose: 'Notifies the owner when an agent\'s persona file (CLAUDE.md / SOUL.md) is changed.' } },
   { id: 'telegram_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open, override: subOpen,
     sidecar: { purpose: 'Clears the Telegram progress placeholder as soon as a reply is actually sent.' } },
-  { id: 'browser-content-notice', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } },
+  // Sub: the managed WebSearch envelope (injectWebSearchEnvelope); the script under any other matcher is the
+  // operator's (the generator keeps it, and skips this entry where such a group already covers both tools).
+  { id: 'browser-content-notice', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } }, ownMatchers: ['WebSearch|WebFetch', 'WebSearch', 'WebFetch'],
     sidecar: { purpose: 'PostToolUse hook: envelope browser / search payloads as untrusted content.' } },
-  // Hand-added on five sub-agents (skill playwright-mcp-agens), written by no code path. Measured
-  // 2026-11-07 23:17 on the live files: bella and lilla without a timeout, kevin, margot, tom with 10.
-  // C3-3 renders it behind a browser capability flag; until then it is data only.
+  // The Playwright MCP's content (skill playwright-mcp-agens), for an agent with the `browser` capability.
+  // Before C3-3 it was added by hand, on five sub-agents (measured 2026-11-07 23:17 and 2026-11-08 01:2x: two
+  // without a timeout, three with 10). Without the capability the generator keeps such a hand-added copy as it is.
   {
     id: 'browser-content-notice-playwright', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'sub', events: ['PostToolUse'],
-    matcher: 'mcp__playwright__browser_.*', wrapper: 'bare', failMode: 'open', rendered: false,
-    perAgent: { bella: {}, kevin: { timeout: 10 }, lilla: {}, margot: { timeout: 10 }, tom: { timeout: 10 } },
+    matcher: 'mcp__playwright__browser_.*', timeout: 10, wrapper: 'bare', failMode: 'open', agentFlag: 'browser', ownMatchers: ['mcp__playwright__browser_.*'],
   },
   { id: 'slack_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open, override: subOpen,
     sidecar: { purpose: 'Clears the Slack progress placeholder as soon as a reply is actually sent.' } },
@@ -362,7 +366,7 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   // frozen, the one state in which this gate stops anything. Sub: plain fail-open.
   { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExecUnquoted', failMode: 'open' } },
     sidecar: { purpose: 'PreToolUse hook (matcher "*"), KILLSWITCH1022: while the fleet is frozen (store/fleet-freeze.json exists), every tool call is denied with exit 2.' } },
-  { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } },
+  { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } }, ownMatchers: [TELEGRAM_REPLY_EDIT],
     sidecar: {
       purpose: [
         'Copy QA gate on outgoing email sent from Bash.',
@@ -406,10 +410,10 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   { id: 'self-pace-gate', script: 'scripts/self-pace-gate.mjs', events: ['PreToolUse'], matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit', ...nodeGate },
   { id: 'kanban-write-gate', script: 'scripts/kanban-write-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
   { id: 'digest-provenance-gate', script: 'scripts/digest-provenance-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
-  { id: 'sender-role-gate', script: 'scripts/hooks/sender-role-gate.py', events: ['PreToolUse'], matcher: '*', args: ['--policy'], agentFlag: 'senderRolePolicy', ...pythonGate },
+  { id: 'sender-role-gate', script: 'scripts/hooks/sender-role-gate.py', events: ['PreToolUse'], matcher: '*', args: ['--policy'], agentFlag: 'senderRolePolicy', offRemoves: true, ...pythonGate },
   { id: 'destructive-gate', script: 'scripts/hooks/destructive-gate.py', events: ['PreToolUse'], matcher: 'Bash|Read|Edit|Write|NotebookEdit', profileFlag: 'destructiveGate', ...pythonGate },
   { id: 'credential-gate', script: 'scripts/hooks/credential-gate.py', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, profileFlag: 'credentialGate', ...pythonGate },
-  { id: 'second-reviewer-gate', script: 'scripts/hooks/second-reviewer-gate.py', events: ['PreToolUse'], matcher: 'Bash|mcp__.*', profileFlag: 'secondReviewer', ...pythonGate, timeout: 180 },
+  { id: 'second-reviewer-gate', script: 'scripts/hooks/second-reviewer-gate.py', events: ['PreToolUse'], matcher: 'Bash|mcp__.*', profileFlag: 'secondReviewer', offRemoves: true, ...pythonGate, timeout: 180 },
   { id: 'bash-egress-parser', script: 'scripts/hooks/bash-egress-parser.mjs', events: ['PreToolUse'], matcher: 'Bash', ...nodeGate },
 
   // Stop / StopFailure
@@ -475,7 +479,7 @@ const SUB_LAYOUT: HookLayout = {
   SessionEnd: ['clear-capture'],
   PostToolUse: [
     'skill-usage-capture', 'tool-log-capture', 'telegram_progress_reply_clear', 'slack_progress_reply_clear',
-    'memory-frontmatter-bash-gate', 'browser-content-notice',
+    'memory-frontmatter-bash-gate', 'browser-content-notice', 'browser-content-notice-playwright',
   ],
   PostToolUseFailure: ['tool-log-capture', 'memory-frontmatter-bash-gate'],
   UserPromptSubmit: [[
@@ -501,24 +505,33 @@ export const HOOK_MANIFEST: HookManifest = {
 // ---------------------------------------------------------------------------
 // Rendering.
 //
-// TEMPORARY DUPLICATE: the wrapper strings below repeat what the builders in
-// agent-scaffold.ts (hookCommand, pythonHookCommand, failClosedGateRun,
-// gateDeadlineSec), the settings template and the hand-written main settings
-// spell today. They are copied, not imported, because agent-scaffold.ts will
-// import this module in C3-3 and the reverse import would be a cycle. C3-3 is
-// where the builders and these strings become one implementation; until then
-// the deep-equal tests against the real outputs keep the copies identical.
+// The gate builders of agent-scaffold.ts (hookCommand, pythonHookCommand,
+// failClosedGateRun, gateDeadlineSec) are the functions below since C3-3a: one
+// implementation, imported there (this module imports nothing at runtime, so
+// there is no cycle). The template's fail-open spelling and the main agent's
+// hand-written wrappers are still spelled here a second time; the deep-equal
+// tests against the template seed and the tracked main settings keep them equal.
 
 const SCRIPT_RE = /^scripts\/[A-Za-z0-9_./-]+\.(py|mjs|sh)$/
 const ARG_RE = /^[A-Za-z0-9_=.:-]+$/
 /**
- * A root or node binary: an absolute path of plain characters. Both land inside
- * a single-quoted `bash -c '...'` string, and the main root also inside double
- * quotes, so a quote, `$`, backtick, backslash or space must never reach them.
+ * A root where it lands UNQUOTED: the main root (inside a single-quoted
+ * `bash -c '...'` and double quotes) and a sub root under the template's
+ * fail-open wrappers. Plain characters only, so a quote, `$`, backtick,
+ * backslash or space never reaches the shell.
  */
 const PLAIN_ABS_PATH_RE = /^(?:\/[A-Za-z0-9_.+-]+)+$/
-const AGENT_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/
-const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
+/**
+ * A path that only ever lands inside DOUBLE quotes in a plain command (the
+ * node binary, a sub root under the gate wrappers): absolute (POSIX, or a
+ * Windows drive), and free of the characters that are live inside double quotes
+ * (`"`, `$`, backtick) and of control characters. A trailing backslash would
+ * escape the closing quote, and a trailing slash names no file, so neither may
+ * end it. Allowed on purpose (Ron 13754): `@` (brew node@22), space (a home
+ * with a space, `C:\Program Files`), backslash and colon (Windows).
+ */
+const DQ_SAFE_ABS_PATH_RE = /^(?:\/|[A-Za-z]:[\\/])[^"$`\x00-\x1f\x7f]*[^"$`\x00-\x1f\x7f\\/]$/
+export const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
 const FLEET_FREEZE_MARKER = 'store/fleet-freeze.json'
 const FLEET_FREEZE_MISSING_MSG = 'fleet-freeze-gate (fail-closed while frozen): the gate script is missing and '
   + 'store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh '
@@ -536,20 +549,53 @@ function interpreterFor(script: string): string {
   throw new Error(`hook manifest: no interpreter for ${script}`)
 }
 
-function gateDeadline(timeout: number): number {
-  return Math.max(1, Math.floor(timeout) - 2)
+/** The gate's deadline inside a hook whose timeout is `hookTimeoutSec`: two seconds earlier, at least one. */
+export function gateDeadlineSec(hookTimeoutSec: number): number {
+  return Math.max(1, Math.floor(hookTimeoutSec) - 2)
 }
 
 function basenameOf(script: string): string {
   return script.slice(script.lastIndexOf('/') + 1)
 }
 
-/** The run-and-map tail of a fail-closed gate: 0 and 2 pass through, any other status blocks. */
-function failClosedRun(invocation: string, label: string, timeout: number): string {
+/**
+ * The run-and-map tail of a fail-closed gate: 0 and 2 pass through, any other status blocks
+ * (card 723bbb70; the reasons are at hookCommand in agent-scaffold.ts).
+ */
+export function failClosedGateRun(invocation: string, label: string, hookTimeoutSec: number): string {
+  if (!/^[A-Za-z0-9_.-]+$/.test(label)) throw new Error(`gate label must be a plain file name, got: ${label}`)
   const fail = `${GATE_FAIL_CLOSED_TAG}: ${label}: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, `
     + 'jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.'
-  return `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${gateDeadline(timeout)} ${invocation}; else ${invocation}; fi; `
+  return `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${gateDeadlineSec(hookTimeoutSec)} ${invocation}; else ${invocation}; fi; `
     + `rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "${fail}" >&2; exit 2; }; exit "$rc"`
+}
+
+// Extra arguments ride inside the invocation, never after the whole command: appended after the
+// fail-closed tail they would land on `exit` instead of the gate. Only plain flag characters, so
+// nothing needs shell quoting.
+function gateInvocation(interpreter: string, scriptPath: string, args: readonly string[]): string {
+  for (const a of args) {
+    if (!ARG_RE.test(a)) throw new Error(`hook argument needs no quoting, got: ${a}`)
+  }
+  return [interpreter, `"${scriptPath}"`, ...args].join(' ')
+}
+
+/** Throws unless `nodeBin` may stand inside double quotes (DQ_SAFE_ABS_PATH_RE). */
+export function checkNodeBin(nodeBin: string): void {
+  if (!DQ_SAFE_ABS_PATH_RE.test(nodeBin)) throw new Error(`hook manifest: ctx.nodeBin must be an absolute path without ", $, backtick, control characters or a trailing slash or backslash, got: ${JSON.stringify(nodeBin)}`)
+}
+
+/** The failClosedNodeBin spelling: `test -x <nodeBin>` probe (a miss blocks), then the fail-closed run. */
+export function nodeGateCommand(nodeBin: string, scriptPath: string, args: readonly string[], hookTimeoutSec: number): string {
+  checkNodeBin(nodeBin)
+  return `test -x "${nodeBin}" || { echo "${subNodeMissingMsg(nodeBin)}" >&2; exit 2; }; `
+    + failClosedGateRun(gateInvocation(`"${nodeBin}"`, scriptPath, args), basenameOf(scriptPath), hookTimeoutSec)
+}
+
+/** The failClosedPythonProbe spelling: `command -v python3` probe (a miss blocks), then the fail-closed run. */
+export function pythonGateCommand(scriptPath: string, args: readonly string[], hookTimeoutSec: number): string {
+  return `command -v python3 >/dev/null 2>&1 || { echo "${SUB_PYTHON_MISSING_MSG}" >&2; exit 2; }; `
+    + failClosedGateRun(gateInvocation('python3', scriptPath, args), basenameOf(scriptPath), hookTimeoutSec)
 }
 
 function mainCommand(spec: HookSpec, script: string, root: string): string {
@@ -566,13 +612,13 @@ function mainCommand(spec: HookSpec, script: string, root: string): string {
     case 'failOpenNodeProbe': {
       const inv = `${interp} ${p}${args}`
       return `bash -c '[ -f ${p} ] && command -v ${interp} >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; `
-        + `then timeout -k 1 ${gateDeadline(timeout)} ${inv}; else ${inv}; fi; [ $? = 2 ] && exit 2; exit 0'`
+        + `then timeout -k 1 ${gateDeadlineSec(timeout)} ${inv}; else ${inv}; fi; [ $? = 2 ] && exit 2; exit 0'`
     }
     case 'failClosedRun':
-      return failClosedRun(`${interp} ${p}${args}`, basenameOf(script), timeout)
+      return failClosedGateRun(`${interp} ${p}${args}`, basenameOf(script), timeout)
     case 'failClosedRunNodeProbe':
       return `command -v node >/dev/null 2>&1 || { echo "${MAIN_NODE_MISSING_MSG}" >&2; exit 2; }; `
-        + failClosedRun(`node ${p}${args}`, basenameOf(script), timeout)
+        + failClosedGateRun(`node ${p}${args}`, basenameOf(script), timeout)
     default:
       throw new Error(`hook manifest: wrapper ${spec.wrapper} is not a main-agent spelling (${script})`)
   }
@@ -584,26 +630,25 @@ function subCommand(spec: HookSpec, script: string, args: readonly string[], roo
   const a = args.map((x) => ` ${x}`).join('')
   switch (spec.wrapper) {
     case 'failOpenExecUnquoted':
+      checkPlainPath('ctx.root', root)
       return `bash -c '[ -f ${p} ] && exec ${interp} ${p}${a}; exit 0'`
     case 'bare':
+      checkPlainPath('ctx.root', root)
       return `${interp} ${p}${a}`
     case 'bareQuoted':
       return `${interp} "${p}"${a}`
     case 'failClosedPythonProbe':
       if (interp !== 'python3') throw new Error(`hook manifest: ${script} is not a python gate`)
-      return `command -v python3 >/dev/null 2>&1 || { echo "${SUB_PYTHON_MISSING_MSG}" >&2; exit 2; }; `
-        + failClosedRun(`python3 "${p}"${a}`, basenameOf(script), requireTimeout(spec, script))
+      return pythonGateCommand(p, args, requireTimeout(spec, script))
     case 'failClosedNodeBin':
       if (interp !== 'node') throw new Error(`hook manifest: ${script} is not a node gate`)
-      return `test -x "${nodeBin}" || { echo "${subNodeMissingMsg(nodeBin)}" >&2; exit 2; }; `
-        + failClosedRun(`"${nodeBin}" "${p}"${a}`, basenameOf(script), requireTimeout(spec, script))
+      return nodeGateCommand(nodeBin, p, args, requireTimeout(spec, script))
     default:
       throw new Error(`hook manifest: wrapper ${spec.wrapper} is not a sub-agent spelling (${script})`)
   }
 }
 
 function requireTimeout(spec: HookSpec, script: string): number {
-  if (spec.wrapperTimeout !== undefined) return spec.wrapperTimeout
   if (spec.timeout === undefined) throw new Error(`hook manifest: ${script} needs a timeout for wrapper ${spec.wrapper}`)
   return spec.timeout
 }
@@ -616,7 +661,6 @@ export function specFor(entry: HookManifestEntry, scope: HookScope): HookSpec {
     matcher: 'matcher' in o ? o.matcher : entry.matcher,
     args: 'args' in o ? o.args : entry.args,
     timeout: 'timeout' in o ? o.timeout : entry.timeout,
-    wrapperTimeout: 'wrapperTimeout' in o ? o.wrapperTimeout : entry.wrapperTimeout,
     wrapper: o.wrapper ?? entry.wrapper,
     failMode: o.failMode ?? entry.failMode,
   }
@@ -626,20 +670,17 @@ function inScope(entry: HookManifestEntry, scope: HookScope): boolean {
   return entry.scope === scope || entry.scope === 'both'
 }
 
-/** In scope and rendered: the entries a layout of this scope must place. */
-function placedIn(entry: HookManifestEntry, scope: HookScope): boolean {
-  return inScope(entry, scope) && entry.rendered !== false
-}
-
-/** Whether a placed sub entry is switched on for this profile and agent. */
-function activeFor(entry: HookManifestEntry, ctx: RenderContext): boolean {
+/** Whether a sub entry is switched on for this profile and agent. */
+export function activeFor(entry: HookManifestEntry, ctx: RenderContext): boolean {
   if (entry.profileFlag && ctx.profile?.[entry.profileFlag] !== true) return false
   if (entry.agentFlag === 'heartbeat' && ctx.agent?.heartbeat !== true) return false
   if (entry.agentFlag === 'senderRolePolicy' && !ctx.agent?.senderRolePolicy) return false
+  if (entry.agentFlag === 'browser' && ctx.agent?.browser !== true) return false
   return true
 }
 
-function matchersOf(spec: HookSpec): Array<string | undefined> {
+/** The matchers an entry is registered under in one scope; undefined = a group without a matcher key. */
+export function matchersOf(spec: HookSpec): Array<string | undefined> {
   if (spec.matcher === undefined) return [undefined]
   return typeof spec.matcher === 'string' ? [spec.matcher] : [...spec.matcher]
 }
@@ -657,7 +698,7 @@ function isSentence(s: unknown): s is string {
 /** Main scope: a rendered entry carries complete sidecar text, any other entry none. */
 function checkSidecarText(e: HookManifestEntry, spec: HookSpec): void {
   const text = e.sidecar
-  if (!placedIn(e, 'main')) {
+  if (!inScope(e, 'main')) {
     if (text !== undefined) throw new Error(`hook manifest: ${e.id}: sidecar text is for entries the main agent renders only`)
     return
   }
@@ -725,12 +766,17 @@ export function sidecarGroupText(e: HookManifestEntry, event: HookEvent, matcher
   return { id, purpose }
 }
 
+function checkDqSafePath(what: string, value: string): void {
+  if (!DQ_SAFE_ABS_PATH_RE.test(value)) throw new Error(`hook manifest: ${what} must be an absolute path without ", $, backtick or control characters, got: ${value}`)
+}
+
 /**
  * Structural check of a manifest for one scope; throws on the first problem.
- * Ids unique, script paths and args plain, every layout slot names a rendered
- * entry of this scope that is registered under that event, every (entry, event)
- * of the scope is placed exactly once, profile and agent conditions only on
- * sub-only entries, and a not-rendered entry carries per-agent data and no place.
+ * Ids unique, script paths and args plain, every layout slot names an entry of
+ * this scope that is registered under that event, every (entry, event) of the
+ * scope is placed exactly once, profile/agent conditions and the generator's
+ * ownership fields only on sub entries, and no two sub entries can own the same
+ * existing hook (same event and script need disjoint ownMatchers).
  * The sidecar text is checked apart, by validateSidecarText.
  */
 export function validateManifest(m: HookManifest, scope: HookScope): void {
@@ -743,24 +789,25 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
     for (const a of [...(spec.args ?? []), ...(e.threadReplyArgs ?? [])]) {
       if (!ARG_RE.test(a)) throw new Error(`hook manifest: ${e.id}: argument needs quoting: ${a}`)
     }
-    for (const t of [spec.timeout, spec.wrapperTimeout]) {
-      if (t !== undefined && !(Number.isInteger(t) && t > 0)) throw new Error(`hook manifest: ${e.id}: timeout must be a positive integer`)
-    }
+    if (spec.timeout !== undefined && !(Number.isInteger(spec.timeout) && spec.timeout > 0)) throw new Error(`hook manifest: ${e.id}: timeout must be a positive integer`)
     if (Array.isArray(spec.matcher) && spec.matcher.length === 0) throw new Error(`hook manifest: ${e.id}: empty matcher list`)
     if ((e.profileFlag || e.agentFlag || e.threadReplyArgs) && e.scope !== 'sub') {
       throw new Error(`hook manifest: ${e.id}: profile and agent conditions are sub-agent only`)
     }
-    if (e.rendered === false) {
-      const agents = Object.entries(e.perAgent ?? {})
-      if (agents.length === 0) throw new Error(`hook manifest: ${e.id}: a not-rendered entry needs perAgent data`)
-      for (const [name, data] of agents) {
-        if (!AGENT_NAME_RE.test(name)) throw new Error(`hook manifest: ${e.id}: bad agent name ${name}`)
-        if (data.timeout !== undefined && !(Number.isInteger(data.timeout) && data.timeout > 0)) {
-          throw new Error(`hook manifest: ${e.id}: ${name}: timeout must be a positive integer`)
+    if (e.offRemoves && !(e.profileFlag || e.agentFlag)) throw new Error(`hook manifest: ${e.id}: offRemoves needs a profile or agent condition`)
+    if (e.ownMatchers && e.scope === 'main') throw new Error(`hook manifest: ${e.id}: ownMatchers is for sub-agent entries`)
+    if (e.ownMatchers && e.ownMatchers.length === 0) throw new Error(`hook manifest: ${e.id}: empty ownMatchers`)
+  }
+  if (scope === 'sub') {
+    const sub = m.entries.filter((e) => inScope(e, 'sub') && e.wrapper !== 'agentPrompt')
+    for (const [i, a] of sub.entries()) {
+      for (const b of sub.slice(i + 1)) {
+        if (basenameOf(a.script) !== basenameOf(b.script)) continue
+        if (!specFor(a, 'sub').events.some((ev) => specFor(b, 'sub').events.includes(ev))) continue
+        if (!a.ownMatchers || !b.ownMatchers || a.ownMatchers.some((x) => b.ownMatchers!.includes(x))) {
+          throw new Error(`hook manifest: ${a.id} and ${b.id} run the same script under one event and need disjoint ownMatchers`)
         }
       }
-    } else if (e.perAgent !== undefined) {
-      throw new Error(`hook manifest: ${e.id}: perAgent is for not-rendered entries only`)
     }
   }
   const layout = m.layout[scope]
@@ -775,7 +822,6 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
         const e = byId.get(id)
         if (!e) throw new Error(`hook manifest: layout ${scope}.${event} names unknown id ${id}`)
         if (!inScope(e, scope)) throw new Error(`hook manifest: layout ${scope}.${event} names ${id}, which is not in scope ${scope}`)
-        if (e.rendered === false) throw new Error(`hook manifest: layout ${scope}.${event} names ${id}, which is not rendered`)
         const spec = specFor(e, scope)
         if (!spec.events.includes(event)) throw new Error(`hook manifest: ${id} is not registered under ${event}`)
         const key = `${id}\u0000${event}`
@@ -789,35 +835,43 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
     }
   }
   for (const e of m.entries) {
-    if (!placedIn(e, scope)) continue
+    if (!inScope(e, scope)) continue
     for (const event of specFor(e, scope).events) {
       if (!placed.has(`${e.id}\u0000${event}`)) throw new Error(`hook manifest: ${e.id} (${event}) has no place in the ${scope} layout`)
     }
   }
 }
 
+/** The root and node binary of a render, checked; throws on a missing or unsafe one. */
+function renderPaths(scope: HookScope, ctx: RenderContext): { root: string; nodeBin: string } {
+  const root = ctx.root ?? (scope === 'main' ? MAIN_ROOT : undefined)
+  if (root === undefined) throw new Error('hook manifest: the sub-agent render needs ctx.root')
+  if (scope === 'main' && root !== MAIN_ROOT) checkPlainPath('ctx.root', root)
+  if (scope === 'sub') checkDqSafePath('ctx.root', root)
+  const nodeBin = ctx.nodeBin ?? ''
+  if (scope === 'sub') checkNodeBin(nodeBin)
+  const policy = ctx.agent?.senderRolePolicy
+  if (policy && !ARG_RE.test(policy)) throw new Error('hook manifest: the sender-role policy needs quoting')
+  return { root, nodeBin }
+}
+
 /**
  * The `hooks` object one scope's settings carry, in written order. Pure: no
  * file is read or written. Main: every placed entry. Sub: the placed entries
- * whose profile switch and agent property are on (ctx.root, ctx.nodeBin and
- * the prompt of each agentPrompt entry are required); an event left with no
- * group is omitted. Not-rendered entries never appear.
+ * whose profile switch and agent property are on and that ctx.skip does not
+ * name (ctx.root, ctx.nodeBin and the prompt of each agentPrompt entry are
+ * required); an event left with no group is omitted.
  */
 export function renderHooks(m: HookManifest, scope: HookScope, ctx: RenderContext = {}): RenderedHooks {
   validateManifest(m, scope)
-  const root = ctx.root ?? (scope === 'main' ? MAIN_ROOT : undefined)
-  if (root === undefined) throw new Error('hook manifest: the sub-agent render needs ctx.root')
-  if (!(scope === 'main' && root === MAIN_ROOT)) checkPlainPath('ctx.root', root)
-  const nodeBin = ctx.nodeBin ?? ''
-  if (scope === 'sub') checkPlainPath('ctx.nodeBin', nodeBin)
-  const policy = ctx.agent?.senderRolePolicy
-  if (policy && !ARG_RE.test(policy)) throw new Error('hook manifest: the sender-role policy needs quoting')
+  const { root, nodeBin } = renderPaths(scope, ctx)
   const byId = new Map(m.entries.map((e) => [e.id, e] as const))
   const out: RenderedHooks = {}
   for (const [event, groups] of Object.entries(m.layout[scope] ?? {}) as Array<[HookEvent, ReadonlyArray<string | readonly string[]>]>) {
     const rendered: RenderedGroup[] = []
     for (const slot of groups) {
-      const ids = (typeof slot === 'string' ? [slot] : slot).filter((id) => scope === 'main' || activeFor(byId.get(id)!, ctx))
+      const ids = (typeof slot === 'string' ? [slot] : slot)
+        .filter((id) => scope === 'main' || (activeFor(byId.get(id)!, ctx) && !ctx.skip?.has(id)))
       if (ids.length === 0) continue
       const first = specFor(byId.get(ids[0])!, scope)
       for (const matcher of matchersOf(first)) {
@@ -828,6 +882,13 @@ export function renderHooks(m: HookManifest, scope: HookScope, ctx: RenderContex
     if (rendered.length > 0) out[event] = rendered
   }
   return out
+}
+
+/** One sub entry's hook object as renderHooks writes it, whatever its switch (the injectors and the generator's guard use it). */
+export function renderSubHook(e: HookManifestEntry, ctx: RenderContext): RenderedHook {
+  if (!inScope(e, 'sub')) throw new Error(`hook manifest: ${e.id} is not a sub-agent entry`)
+  const { root, nodeBin } = renderPaths('sub', ctx)
+  return renderHook(e, 'sub', root, nodeBin, ctx)
 }
 
 function renderHook(e: HookManifestEntry, scope: HookScope, root: string, nodeBin: string, ctx: RenderContext): RenderedHook {
@@ -842,7 +903,7 @@ function renderHook(e: HookManifestEntry, scope: HookScope, root: string, nodeBi
   const args = [
     ...(spec.args ?? []),
     ...(ctx.agent?.threadReply ? e.threadReplyArgs ?? [] : []),
-    ...(e.agentFlag === 'senderRolePolicy' ? [ctx.agent!.senderRolePolicy!] : []),
+    ...(e.agentFlag === 'senderRolePolicy' ? [ctx.agent?.senderRolePolicy ?? ''] : []),
   ]
   return withTimeout({ type: 'command', command: subCommand(spec, e.script, args, root, nodeBin) })
 }
