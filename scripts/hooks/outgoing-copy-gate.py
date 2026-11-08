@@ -1156,11 +1156,18 @@ def _cd_scan_words(cmd, outer=()):
     return words
 
 
+def _cd_dir_unknowable(d) -> bool:
+    """CDGATE1108: a cd target that cannot be known here: none, `-`, `~user`, or a non-literal character."""
+    return (not d or d == "-" or (d.startswith("~") and not (d == "~" or d.startswith("~/")))
+            or bool(_CD_NON_LITERAL.search(d)))
+
+
 def _cd_bases(cwd, cmd_words):
     """MAILGATESCRIPT1027 R1: (bases, undecidable): the directories a relative script may be under -- cwd, and
     every literal `cd DIR` target of the command (cumulative over chained cds, and DIR alone under cwd).
     undecidable: some `cd` names a directory that cannot be known here (a variable, a substitution, `-`,
-    `~user`, none at the end of the command). A bare `cd` whose segment ends goes to HOME (CDGATE1108)."""
+    `~user`, none at the end of the command). A bare `cd` whose segment ends goes to HOME, unless the next
+    segment starts with a word that cannot be known: that word may cd again, so it stays undecidable (CDGATE1108)."""
     cwd_abs = isinstance(cwd, str) and os.path.isabs(cwd)
     cur = cwd if cwd_abs else None
     bases = [cwd] if cwd_abs else []
@@ -1177,9 +1184,18 @@ def _cd_bases(cwd, cmd_words):
             i += 1  # MAILGATESCRIPT1027 R2: `--` ends the options, the next word is DIR even when it starts with `-`
         d = cmd_words[i] if i < len(cmd_words) else None
         if i < len(cmd_words) and d is _CD_SEG:
-            d = "~"  # CDGATE1108: a bare `cd` (its segment ends here) goes to HOME
+            # CDGATE1108: a bare `cd` (its segment ends here) goes to HOME; a non-literal head of the next segment
+            # (`cd && $X; ...`, X="cd /y") may cd again: undecidable, as before (Kevin 14209, tightening only)
+            # the word the old flat reading took as DIR: past the segment boundaries and the options
+            rest = [w for w in cmd_words[i + 1:] if w is not _CD_SEG]
+            k = 0
+            while k < len(rest) and rest[k] in _CD_OPTIONS:
+                k += 1
+            if k < len(rest) and rest[k] == "--":
+                k += 1
+            d = None if _cd_dir_unknowable(rest[k] if k < len(rest) else None) else "~"
         tilde = d is not None and (d == "~" or d.startswith("~/"))
-        if (not d or d == "-" or (d.startswith("~") and not tilde) or _CD_NON_LITERAL.search(d)):
+        if _cd_dir_unknowable(d):
             undecidable = True
             cur = None
             continue

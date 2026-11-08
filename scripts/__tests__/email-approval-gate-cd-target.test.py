@@ -175,9 +175,14 @@ try:
         ("cd -P && python3 job.py", HOME_SEND, True, "bare cd with an option, a sending script under HOME is caught"),
         ("cd -- && node job.mjs", HOME_SEND, True, "bare cd --, a sending node script under HOME is caught"),
         ("cd && python3 job.py", HOME_CLEAN, False, "bare cd, a harmless script under HOME passes"),
-        # the next segment's first word is no longer read as the cd's target: the script is judged under HOME
-        ("cd && $X; python3 job.py", HOME_SEND, True, "bare cd, then a variable command: judged under HOME"),
-        ("cd && $X; python3 job.py", HOME_CLEAN, False, "bare cd, then a variable command: harmless under HOME"),
+        # Kevin 14209: a non-literal head of the next segment may cd again (X="cd /y"): fail-closed, as on 621650b6
+        ("cd && $X; python3 job.py", HOME_SEND, True, "bare cd, then a variable command: fail-closed"),
+        ("cd && $X; python3 job.py", HOME_CLEAN, True, "bare cd, then a variable command, harmless: fail-closed"),
+        ("cd && ~bob/y; python3 job.py", HOME_CLEAN, True, "bare cd, then a ~user command: fail-closed"),
+        ("cd && *; python3 job.py", HOME_CLEAN, True, "bare cd, then a glob command: fail-closed"),
+        ("cd; $(pick); python3 job.py", HOME_CLEAN, True, "bare cd, then a substitution command: fail-closed"),
+        ("cd; -P $X; python3 job.py", HOME_CLEAN, True, "bare cd, then an option word and a variable: fail-closed"),
+        ("cd && ls; python3 job.py", HOME_CLEAN, False, "bare cd, then a literal command: judged under HOME"),
     ]:
         got, reasons = judge(cmd, home)
         check(f"CDGATE1108 {what}: {cmd!r} -> {want}", got is want, f"got {got} reasons={reasons!r}")
