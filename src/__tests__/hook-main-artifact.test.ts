@@ -232,12 +232,16 @@ describe('npm run hooks:generate (scripts/generate-main-hooks.ts)', () => {
     expect(readdirSync(join(root, '.claude')).sort()).toEqual(['hooks.metadata.json', 'settings.json'])
   })
 
-  it('a replaced file keeps its mode; a new one is 0644 (Ron 14094 R7)', () => {
+  // The temp file is created through the process umask, so what the generator keeps or sets is mode & ~umask. The
+  // child runs under a fixed umask 022 here, whatever the host's (Ron 14111: 0077 and 0027 broke a literal 0644).
+  it('a replaced file keeps its mode and a new one is 0644, each as the umask allows (mode & ~umask, run under umask 022) (Ron 14094 R7, R9)', () => {
     const settings = JSON.parse(committedSettings()) as Record<string, unknown>
     const root = scratchRoot({ settings: `${JSON.stringify({ ...settings, hooks: {} }, null, 2)}\n` })
-    chmodSync(join(root, '.claude', 'settings.json'), 0o600)
-    expect(generator('--root', root).status).toBe(0)
-    expect(statSync(join(root, '.claude', 'settings.json')).mode & 0o777).toBe(0o600)
+    chmodSync(join(root, '.claude', 'settings.json'), 0o640)
+    const r = spawnSync('/bin/sh', ['-c', 'umask 022 && exec "$@"', 'sh', TSX, GENERATOR, '--root', root], { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 60_000 })
+    expect(r.status, r.stderr).toBe(0)
+    // 0640 has a group bit: a generator that kept only the owner bits would leave 0600 (Ron R9).
+    expect(statSync(join(root, '.claude', 'settings.json')).mode & 0o777).toBe(0o640)
     expect(statSync(join(root, '.claude', 'hooks.metadata.json')).mode & 0o777).toBe(0o644)
   })
 })
