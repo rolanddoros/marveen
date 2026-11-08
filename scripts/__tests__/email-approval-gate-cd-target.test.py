@@ -140,6 +140,7 @@ try:
         ("bash -c 'cd $(pwd) && python3 job.py'", "substitution inside sh -c"),
         ("cd $(pwd) && bash -c 'python3 job.py'", "substitution, then the script inside sh -c"),
         ("cd sub && cd `pwd` && python3 job.py", "a literal cd, then a backtick cd"),
+        ("cd - && python3 job.py", "cd - (the previous directory, already fail-closed before)"),
         ("cd $DEST && python3 job.py", "a variable (already fail-closed before)"),
         ("cd ${DEST} && python3 job.py", "a braced variable (already fail-closed before)"),
         ('cd "$(dirname /a/b)" && python3 job.py', "a quoted substitution (already fail-closed before)"),
