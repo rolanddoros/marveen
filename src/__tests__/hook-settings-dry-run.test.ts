@@ -280,10 +280,23 @@ describe('the report', () => {
     const compared = r.agents.filter((a) => a.name !== 'sub-13')
     expect(compared.map((a) => [a.name, a.rewrapped.length, a.added.length, a.dropped.length])).toEqual(compared.map((a) => [a.name, 32, 0, 0]))
     expect(text.match(/kept as is: PostToolUse \[mcp__playwright__browser_\.\*\] browser-content-notice\.py timeout=(-|10)/g)).toHaveLength(5)
-    expect(text).toContain('sub-01: profile default, hooks 39 -> 39, multiset rewrap only ~32, normalised: ')
-    expect(text).toContain('UserPromptSubmit [9,1,1] -> [11]; PreToolUse order')
+    // C3-5c: the 32 rewraps move nothing, so the only layout lines are the group merge and the one real reorder
+    // (PreToolUse, the manifest's order); no "<event> order" for an event whose hooks were only rewrapped.
+    expect(text).toContain('sub-01: profile default, hooks 39 -> 39, multiset rewrap only ~32, normalised: UserPromptSubmit [9,1,1] -> [11]; PreToolUse order\n')
     expect(text).toContain('sub-05: profile applier')
     expect(text).toContain('sub-13: no-settings')
+  })
+
+  it('"<event> order" names a real move only: hooks rewrapped in place are not one, two swapped hooks are, the group merge line stays (C3-5c)', () => {
+    const r0 = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+    expect(r0.agents[0].rewrapped).toHaveLength(32)
+    // Stop, SessionStart, SessionEnd, PostToolUse(Failure): every hook rewrapped, none moved.
+    expect(r0.agents[0].normalised).toEqual(['UserPromptSubmit [9,1,1] -> [11]', 'PreToolUse order'])
+    withSettings('sub-03', (s) => { s.hooks.Stop[0].hooks.reverse() }, () => {
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+      expect([r.exit, r.agents[0].rewrapped.length, r.agents[0].added, r.agents[0].dropped]).toEqual([0, 32, [], []])
+      expect(r.agents[0].normalised).toEqual(['UserPromptSubmit [9,1,1] -> [11]', 'PreToolUse order', 'Stop order'])
+    })
   })
 
   it('a doubled hook is a drift too: the multiset counts copies (exit 1, the extra copy named as dropped)', () => {
