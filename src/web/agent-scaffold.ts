@@ -20,6 +20,7 @@ import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
+import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand, renderSubHook, type HookManifestEntry, type RenderContext } from './hooks/manifest.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -219,9 +220,8 @@ export function hookCommand(scriptPath: string, args: readonly string[] = [], ho
   // some other breakage), and the way out -- restarting the dashboard reruns
   // the ensure* migrations, which rewrite the path. A blocking gate with no
   // stated way out is worse than a loud error.
-  const miss = `governance-kapu: a hook interpretere nem talalhato (${HOOK_NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.`
-  const invocation = gateInvocation(`"${HOOK_NODE_BIN}"`, scriptPath, args)
-  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
+  // The spelling itself lives in the hook manifest (nodeGateCommand), the one implementation (C3-3a).
+  return nodeGateCommand(HOOK_NODE_BIN, scriptPath, args, hookTimeoutSec)
 }
 
 // The python twin of hookCommand(). The outgoing-copy-gate is a .py script, so
@@ -234,9 +234,7 @@ export function hookCommand(scriptPath: string, args: readonly string[] = [], ho
 // tool call through -- a gate that silently stops enforcing. So the interpreter
 // is probed first and a miss exits 2, which blocks.
 export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
-  const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
-  const invocation = gateInvocation('python3', scriptPath, args)
-  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
+  return pythonGateCommand(scriptPath, args, hookTimeoutSec)
 }
 
 // Card 723bbb70: the gate command's exit status is made FAIL-CLOSED here, in one place for every gate
@@ -254,33 +252,10 @@ export function pythonHookCommand(scriptPath: string, args: readonly string[] = 
 // control. Without `timeout` (a stock macOS) the gate runs as before and only that one case stays with
 // Claude Code. The `test -x` / `command -v` interpreter probe before it is unchanged and still blocks
 // with its own message.
-export const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
-
-/** The gate's deadline inside a hook whose timeout is `hookTimeoutSec`: two seconds earlier, at least one. */
-export function gateDeadlineSec(hookTimeoutSec: number): number {
-  return Math.max(1, Math.floor(hookTimeoutSec) - 2)
-}
-
-// Extra arguments ride inside the invocation, never after the whole command: appended after the
-// fail-closed tail they would land on `exit` instead of the gate (the email gate's thread-reply flag).
-// Only plain flag characters are accepted, so nothing needs shell quoting.
-function gateInvocation(interpreter: string, scriptPath: string, args: readonly string[]): string {
-  for (const a of args) {
-    if (!/^[A-Za-z0-9_=.:-]+$/.test(a)) throw new Error(`hook argument needs no quoting, got: ${a}`)
-  }
-  return [interpreter, `"${scriptPath}"`, ...args].join(' ')
-}
-
-/**
- * The run-and-map tail of a gate command (exported for tests and for the main agent's hand-written
- * project settings, which carry the same shape around a $CLAUDE_PROJECT_DIR path).
- */
-export function failClosedGateRun(invocation: string, label: string, hookTimeoutSec: number): string {
-  if (!/^[A-Za-z0-9_.-]+$/.test(label)) throw new Error(`gate label must be a plain file name, got: ${label}`)
-  const t = gateDeadlineSec(hookTimeoutSec)
-  const fail = `${GATE_FAIL_CLOSED_TAG}: ${label}: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.`
-  return `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${t} ${invocation}; else ${invocation}; fi; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "${fail}" >&2; exit 2; }; exit "$rc"`
-}
+// The tag, the deadline (gateDeadlineSec) and the run-and-map tail (failClosedGateRun; also the shape of the
+// main agent's hand-written project settings around a $CLAUDE_PROJECT_DIR path) live in the hook manifest
+// since C3-3a, with the argument check of the invocation; re-exported here for the existing callers.
+export { GATE_FAIL_CLOSED_TAG, gateDeadlineSec, failClosedGateRun } from './hooks/manifest.js'
 
 // Wired-already predicate for the ensure* migrations: is `command` present in
 // the serialized PreToolUse array? The command must be JSON-escaped before the
@@ -1479,6 +1454,41 @@ export function emailGateCommandStale(preToolUse: unknown, expected: string): bo
   })
 }
 
+// THE ONE INJECTOR (C3-3a): every inject*Gate below wires its PreToolUse entry through this function. The
+// hook object comes from the hook manifest (renderSubHook: the same command, matcher and timeout the sub
+// generator renders), behind the registration guard; then the entry's prior copies go (by default every
+// group that mentions the script's file name, which is how each injector deduped by hand before) and the
+// new group is appended. Same output, byte for byte, as the fourteen copies it replaces.
+function injectSubHook(
+  existing: Record<string, unknown>,
+  id: string,
+  opts: { threadReply?: boolean; senderRolePolicy?: string; drop?: (group: unknown) => boolean; clear?: (existing: Record<string, unknown>) => unknown } = {},
+): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const entry = subManifestEntry(id)
+  const hook = renderSubHook(entry, subRenderContext({ threadReply: opts.threadReply, senderRolePolicy: opts.senderRolePolicy }))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (hook.type === 'command' && isUnsafeHookCommand(hook.command)) return
+  opts.clear?.(existing)
+  const file = basename(entry.script)
+  const drop = opts.drop ?? ((e: unknown) => JSON.stringify(e).includes(file))
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [...prev.filter((e) => !drop(e)), { matcher: entry.override?.sub?.matcher ?? entry.matcher, hooks: [hook] }]
+}
+
+function subManifestEntry(id: string): HookManifestEntry {
+  const entry = HOOK_MANIFEST.entries.find((e) => e.id === id)
+  if (!entry) throw new Error(`hook manifest: no entry ${id}`)
+  return entry
+}
+
+/** This install's render context for a sub-agent hook: the project root and the burnt-in node binary. */
+function subRenderContext(agent: RenderContext['agent'] = {}): RenderContext {
+  return { root: PROJECT_ROOT, nodeBin: HOOK_NODE_BIN, agent }
+}
+
 // Idempotently wire the email-send-gate PreToolUse hook into a settings.json
 // object. The hook (not a deny rule) is the primary gate because it inspects
 // command CONTENT and is version/mode-independent. (An earlier version of this
@@ -1488,28 +1498,10 @@ export function emailGateCommandStale(preToolUse: unknown, expected: string): bo
 // contract.) Name-agnostic so a customer install
 // gates its own sub-agents (the caller's MAIN_AGENT_ID guard exempts the owner).
 export function injectEmailSendGate(existing: Record<string, unknown>, threadReply = false): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const base = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(base)) return
-  // The thread-reply capability rides on the hook COMMAND, so the grant lives
-  // in the same regenerated-on-every-spawn settings.json as the gate itself:
-  // revoking the capability removes the flag at the next spawn, and a manual
-  // settings edit can neither grant nor keep it.
-  const command = threadReply ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG]) : base
-  const entry = {
-    matcher: EMAIL_GATE_MATCHER,
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  // Drop any prior email-gate entry (respawn re-runs this) before re-adding, so
-  // the hook never accumulates duplicates; other PreToolUse entries are kept.
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('email-send-gate.mjs')),
-    entry,
-  ]
+  // The thread-reply capability rides on the hook COMMAND (--allow-thread-reply), so the grant lives in the
+  // same regenerated-on-every-spawn settings.json as the gate itself: revoking it removes the flag at the next
+  // spawn, and a manual settings edit can neither grant nor keep it.
+  injectSubHook(existing, 'email-send-gate', { threadReply })
 }
 
 // Claude Code runtime self-scheduling tool names denied for sub-agents (fail-
@@ -1914,24 +1906,9 @@ export function agentGetsGovernanceGates(name: string): boolean {
 // Cron* / RemoteTrigger + the Bash self-injection routes). Same shape + dedupe
 // discipline as injectEmailSendGate.
 export function injectSelfPaceGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    // Write|Edit|NotebookEdit are included so the gate actually fires on the
-    // native-file route to the self-schedule store (gateDecision blocks a Write
-    // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
-    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
-    entry,
-  ]
+  // The matcher (manifest) includes Write|Edit|NotebookEdit so the gate fires on the native-file route to the
+  // self-schedule store too (gateDecision blocks a Write to scheduled_tasks.json).
+  injectSubHook(existing, 'self-pace-gate')
 }
 
 // Idempotently wire the db-write-gate PreToolUse hook (APPROVALDBGATE1030): no
@@ -1941,17 +1918,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
 // reachable through the native file tools as well as Bash.
 export const DB_WRITE_GATE_MATCHER = 'Bash|Write|Edit|MultiEdit|NotebookEdit'
 export function injectDbWriteGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-gate.mjs'))
-  if (isUnsafeHookCommand(command)) return
-  const entry = { matcher: DB_WRITE_GATE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 }] }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('db-write-gate.mjs')),
-    entry,
-  ]
+  injectSubHook(existing, 'db-write-gate')
 }
 
 // Which agents are subject to the kanban-write gate: ONLY the hidden heartbeat
@@ -1970,21 +1937,7 @@ export function agentGetsKanbanWriteGate(name: string): boolean {
 // discipline as injectEmailSendGate. Bash-only matcher: the write routes are
 // sqlite3 / python / curl invocations, all of which arrive as Bash commands.
 export function injectKanbanWriteGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'kanban-write-gate.mjs'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: 'Bash',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('kanban-write-gate.mjs')),
-    entry,
-  ]
+  injectSubHook(existing, 'kanban-write-gate')
 }
 
 // Idempotently wire the digest-provenance-gate PreToolUse hook (validates the
@@ -1995,20 +1948,7 @@ export function injectKanbanWriteGate(existing: Record<string, unknown>): void {
 // run after the SKILL.md gate still shipped 0/4 accuracy + a fabricated owner
 // decision), so the rule lives here, in code.
 export function injectDigestProvenanceGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'digest-provenance-gate.mjs'))
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: 'Bash',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('digest-provenance-gate.mjs')),
-    entry,
-  ]
+  injectSubHook(existing, 'digest-provenance-gate')
 }
 
 // Idempotently wire the egress-gate PreToolUse hook (hard-blocks WebFetch to
@@ -2017,21 +1957,7 @@ export function injectDigestProvenanceGate(existing: Record<string, unknown>): v
 // that exfiltrates data via an outbound WebFetch, and the main agent faces the
 // same risk as sub-agents. Same dedupe shape as the other gate injectors.
 export function injectEgressGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: 'WebFetch',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('egress-gate.mjs')),
-    entry,
-  ]
+  injectSubHook(existing, 'egress-gate')
 }
 
 // Which agents get the Bash egress parser (EGRESSPARSER923): every sub-agent,
@@ -2052,21 +1978,7 @@ export function agentGetsBashEgressParser(name: string): boolean {
 // open. The dedupe key is the script basename, which deliberately does NOT
 // contain 'egress-gate.mjs' -- injectEgressGate's filter would drop it.
 export function injectBashEgressParser(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: 'Bash',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs')),
-    entry,
-  ]
+  injectSubHook(existing, 'bash-egress-parser')
 }
 
 // Which Telegram tools carry copyable text out of the install. `reply` is the
@@ -2099,25 +2011,9 @@ export function agentGetsTelegramCopyGate(name: string): boolean {
 // other matchers (Bash, the email tools) in the main agent's settings, and a
 // basename-only filter would silently delete those on any future pass.
 export function injectTelegramCopyGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: TELEGRAM_COPY_GATE_MATCHER,
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => {
-      const j = JSON.stringify(e)
-      if (!j.includes('outgoing-copy-gate.py')) return true
-      return (e as { matcher?: unknown })?.matcher !== TELEGRAM_COPY_GATE_MATCHER
-    }),
-    entry,
-  ]
+  injectSubHook(existing, 'outgoing-copy-gate', {
+    drop: (e) => JSON.stringify(e).includes('outgoing-copy-gate.py') && (e as { matcher?: unknown })?.matcher === TELEGRAM_COPY_GATE_MATCHER,
+  })
 }
 
 // The sender-role gate (scripts/hooks/sender-role-gate.py): in a turn that carries a chat message from a
@@ -2126,7 +2022,6 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
 // it has none, so an agent without one pays no hook at all. The table itself rides on the hook's command
 // line (--policy, see senderRoleGatePolicyArg): it is read at spawn from store/agent-sender-role-gates.json
 // only (GROMZOGATECONF1030 (c)), which no agent can write, never from the agent's own agent-config.json.
-const SENDER_ROLE_GATE_SCRIPT = 'sender-role-gate.py'
 
 // Sub-agents only here: the main agent's gate rides its session-only --settings file instead
 // (main-extra-plugins-settings.ts), because the sub-agents read the install-root project settings.
@@ -2145,21 +2040,7 @@ function isSenderRoleGateEntry(e: unknown): boolean {
 }
 
 export function injectSenderRoleGate(existing: Record<string, unknown>, policy: string): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', SENDER_ROLE_GATE_SCRIPT), ['--policy', policy])
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: '*',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !isSenderRoleGateEntry(e)),
-    entry,
-  ]
+  injectSubHook(existing, 'sender-role-gate', { senderRolePolicy: policy, drop: isSenderRoleGateEntry })
 }
 
 export function removeSenderRoleGate(existing: Record<string, unknown>): void {
@@ -2227,8 +2108,8 @@ export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 // and writes it again from the new PROJECT_ROOT, so it needs no entry in
 // INSTALL_ANCHORED_SUFFIXES.
 function webSearchEnvelopeCommand(): string {
-  const scriptPath = join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)
-  return `python3 "${scriptPath}"`
+  const hook = renderSubHook(subManifestEntry('browser-content-notice'), subRenderContext())
+  return (hook as { command: string }).command
 }
 
 // Removes OUR envelope hook only (a hook in a group, not the group: an
@@ -2329,21 +2210,7 @@ export function agentGetsChildClaudeGuard(name: string): boolean {
 // carries this script (whatever its matcher) and re-add the canonical one, so a
 // stale matcher can never leave a guard that silently never fires.
 export function injectChildClaudeGuard(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', CHILD_CLAUDE_GUARD_SCRIPT))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: 'Bash',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes(CHILD_CLAUDE_GUARD_SCRIPT)),
-    entry,
-  ]
+  injectSubHook(existing, 'child-claude-channel-guard')
 }
 
 // Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
@@ -2382,29 +2249,13 @@ export function ensureChildClaudeGuard(name: string): boolean {
 // --dangerously-skip-permissions, which bypasses allow/deny. Hooks run
 // regardless of permission mode, which is the whole reason the gate is a hook.
 export function injectDestructiveGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'destructive-gate.py'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: DESTRUCTIVE_GATE_MATCHER,
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  // Drop EVERY prior destructive-gate entry, whatever its matcher, then re-add
-  // the canonical one. This deliberately differs from injectTelegramCopyGate,
-  // which KEEPS its script under a foreign matcher because the main agent
-  // legitimately runs that one on Bash and on the email tools too. There is no
-  // such case here -- the main agent gets no destructive gate at all -- so a
-  // surviving stale-matcher entry would be a gate that never fires, and
-  // ensureGovernanceGateCommands (which treats a stale matcher as "needs work")
-  // would rewrite the file at every boot without ever converging.
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('destructive-gate.py')),
-    entry,
-  ]
+  // Drops EVERY prior destructive-gate entry, whatever its matcher (the default drop), then re-adds the
+  // canonical one. This deliberately differs from injectTelegramCopyGate, which KEEPS its script under a
+  // foreign matcher because the main agent legitimately runs that one on Bash and on the email tools too.
+  // There is no such case here, so a surviving stale-matcher entry would be a gate that never fires, and
+  // ensureGovernanceGateCommands (which treats a stale matcher as "needs work") would rewrite the file at
+  // every boot without ever converging.
+  injectSubHook(existing, 'destructive-gate')
 }
 
 // CREDGATE1003: the credential gate on a sub-agent's letter tools. Opt-in per
@@ -2426,21 +2277,7 @@ export function agentGetsCredentialGate(name: string, profile?: ProfileTemplate)
 // MCP tools, the Gmail connector). The hook itself exits 0 on anything that is
 // not a letter, so the wide matcher costs a no-op, not a deny.
 export function injectCredentialGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'credential-gate.py'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: EMAIL_GATE_MATCHER,
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('credential-gate.py')),
-    entry,
-  ]
+  injectSubHook(existing, 'credential-gate')
 }
 
 // D3(b): the second reviewer, opt-in per security profile (`"secondReviewer": true`), default OFF,
@@ -2468,19 +2305,7 @@ export function secondReviewerHookCommand(): string {
 }
 
 export function injectSecondReviewerGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = secondReviewerHookCommand()
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: SECOND_REVIEWER_MATCHER,
-    hooks: [{ type: 'command', command, timeout: SECOND_REVIEWER_HOOK_TIMEOUT_SEC }],
-  }
-  removeSecondReviewerGate(existing)
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [...prev, entry]
+  injectSubHook(existing, 'second-reviewer-gate', { clear: removeSecondReviewerGate, drop: () => false })
 }
 
 // Off again: a profile that no longer sets secondReviewer must not leave the hook behind. The route

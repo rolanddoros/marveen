@@ -283,8 +283,13 @@ describe('injectEgressGate (source-level checks)', () => {
   })
 
   it('egress-gate hook script is referenced with the WebFetch matcher', () => {
-    expect(scaffoldSrc).toContain("matcher: 'WebFetch'")
-    expect(scaffoldSrc).toContain('egress-gate.mjs')
+    // C3-3a: the matcher lives in the hook manifest now (injectSubHook renders it), so this is
+    // checked on the injector's output instead of a grep of agent-scaffold.ts.
+    const settings: Record<string, unknown> = {}
+    injectEgressGate(settings)
+    const ptu = (settings.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> }).PreToolUse
+    expect(ptu.map((g) => g.matcher)).toEqual(['WebFetch'])
+    expect(ptu[0].hooks[0].command).toContain('/scripts/hooks/egress-gate.mjs"')
   })
 
   it('injectEgressGate is called unconditionally in writeAgentSettingsFromProfile (no main-agent exemption)', () => {
