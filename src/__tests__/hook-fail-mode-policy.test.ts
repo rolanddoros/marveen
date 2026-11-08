@@ -21,6 +21,7 @@ import { HOOK_MANIFEST, specFor, type HookKind, type HookManifest, type HookMani
 import {
   FAIL_MODE_EXCEPTIONS,
   FAIL_MODE_POLICY,
+  WRAPPER_FAIL_MODE,
   closedButNotLocked,
   failModePolicyFindings,
   scopesOf,
@@ -120,7 +121,7 @@ describe('the policy checker catches each kind of departure', () => {
   })
 
   it('a hook that fails closed off PreToolUse', () => {
-    const m = withEntries(replace('staleness-guard', { kind: 'security-gate', wrapper: 'failClosedRun', failMode: 'closed', override: undefined }))
+    const m = withEntries(replace('staleness-guard', { kind: 'security-gate', wrapper: 'failClosed', failMode: 'closed', override: undefined }))
     expect(failModePolicyFindings(m)).toEqual([
       'staleness-guard (main): fails closed on UserPromptSubmit; only PreToolUse may fail closed',
       'staleness-guard (sub): fails closed on UserPromptSubmit; only PreToolUse may fail closed',
@@ -128,16 +129,37 @@ describe('the policy checker catches each kind of departure', () => {
   })
 
   it('closed while frozen is for the kill switch only, and the kill switch is closed only that way', () => {
-    const gate = byId('egress-gate')
-    const frozenGate = withEntries(replace('egress-gate', { wrapper: 'failOpenExecClosedWhenFrozen', override: { sub: gate.override!.sub } }))
+    const frozenGate = withEntries(replace('egress-gate', { wrapper: 'failOpenExecClosedWhenFrozen', override: { sub: { wrapper: 'failClosed' } } }))
     expect(failModePolicyFindings(frozenGate)).toEqual([
       'egress-gate (main): wrapper failOpenExecClosedWhenFrozen is closed only while frozen, which only a kill-switch may be',
     ])
     const freeze = byId('fleet-freeze-gate')
-    const alwaysClosed = withEntries(replace('fleet-freeze-gate', { wrapper: 'failClosedRun', override: freeze.override }))
+    const alwaysClosed = withEntries(replace('fleet-freeze-gate', { wrapper: 'failClosed', override: freeze.override }))
     expect(failModePolicyFindings(alwaysClosed)).toEqual([
-      'fleet-freeze-gate (main): a kill-switch fails closed while frozen, but wrapper failClosedRun is not a closed-while-frozen spelling',
+      'fleet-freeze-gate (main): a kill-switch fails closed while frozen, but wrapper failClosed is not a closed-while-frozen spelling',
     ])
+  })
+
+  // C3-5: one wrapper spelling per fail mode, so the wrapper and the failMode recorded next to it cannot disagree.
+  it('every wrapper spells its own fail mode: an open entry on failClosed, a closed one on failOpenExec, a prompt on either', () => {
+    expect(Object.entries(WRAPPER_FAIL_MODE)).toEqual([
+      ['failOpenExec', 'open'], ['failClosed', 'closed'], ['failOpenExecClosedWhenFrozen', 'closed'], ['agentPrompt', 'advisory'],
+    ])
+    const openOnClosed = withEntries(replace('staleness-guard', { wrapper: 'failClosed' }))
+    expect(failModePolicyFindings(openOnClosed)).toEqual([
+      'staleness-guard (main): wrapper failClosed does not spell fail mode open',
+      'staleness-guard (sub): wrapper failClosed does not spell fail mode open',
+    ])
+    const closedOnOpen = withEntries(replace('db-write-gate', { wrapper: 'failOpenExec' }))
+    expect(failModePolicyFindings(closedOnOpen)).toEqual([
+      'db-write-gate (main): wrapper failOpenExec does not spell fail mode closed',
+      'db-write-gate (sub): wrapper failOpenExec does not spell fail mode closed',
+    ])
+    const promptAsCommand = withEntries(replace('precompact', { wrapper: 'failOpenExec' }))
+    expect(failModePolicyFindings(promptAsCommand)).toEqual(['precompact (sub): wrapper failOpenExec does not spell fail mode advisory'])
+    // A scope override of the wrapper alone is caught in that scope only.
+    const subOnly = withEntries(replace('token-argv-guard', { override: { sub: { wrapper: 'failClosed' } } }))
+    expect(failModePolicyFindings(subOnly)).toEqual(['token-argv-guard (sub): wrapper failClosed does not spell fail mode open'])
   })
 })
 

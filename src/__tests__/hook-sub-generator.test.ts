@@ -16,6 +16,7 @@ import { HOOK_NODE_BIN, injectWebSearchEnvelope, isUnsafeHookCommand } from '../
 import { PROJECT_ROOT } from '../config.js'
 import { HOOK_MANIFEST, renderHooks, type RenderContext } from '../web/hooks/manifest.js'
 import { generateSubHooks, type SubHookInputs } from '../web/hooks/sub-generator.js'
+import { pairRewraps, type PlacedHook } from '../web/hooks/dry-run.js'
 
 type Hook = Record<string, unknown>
 type Group = { matcher?: string; hooks: Hook[] }
@@ -44,6 +45,18 @@ const inputs = (over: Partial<SubHookInputs> = {}): SubHookInputs => ({
 })
 const flat = (b: Record<string, unknown>): string[] => Object.entries(b).flatMap(([event, groups]) => (groups as Group[])
   .flatMap((g) => g.hooks.map((h) => { const o = { event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), ...h }; return JSON.stringify(o, Object.keys(o).sort()) }))).sort()
+/** The settings dry-run's own comparison: the multiset difference, then its one-to-one rewrap pairing. */
+function rewrapDiff(before: Record<string, unknown>, after: Record<string, unknown>): ReturnType<typeof pairRewraps> {
+  const placed = (b: Record<string, unknown>): PlacedHook[] => Object.entries(b).flatMap(([event, groups]) => (groups as Group[])
+    .flatMap((g) => g.hooks.map((hook) => ({ event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), hook }))))
+  const key = (p: PlacedHook) => { const o = { event: p.event, matcher: p.matcher, ...p.hook }; return JSON.stringify(o, Object.keys(o).sort()) }
+  const minus = (xs: PlacedHook[], ys: PlacedHook[]) => {
+    const left = ys.map(key)
+    return xs.filter((x) => { const i = left.indexOf(key(x)); if (i < 0) return true; left.splice(i, 1); return false })
+  }
+  const [b, a] = [placed(before), placed(after)]
+  return pairRewraps(minus(b, a), minus(a, b))
+}
 const json = (x: unknown) => JSON.stringify(x, null, 2)
 const withoutPlaywright = (b: Record<string, unknown>) => JSON.parse(JSON.stringify(b, (_k, v) => (Array.isArray(v) ? v.filter((g) => g?.matcher !== PLAYWRIGHT) : v)))
 
@@ -61,10 +74,13 @@ describe('the 12 live sub-agent hooks blocks (fixture)', () => {
   })
 
   for (const n of names) {
-    it(`${n}: multiset unchanged, playwright kept as is, manifest layout, fixpoint`, () => {
+    // The fixture is the pre-C3-5 shape: the generator's output differs from it only by the window's 32 rewraps
+    // (plan-c3-5.md 3a), nothing added or dropped.
+    it(`${n}: rewrap only (32), playwright kept as is, manifest layout, fixpoint`, () => {
       const current = onThisCheckout(rebuild(n))
       const plan = generateSubHooks(current, inputs())
-      expect(flat(plan.hooks)).toEqual(flat(current))
+      const r = rewrapDiff(current, plan.hooks)
+      expect([r.pairs.length, r.dropped.length, r.added.length]).toEqual([32, 0, 0])
       const pw = (current.PostToolUse ?? []).filter((g) => g.matcher === PLAYWRIGHT)
       expect(plan.kept.map((k) => k.matcher)).toEqual(pw.map(() => PLAYWRIGHT))
       expect((plan.hooks.PostToolUse ?? []).slice(-pw.length || undefined).filter((g) => g.matcher === PLAYWRIGHT)).toEqual(pw)
@@ -164,8 +180,9 @@ describe('the rules the generator inherits', () => {
     const b = base()
     b.PostToolUse.push({ matcher: PLAYWRIGHT, hooks: [{ type: 'command', command: `python3 ${PROJECT_ROOT}/scripts/hooks/browser-content-notice.py` }] })
     const out = gen(b, { agent: { browser: true } })
+    const p = `${PROJECT_ROOT}/scripts/hooks/browser-content-notice.py`
     expect(out.PostToolUse.filter((g) => g.matcher === PLAYWRIGHT)).toEqual([
-      { matcher: PLAYWRIGHT, hooks: [{ type: 'command', command: `python3 ${PROJECT_ROOT}/scripts/hooks/browser-content-notice.py`, timeout: 10 }] },
+      { matcher: PLAYWRIGHT, hooks: [{ type: 'command', command: `bash -c '[ -f "${p}" ] && exec python3 "${p}"; exit 0'`, timeout: 10 }] },
     ])
   })
 

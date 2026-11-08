@@ -21,9 +21,9 @@
 // block from it yet (C3-3b). It imports nothing at runtime on purpose, so
 // agent-scaffold.ts imports it without a cycle.
 //
-// Recorded as found, not fixed: every wrapper spelling, timeout and fail mode
-// below is what the settings carry today, including the main/sub differences
-// the audit lists. Normalising them is C3-5. Which fail mode each hook SHOULD
+// Normalised in C3-5: one wrapper spelling per fail mode in both scopes
+// (WrapperKind), and one timeout per hook; the main/sub differences left are
+// matchers and the two named fail-mode exceptions. Which fail mode each hook SHOULD
 // have is the policy in docs/hook-fail-modes.md (C3-2): every entry carries its
 // `kind`, and src/__tests__/hook-fail-mode-policy.test.ts checks the recorded
 // failMode against the policy of that kind, with a named exception list.
@@ -54,7 +54,7 @@ export type HookScope = 'main' | 'sub'
  * but its wrapper lets a missing script through while the fleet runs and
  * blocks only while store/fleet-freeze.json exists, the one state in which
  * the gate stops anything. So `closed` there means "closed while frozen", not
- * the failClosedRun behaviour (any broken gate blocks, always).
+ * the failClosed behaviour (any broken gate blocks, always).
  */
 export type FailMode = 'closed' | 'open' | 'advisory'
 
@@ -83,43 +83,29 @@ export type HookKind =
   | 'prompt'
 
 /**
- * The command spellings in use today. Each one is reproduced byte for byte by
- * renderHooks; `P` is the script path, `D` the gate deadline (timeout - 2, at
- * least 1), the interpreter follows the script extension (.py python3,
- * .mjs node, .sh bash).
- *
- * Main (tracked .claude/settings.json, P = "$CLAUDE_PROJECT_DIR/<script>", quoted):
- *   failOpenExec                  bash -c '[ -f P ] && exec <interp> P [args]; exit 0'
+ * One command spelling per fail mode, the same in both scopes since C3-5
+ * (fail-mode-policy.ts WRAPPER_FAIL_MODE ties each to its mode). `P` is the
+ * script path, quoted in every spelling: "$CLAUDE_PROJECT_DIR/<script>" on the
+ * main agent, the absolute path on a sub-agent. `D` is the gate deadline
+ * (timeout - 2, at least 1); the interpreter follows the script extension
+ * (.py python3, .mjs node, .sh bash).
+ *   failOpenExec                  bash -c '[ -f "P" ] && exec <interp> "P" [args]; exit 0'
+ *                                 a missing script exits 0, a missing interpreter (127) or a
+ *                                 crash is a non-blocking error, a verdict of 2 passes through
+ *   failClosed                    an interpreter probe that blocks with a message naming the fix,
+ *                                 then the run under `timeout -k 1 D`; any status other than 0 or
+ *                                 2 becomes 2. The probe: `command -v python3` / `command -v node`
+ *                                 (PATH), on a sub-agent's node gate `test -x <HOOK_NODE_BIN>`
  *   failOpenExecClosedWhenFrozen  failOpenExec, but a missing script blocks while
- *                                 store/fleet-freeze.json exists (fleet-freeze-gate only)
- *   failOpenNodeProbe             bash -c: skip when the script or node is missing, run under
- *                                 `timeout`, pass exit 2 through, everything else exits 0
- *   failClosedRun                 run under `timeout`; any status other than 0 or 2 becomes 2
- *   failClosedRunNodeProbe        `command -v node` probe that blocks, then failClosedRun
- *
- * Sub (agents/<n>/.claude/settings.json, absolute P):
- *   failOpenExecUnquoted          failOpenExec with an unquoted absolute path (template)
- *   bare / bareQuoted             `python3 P` with no wrapper, path unquoted / quoted; only on
- *                                 events where no exit status blocks a call (see FailMode below)
- *   failClosedPythonProbe         pythonHookCommand(): `command -v python3` probe + failClosedRun
- *   failClosedNodeBin             hookCommand(): `test -x <HOOK_NODE_BIN>` probe + failClosedRun
+ *                                 store/fleet-freeze.json exists (the main fleet-freeze-gate only)
  *   agentPrompt                   a prompt-type hook (`type: agent`), no command
- *
- * `bare` is recorded `open`: a crash (1) or a missing interpreter (127) does not
- * block, and the 2 python3 gives for a missing script reaches only events that
- * cannot block a call (SessionStart, SessionEnd, PostToolUse after the tool ran).
+ * The retired spellings (C3-5) are listed in spellings.ts, so the settings
+ * dry-run still classifies a file written before.
  */
 export type WrapperKind =
   | 'failOpenExec'
+  | 'failClosed'
   | 'failOpenExecClosedWhenFrozen'
-  | 'failOpenNodeProbe'
-  | 'failClosedRun'
-  | 'failClosedRunNodeProbe'
-  | 'failOpenExecUnquoted'
-  | 'bare'
-  | 'bareQuoted'
-  | 'failClosedPythonProbe'
-  | 'failClosedNodeBin'
   | 'agentPrompt'
 
 /** The profile switches that opt a sub-agent into a gate (templates/profiles/*.json). */
@@ -285,19 +271,16 @@ const SUB_EMAIL_MATCHER = ['Bash', ...MAIN_MAIL_MATCHERS].join('|')
 
 // ---------------------------------------------------------------------------
 // The entries. Scope 'both' where the main agent and the sub-agents carry the
-// same script under the same event; `override.sub` is then the recorded
-// difference (C3-5 removes those, here every one stays as found). Main: 41
-// entries, 56 settings entries (three hooks sit under more than one event, the
-// two mail gates under several matchers). Sub: 43 entries, 36 of them
-// unconditional (39 settings entries on every sub-agent today), 7 behind a
+// same script under the same event; `override.sub` is then a recorded
+// difference (since C3-5 only matchers and the two named fail-mode exceptions).
+// Main: 41 entries, 56 settings entries (three hooks sit under more than one
+// event, the two mail gates under several matchers). Sub: 43 entries, 36 of
+// them unconditional (39 settings entries on every sub-agent), 7 behind a
 // profile switch or an agent property.
 
 const open = { wrapper: 'failOpenExec', failMode: 'open' } as const
-/** The template's spelling of a fail-open hook on the sub-agents. */
-const subOpen = { sub: { wrapper: 'failOpenExecUnquoted' } } as const
-/** hookCommand() / pythonHookCommand() gates, sub-agents only. */
-const nodeGate = { scope: 'sub', kind: 'security-gate', timeout: 10, wrapper: 'failClosedNodeBin', failMode: 'closed' } as const
-const pythonGate = { scope: 'sub', kind: 'security-gate', timeout: 10, wrapper: 'failClosedPythonProbe', failMode: 'closed' } as const
+/** hookCommand() / pythonHookCommand() gates, sub-agents only (the probe follows the interpreter). */
+const subGate = { scope: 'sub', kind: 'security-gate', timeout: 10, wrapper: 'failClosed', failMode: 'closed' } as const
 
 export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   // UserPromptSubmit
@@ -305,54 +288,54 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
     sidecar: { purpose: 'Records every inbound channel message into the conversation ledger before the agent processes it.' } },
   { id: 'inbox-drain', kind: 'directive', script: 'scripts/hooks/inbox-drain.py', scope: 'main', events: ['UserPromptSubmit'], timeout: 15, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: PULL the MAIN agent\'s inter-agent inbox into context.' } },
-  { id: 'telegram-reply-directive', kind: 'directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+  { id: 'telegram-reply-directive', kind: 'directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: inject a reply-tool directive whenever an inbound Telegram TEXT message arrives.' } },
-  { id: 'provenance-gate', kind: 'directive', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+  { id: 'provenance-gate', kind: 'directive', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open,
     sidecar: { purpose: 'Flags, never blocks, a prompt with no provenance envelope (channel, scheduled task, peer), i.e. text injected straight into the pane, that asks for an irreversible or outward-facing operation.' } },
-  { id: 'staleness-guard', kind: 'directive', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+  { id: 'staleness-guard', kind: 'directive', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open,
     sidecar: { purpose: 'Warns when an inbound channel message is processed long after it was sent (lagging poller, re-delivery after restart).' } },
-  { id: 'memory-lookup-nudge', kind: 'directive', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open, override: subOpen,
+  { id: 'memory-lookup-nudge', kind: 'directive', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: on a human message, remind the agent to look in its memory.' } },
-  { id: 'channel-inbox-drain', kind: 'directive', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open, override: subOpen,
+  { id: 'channel-inbox-drain', kind: 'directive', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: drain sub-agent Telegram channel notifications.' } },
-  { id: 'voice-reply-directive', kind: 'directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', timeout: 60 } },
+  { id: 'voice-reply-directive', kind: 'directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: voice-reply directive injection + server-side STT.' } },
-  { id: 'telegram_progress', kind: 'handler', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen,
+  { id: 'telegram_progress', kind: 'handler', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open,
     sidecar: { purpose: 'Posts the Telegram "processing" indicator when an inbound message starts a turn.' } },
-  { id: 'slack_progress', kind: 'handler', script: 'scripts/hooks/slack_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open, override: subOpen,
+  { id: 'slack_progress', kind: 'handler', script: 'scripts/hooks/slack_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open,
     sidecar: { purpose: 'Posts the Slack "processing" indicator when an inbound message starts a turn.' } },
-  { id: 'marveen-commands', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 45, ...open, override: subOpen,
+  { id: 'marveen-commands', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 45, ...open,
     sidecar: { purpose: 'Answers the owner\'s slash commands without a model turn.' } },
-  { id: 'taskstate-stub', kind: 'capture', script: 'scripts/hooks/taskstate-stub.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+  { id: 'taskstate-stub', kind: 'capture', script: 'scripts/hooks/taskstate-stub.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: write a minimal task-state stub when a prompt arrives and no live record exists for the agent.' } },
-  { id: 'directive-verify', kind: 'directive', script: 'scripts/hooks/directive-verify.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
+  { id: 'directive-verify', kind: 'directive', script: 'scripts/hooks/directive-verify.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: verify a [SYSTEM-DIREKTIVA msg_id:N] directive before the agent acts on it.' } },
 
   // PostToolUse / PostToolUseFailure
   { id: 'ledger-outbound', kind: 'capture', script: 'scripts/hooks/ledger-outbound.py', scope: 'main', events: ['PostToolUse'], matcher: 'mcp__plugin_[^_]+_[^_]+__reply', timeout: 15, ...open,
     sidecar: { purpose: 'Records the text of every outbound channel reply into the conversation ledger.' } },
-  { id: 'tool-log-capture', kind: 'capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 5, ...open, override: { sub: { wrapper: 'failOpenExecUnquoted', matcher: '*', timeout: 10 } },
+  { id: 'tool-log-capture', kind: 'capture', script: 'scripts/hooks/tool-log-capture.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure'], timeout: 10, ...open, override: { sub: { matcher: '*' } },
     sidecar: { purpose: 'PostToolUse + PostToolUseFailure hook: log every tool call to /api/tool-log for the activity dashboard.' } },
   { id: 'persona-change-notify', kind: 'handler', script: 'scripts/hooks/persona-change-notify.py', scope: 'main', events: ['PostToolUse'], timeout: 15, ...open,
     sidecar: { purpose: 'Notifies the owner when an agent\'s persona file (CLAUDE.md / SOUL.md) is changed.' } },
-  { id: 'telegram_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open, override: subOpen,
+  { id: 'telegram_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'telegram.*reply', timeout: 15, ...open,
     sidecar: { purpose: 'Clears the Telegram progress placeholder as soon as a reply is actually sent.' } },
   // Sub: the managed WebSearch envelope (injectWebSearchEnvelope); the script under any other matcher is the
   // operator's (the generator keeps it, and skips this entry where such a group already covers both tools).
-  { id: 'browser-content-notice', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, override: { sub: { wrapper: 'bareQuoted' } }, ownMatchers: ['WebSearch|WebFetch', 'WebSearch', 'WebFetch'],
+  { id: 'browser-content-notice', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'both', events: ['PostToolUse'], matcher: 'WebSearch|WebFetch', timeout: 10, ...open, ownMatchers: ['WebSearch|WebFetch', 'WebSearch', 'WebFetch'],
     sidecar: { purpose: 'PostToolUse hook: envelope browser / search payloads as untrusted content.' } },
   // The Playwright MCP's content (skill playwright-mcp-agens), for an agent with the `browser` capability.
   // Before C3-3 it was added by hand, on five sub-agents (measured 2026-11-07 23:17 and 2026-11-08 01:2x: two
   // without a timeout, three with 10). Without the capability the generator keeps such a hand-added copy as it is.
   {
     id: 'browser-content-notice-playwright', kind: 'directive', script: 'scripts/hooks/browser-content-notice.py', scope: 'sub', events: ['PostToolUse'],
-    matcher: 'mcp__playwright__browser_.*', timeout: 10, wrapper: 'bare', failMode: 'open', agentFlag: 'browser', ownMatchers: ['mcp__playwright__browser_.*'],
+    matcher: 'mcp__playwright__browser_.*', timeout: 10, ...open, agentFlag: 'browser', ownMatchers: ['mcp__playwright__browser_.*'],
   },
-  { id: 'slack_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open, override: subOpen,
+  { id: 'slack_progress_reply_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_reply_clear.py', scope: 'both', events: ['PostToolUse'], matcher: 'slack.*reply', timeout: 15, ...open,
     sidecar: { purpose: 'Clears the Slack progress placeholder as soon as a reply is actually sent.' } },
-  { id: 'skill-usage-capture', kind: 'capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'both', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open, override: subOpen,
+  { id: 'skill-usage-capture', kind: 'capture', script: 'scripts/hooks/skill-usage-capture.py', scope: 'both', events: ['PostToolUse'], matcher: 'Skill|Read', timeout: 10, ...open,
     sidecar: { purpose: 'PostToolUse hook: log skill usage to the persistent skill_usage table.' } },
-  { id: 'memory-frontmatter-bash-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen,
+  { id: 'memory-frontmatter-bash-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-bash-gate.py', scope: 'both', events: ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'], matcher: 'Bash', timeout: 10, ...open,
     sidecar: {
       purpose: {
         PostToolUse: 'Memory frontmatter check for memory files written from Bash (after the write).',
@@ -364,9 +347,9 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   // PreToolUse
   // Main: fail-open while the fleet runs; a missing script blocks only while
   // frozen, the one state in which this gate stops anything. Sub: plain fail-open.
-  { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExecUnquoted', failMode: 'open' } },
+  { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExec', failMode: 'open' } },
     sidecar: { purpose: 'PreToolUse hook (matcher "*"), KILLSWITCH1022: while the fleet is frozen (store/fleet-freeze.json exists), every tool call is denied with exit 2.' } },
-  { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosedRun', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT, timeout: 10, wrapper: 'failClosedPythonProbe' } }, ownMatchers: [TELEGRAM_REPLY_EDIT],
+  { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosed', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT } }, ownMatchers: [TELEGRAM_REPLY_EDIT],
     sidecar: {
       purpose: [
         'Copy QA gate on outgoing email sent from Bash.',
@@ -380,7 +363,7 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
       ],
       labels: [null, 'send-email', 'manage-email', 'gmail', 'draft-email', 'mail-tool-family', 'telegram-reply', 'discord-reply'],
     } },
-  { id: 'email-approval-gate', kind: 'security-gate', script: 'scripts/hooks/email-approval-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS], timeout: 10, wrapper: 'failClosedRun', failMode: 'closed',
+  { id: 'email-approval-gate', kind: 'security-gate', script: 'scripts/hooks/email-approval-gate.py', scope: 'main', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS], timeout: 10, wrapper: 'failClosed', failMode: 'closed',
     sidecar: {
       purpose: [
         'Level-aware approval gate on outgoing email sent from Bash (EMAILKAPU901).',
@@ -392,38 +375,38 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
       ],
       labels: [null, 'send-email', 'manage-email', 'gmail', 'draft-email', 'mail-tool-family'],
     } },
-  { id: 'channel-image-resize', kind: 'handler', script: 'scripts/hooks/channel-image-resize.sh', scope: 'both', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open, override: subOpen,
+  { id: 'channel-image-resize', kind: 'handler', script: 'scripts/hooks/channel-image-resize.sh', scope: 'both', events: ['PreToolUse'], matcher: 'Read', timeout: 15, ...open,
     sidecar: { purpose: 'PreToolUse hook: auto-resize channel-received large images before Read.' } },
-  { id: 'egress-gate', kind: 'security-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } },
+  { id: 'egress-gate', kind: 'security-gate', script: 'scripts/hooks/egress-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'WebFetch', timeout: 10, wrapper: 'failClosed', failMode: 'closed',
     sidecar: { purpose: 'PreToolUse hook: WebFetch egress allowlist enforcement.' } },
-  { id: 'memory-frontmatter-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'both', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open, override: subOpen,
+  { id: 'memory-frontmatter-gate', kind: 'guard', script: 'scripts/hooks/memory-frontmatter-gate.py', scope: 'both', events: ['PreToolUse'], matcher: 'Write|Edit|MultiEdit', timeout: 10, ...open,
     sidecar: { purpose: 'Blocks Write/Edit/MultiEdit on memory files whose frontmatter is missing or malformed.' } },
-  { id: 'db-write-gate', kind: 'security-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosedRunNodeProbe', failMode: 'closed', override: { sub: { wrapper: 'failClosedNodeBin' } },
+  { id: 'db-write-gate', kind: 'security-gate', script: 'scripts/hooks/db-write-gate.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit', timeout: 10, wrapper: 'failClosed', failMode: 'closed',
     sidecar: { purpose: 'PreToolUse gate: agent writes to the dashboard\'s SECURITY surface (APPROVALDBGATE1030), for EVERY agent, the main agent included.' } },
-  { id: 'shell-rescan-guard', kind: 'guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen,
+  { id: 'shell-rescan-guard', kind: 'guard', script: 'scripts/hooks/shell-rescan-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open,
     sidecar: { purpose: 'PreToolUse gate: refuse a Bash command whose own TEXT will be re-scanned by the shell, because that is how prose becomes an executed command.' } },
-  { id: 'child-claude-channel-guard', kind: 'guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, wrapper: 'failOpenNodeProbe', failMode: 'open', override: { sub: { wrapper: 'failClosedNodeBin', failMode: 'closed' } },
+  { id: 'child-claude-channel-guard', kind: 'guard', script: 'scripts/hooks/child-claude-channel-guard.mjs', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: { sub: { wrapper: 'failClosed', failMode: 'closed' } },
     sidecar: { purpose: 'PreToolUse hook (matcher: Bash): a session whose Telegram poller can be killed must not start a child `claude` that would kill it (CHILDCLAUDEPOLLER1010).' } },
-  { id: 'token-argv-guard', kind: 'guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open, override: subOpen,
+  { id: 'token-argv-guard', kind: 'guard', script: 'scripts/hooks/token-argv-guard.py', scope: 'both', events: ['PreToolUse'], matcher: 'Bash', timeout: 10, ...open,
     sidecar: { purpose: 'PreToolUse hook (matcher: Bash): warn when a command puts the dashboard token on a process argv.' } },
-  { id: 'email-send-gate', script: 'scripts/email-send-gate.mjs', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, threadReplyArgs: ['--allow-thread-reply'], ...nodeGate },
-  { id: 'self-pace-gate', script: 'scripts/self-pace-gate.mjs', events: ['PreToolUse'], matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit', ...nodeGate },
-  { id: 'kanban-write-gate', script: 'scripts/kanban-write-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
-  { id: 'digest-provenance-gate', script: 'scripts/digest-provenance-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...nodeGate },
-  { id: 'sender-role-gate', script: 'scripts/hooks/sender-role-gate.py', events: ['PreToolUse'], matcher: '*', args: ['--policy'], agentFlag: 'senderRolePolicy', offRemoves: true, ...pythonGate },
-  { id: 'destructive-gate', script: 'scripts/hooks/destructive-gate.py', events: ['PreToolUse'], matcher: 'Bash|Read|Edit|Write|NotebookEdit', profileFlag: 'destructiveGate', ...pythonGate },
-  { id: 'credential-gate', script: 'scripts/hooks/credential-gate.py', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, profileFlag: 'credentialGate', ...pythonGate },
-  { id: 'second-reviewer-gate', script: 'scripts/hooks/second-reviewer-gate.py', events: ['PreToolUse'], matcher: 'Bash|mcp__.*', profileFlag: 'secondReviewer', offRemoves: true, ...pythonGate, timeout: 180 },
-  { id: 'bash-egress-parser', script: 'scripts/hooks/bash-egress-parser.mjs', events: ['PreToolUse'], matcher: 'Bash', ...nodeGate },
+  { id: 'email-send-gate', script: 'scripts/email-send-gate.mjs', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, threadReplyArgs: ['--allow-thread-reply'], ...subGate },
+  { id: 'self-pace-gate', script: 'scripts/self-pace-gate.mjs', events: ['PreToolUse'], matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit', ...subGate },
+  { id: 'kanban-write-gate', script: 'scripts/kanban-write-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...subGate },
+  { id: 'digest-provenance-gate', script: 'scripts/digest-provenance-gate.mjs', events: ['PreToolUse'], matcher: 'Bash', agentFlag: 'heartbeat', ...subGate },
+  { id: 'sender-role-gate', script: 'scripts/hooks/sender-role-gate.py', events: ['PreToolUse'], matcher: '*', args: ['--policy'], agentFlag: 'senderRolePolicy', offRemoves: true, ...subGate },
+  { id: 'destructive-gate', script: 'scripts/hooks/destructive-gate.py', events: ['PreToolUse'], matcher: 'Bash|Read|Edit|Write|NotebookEdit', profileFlag: 'destructiveGate', ...subGate },
+  { id: 'credential-gate', script: 'scripts/hooks/credential-gate.py', events: ['PreToolUse'], matcher: SUB_EMAIL_MATCHER, profileFlag: 'credentialGate', ...subGate },
+  { id: 'second-reviewer-gate', script: 'scripts/hooks/second-reviewer-gate.py', events: ['PreToolUse'], matcher: 'Bash|mcp__.*', profileFlag: 'secondReviewer', offRemoves: true, ...subGate, timeout: 180 },
+  { id: 'bash-egress-parser', script: 'scripts/hooks/bash-egress-parser.mjs', events: ['PreToolUse'], matcher: 'Bash', ...subGate },
 
   // Stop / StopFailure
   { id: 'telegram-reply-guard', kind: 'enforcer', script: 'scripts/hooks/telegram-reply-guard.py', scope: 'main', events: ['Stop'], timeout: 10, ...open,
     sidecar: { purpose: 'Stop hook: ENFORCE that an inbound Telegram message is answered through the reply tool before the turn ends.' } },
-  { id: 'telegram_progress_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen,
+  { id: 'telegram_progress_clear', kind: 'handler', script: 'scripts/hooks/telegram_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open,
     sidecar: { purpose: 'At turn end: clears the Telegram progress placeholder and owns the per-session progress state.' } },
-  { id: 'slack_progress_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open, override: subOpen,
+  { id: 'slack_progress_clear', kind: 'handler', script: 'scripts/hooks/slack_progress_clear.py', scope: 'both', events: ['Stop'], timeout: 15, ...open,
     sidecar: { purpose: 'At turn end: clears the Slack progress placeholder and owns the per-session progress state.' } },
-  { id: 'marveen-commands-stop', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['Stop'], args: ['--stop'], timeout: 10, ...open, override: subOpen,
+  { id: 'marveen-commands-stop', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'both', events: ['Stop'], args: ['--stop'], timeout: 10, ...open,
     sidecar: { purpose: 'Slash-command bookkeeping at turn end (--stop).' } },
   { id: 'ledger-turn-failure', kind: 'capture', script: 'scripts/hooks/ledger-turn-failure.py', scope: 'main', events: ['StopFailure'], timeout: 10, ...open,
     sidecar: { purpose: 'StopFailure hook: leave a trace when a turn that owed a channel reply died on an API error.' } },
@@ -431,13 +414,13 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   // SessionStart / SessionEnd / PreCompact
   { id: 'ledger-replay', kind: 'directive', script: 'scripts/hooks/ledger-replay.py', scope: 'main', events: ['SessionStart'], matcher: 'startup|resume|clear', timeout: 15, ...open,
     sidecar: { purpose: 'Replays the recent conversation ledger into a fresh, resumed or cleared session.' } },
-  { id: 'taskstate-replay', kind: 'directive', script: 'scripts/hooks/taskstate-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } },
+  { id: 'taskstate-replay', kind: 'directive', script: 'scripts/hooks/taskstate-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'compact|resume|clear', timeout: 15, ...open,
     sidecar: { purpose: 'Re-injects a sub-agent\'s in-flight TASK-STATE after a compact, resume or respawn.' } },
-  { id: 'clear-replay', kind: 'directive', script: 'scripts/hooks/clear-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open, override: { sub: { wrapper: 'bare' } },
+  { id: 'clear-replay', kind: 'directive', script: 'scripts/hooks/clear-replay.py', scope: 'both', events: ['SessionStart'], matcher: 'clear', timeout: 15, ...open,
     sidecar: { purpose: 'SessionStart hook: hand the cleared thread to the fresh session.' } },
   { id: 'marveen-commands-session-start', kind: 'handler', script: 'scripts/hooks/marveen-commands.py', scope: 'main', events: ['SessionStart'], args: ['--session-start'], timeout: 10, ...open,
     sidecar: { purpose: 'Slash-command bookkeeping at session start (--session-start).' } },
-  { id: 'clear-capture', kind: 'capture', script: 'scripts/hooks/clear-capture.py', scope: 'both', events: ['SessionEnd'], timeout: 15, ...open, override: { sub: { wrapper: 'bare' } },
+  { id: 'clear-capture', kind: 'capture', script: 'scripts/hooks/clear-capture.py', scope: 'both', events: ['SessionEnd'], timeout: 15, ...open,
     sidecar: { purpose: 'SessionEnd hook: save the thread a /clear is about to erase.' } },
   // The prompt text (about 3 KB, from templates/settings.json.template) is passed in by the caller.
   { id: 'precompact', kind: 'prompt', script: 'precompact', scope: 'sub', events: ['PreCompact'], matcher: 'auto', timeout: 180, wrapper: 'agentPrompt', failMode: 'advisory' },
@@ -508,17 +491,15 @@ export const HOOK_MANIFEST: HookManifest = {
 // The gate builders of agent-scaffold.ts (hookCommand, pythonHookCommand,
 // failClosedGateRun, gateDeadlineSec) are the functions below since C3-3a: one
 // implementation, imported there (this module imports nothing at runtime, so
-// there is no cycle). The template's fail-open spelling and the main agent's
-// hand-written wrappers are still spelled here a second time; the deep-equal
-// tests against the template seed and the tracked main settings keep them equal.
+// there is no cycle). Both scopes render through hookCommandFor (C3-5); the
+// tracked main settings are generated from it (main-artifact.ts).
 
 const SCRIPT_RE = /^scripts\/[A-Za-z0-9_./-]+\.(py|mjs|sh)$/
 const ARG_RE = /^[A-Za-z0-9_=.:-]+$/
 /**
- * A root where it lands UNQUOTED: the main root (inside a single-quoted
- * `bash -c '...'` and double quotes) and a sub root under the template's
- * fail-open wrappers. Plain characters only, so a quote, `$`, backtick,
- * backslash or space never reaches the shell.
+ * A root inside a single-quoted `bash -c '...'` (in double quotes there): the
+ * main root and a sub root under the fail-open wrapper. Plain characters only,
+ * so a quote, `$`, backtick, backslash or space never reaches the shell.
  */
 const PLAIN_ABS_PATH_RE = /^(?:\/[A-Za-z0-9_.+-]+)+$/
 /**
@@ -536,7 +517,9 @@ const FLEET_FREEZE_MARKER = 'store/fleet-freeze.json'
 const FLEET_FREEZE_MISSING_MSG = 'fleet-freeze-gate (fail-closed while frozen): the gate script is missing and '
   + 'store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh '
   + 'or unfreeze from the dashboard.'
-const MAIN_NODE_MISSING_MSG = 'governance-kapu: node interpreter hianyzik, a kapu BLOKKOL'
+// One message template for a missing interpreter: what is missing, that the gate blocks, the fix (C3-5).
+const MAIN_NODE_MISSING_MSG = 'governance-kapu: a hook interpretere nem talalhato (node nincs a PATH-on). A kapu ezert '
+  + 'BLOKKOL. Javitas: telepitsd a node-ot, vagy inditsd ujra a dashboardot.'
 const SUB_PYTHON_MISSING_MSG = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert '
   + 'BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
 const subNodeMissingMsg = (nodeBin: string): string => `governance-kapu: a hook interpretere nem talalhato (${nodeBin}). `
@@ -585,67 +568,54 @@ export function checkNodeBin(nodeBin: string): void {
   if (!DQ_SAFE_ABS_PATH_RE.test(nodeBin)) throw new Error(`hook manifest: ctx.nodeBin must be an absolute path without ", $, backtick, control characters or a trailing slash or backslash, got: ${JSON.stringify(nodeBin)}`)
 }
 
-/** The failClosedNodeBin spelling: `test -x <nodeBin>` probe (a miss blocks), then the fail-closed run. */
+/** The sub-agent node gate (failClosed): `test -x <nodeBin>` probe (a miss blocks), then the fail-closed run. */
 export function nodeGateCommand(nodeBin: string, scriptPath: string, args: readonly string[], hookTimeoutSec: number): string {
   checkNodeBin(nodeBin)
   return `test -x "${nodeBin}" || { echo "${subNodeMissingMsg(nodeBin)}" >&2; exit 2; }; `
     + failClosedGateRun(gateInvocation(`"${nodeBin}"`, scriptPath, args), basenameOf(scriptPath), hookTimeoutSec)
 }
 
-/** The failClosedPythonProbe spelling: `command -v python3` probe (a miss blocks), then the fail-closed run. */
+/** A python gate (failClosed, both scopes): `command -v python3` probe (a miss blocks), then the fail-closed run. */
 export function pythonGateCommand(scriptPath: string, args: readonly string[], hookTimeoutSec: number): string {
   return `command -v python3 >/dev/null 2>&1 || { echo "${SUB_PYTHON_MISSING_MSG}" >&2; exit 2; }; `
     + failClosedGateRun(gateInvocation('python3', scriptPath, args), basenameOf(scriptPath), hookTimeoutSec)
 }
 
-function mainCommand(spec: HookSpec, script: string, root: string): string {
-  const p = `"${root}/${script}"`
-  const interp = interpreterFor(script)
-  const args = (spec.args ?? []).map((a) => ` ${a}`).join('')
-  const timeout = requireTimeout(spec, script)
-  switch (spec.wrapper) {
-    case 'failOpenExec':
-      return `bash -c '[ -f ${p} ] && exec ${interp} ${p}${args}; exit 0'`
-    case 'failOpenExecClosedWhenFrozen':
-      return `bash -c '[ -f ${p} ] && exec ${interp} ${p}${args}; [ -e "${root}/${FLEET_FREEZE_MARKER}" ] && `
-        + `{ echo "${FLEET_FREEZE_MISSING_MSG}" >&2; exit 2; }; exit 0'`
-    case 'failOpenNodeProbe': {
-      const inv = `${interp} ${p}${args}`
-      return `bash -c '[ -f ${p} ] && command -v ${interp} >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; `
-        + `then timeout -k 1 ${gateDeadlineSec(timeout)} ${inv}; else ${inv}; fi; [ $? = 2 ] && exit 2; exit 0'`
-    }
-    case 'failClosedRun':
-      return failClosedGateRun(`${interp} ${p}${args}`, basenameOf(script), timeout)
-    case 'failClosedRunNodeProbe':
-      return `command -v node >/dev/null 2>&1 || { echo "${MAIN_NODE_MISSING_MSG}" >&2; exit 2; }; `
-        + failClosedGateRun(`node ${p}${args}`, basenameOf(script), timeout)
-    default:
-      throw new Error(`hook manifest: wrapper ${spec.wrapper} is not a main-agent spelling (${script})`)
-  }
+/** The main agent's node gate (failClosed): `command -v node` probe (a miss blocks), then the fail-closed run. */
+function mainNodeGateCommand(scriptPath: string, args: readonly string[], hookTimeoutSec: number): string {
+  return `command -v node >/dev/null 2>&1 || { echo "${MAIN_NODE_MISSING_MSG}" >&2; exit 2; }; `
+    + failClosedGateRun(gateInvocation('node', scriptPath, args), basenameOf(scriptPath), hookTimeoutSec)
 }
 
-function subCommand(spec: HookSpec, script: string, args: readonly string[], root: string, nodeBin: string): string {
+/**
+ * One render path for both scopes (C3-5). The tracked main file cannot carry a host path, so its probes look
+ * the interpreter up on PATH; a sub-agent's node gate burns in HOOK_NODE_BIN (on nvm a bare `node` is not on a
+ * hook's PATH, agent-scaffold.ts at hookCommand).
+ */
+function hookCommandFor(spec: HookSpec, script: string, args: readonly string[], scope: HookScope, root: string, nodeBin: string): string {
   const p = `${root}/${script}`
   const interp = interpreterFor(script)
   const a = args.map((x) => ` ${x}`).join('')
+  if (scope === 'main') requireTimeout(spec, script)
   switch (spec.wrapper) {
-    case 'failOpenExecUnquoted':
-      checkPlainPath('ctx.root', root)
-      return `bash -c '[ -f ${p} ] && exec ${interp} ${p}${a}; exit 0'`
-    case 'bare':
-      checkPlainPath('ctx.root', root)
-      return `${interp} ${p}${a}`
-    case 'bareQuoted':
-      return `${interp} "${p}"${a}`
-    case 'failClosedPythonProbe':
-      if (interp !== 'python3') throw new Error(`hook manifest: ${script} is not a python gate`)
-      return pythonGateCommand(p, args, requireTimeout(spec, script))
-    case 'failClosedNodeBin':
-      if (interp !== 'node') throw new Error(`hook manifest: ${script} is not a node gate`)
-      return nodeGateCommand(nodeBin, p, args, requireTimeout(spec, script))
+    case 'failOpenExec':
+      // Inside the single-quoted bash -c: a sub root of plain characters only (the main root is checked apart).
+      if (scope === 'sub') checkPlainPath('ctx.root', root)
+      return `bash -c '[ -f "${p}" ] && exec ${interp} "${p}"${a}; exit 0'`
+    case 'failOpenExecClosedWhenFrozen':
+      if (scope !== 'main') break
+      return `bash -c '[ -f "${p}" ] && exec ${interp} "${p}"${a}; [ -e "${root}/${FLEET_FREEZE_MARKER}" ] && `
+        + `{ echo "${FLEET_FREEZE_MISSING_MSG}" >&2; exit 2; }; exit 0'`
+    case 'failClosed': {
+      const timeout = requireTimeout(spec, script)
+      if (interp === 'python3') return pythonGateCommand(p, args, timeout)
+      if (interp === 'node') return scope === 'sub' ? nodeGateCommand(nodeBin, p, args, timeout) : mainNodeGateCommand(p, args, timeout)
+      throw new Error(`hook manifest: ${script} has no fail-closed spelling (python3 or node only)`)
+    }
     default:
-      throw new Error(`hook manifest: wrapper ${spec.wrapper} is not a sub-agent spelling (${script})`)
+      break
   }
+  throw new Error(`hook manifest: wrapper ${spec.wrapper} is not a ${scope} spelling (${script})`)
 }
 
 function requireTimeout(spec: HookSpec, script: string): number {
@@ -899,11 +869,10 @@ function renderHook(e: HookManifestEntry, scope: HookScope, root: string, nodeBi
     if (prompt === undefined) throw new Error(`hook manifest: ${e.id} needs ctx.prompts.${e.script}`)
     return withTimeout({ type: 'agent', prompt })
   }
-  if (scope === 'main') return withTimeout({ type: 'command', command: mainCommand(spec, e.script, root) })
-  const args = [
+  const args = scope === 'main' ? spec.args ?? [] : [
     ...(spec.args ?? []),
     ...(ctx.agent?.threadReply ? e.threadReplyArgs ?? [] : []),
     ...(e.agentFlag === 'senderRolePolicy' ? [ctx.agent?.senderRolePolicy ?? ''] : []),
   ]
-  return withTimeout({ type: 'command', command: subCommand(spec, e.script, args, root, nodeBin) })
+  return withTimeout({ type: 'command', command: hookCommandFor(spec, e.script, args, scope, root, nodeBin) })
 }

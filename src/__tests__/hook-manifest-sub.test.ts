@@ -37,6 +37,7 @@ import {
   type FailMode, type HookManifest, type HookManifestEntry, type RenderContext, type RenderedHooks,
 } from '../web/hooks/manifest.js'
 import { ownerOf } from '../web/hooks/sub-generator.js'
+import { pairRewraps, type PlacedHook } from '../web/hooks/dry-run.js'
 
 const LIVE_INSTALL_ROOT = '/root/marveen'
 const PROBE_PREFIX = 'hook-manifest-probe-'
@@ -184,14 +185,26 @@ function flatten(hooks: RenderedHooks): FlatHook[] {
 const sorted = (xs: FlatHook[]): string[] => xs.map((x) => JSON.stringify(x, Object.keys(x).sort())).sort()
 
 describe('hook manifest, sub scope, against the live shape', () => {
-  it('renders the multiset the 12 live sub-agents share (fixture, sanitised)', () => {
+  // The fixture stays the live shape before C3-5 (the window's before side). The render differs from it only by
+  // rewraps (the settings dry-run's own rule): 32 of the 39 hooks, nothing added or dropped (plan-c3-5.md 3a).
+  it('renders the live sub-agents\' multiset up to 32 rewraps, nothing added or dropped (fixture, the pre-C3-5 shape)', () => {
     const ctx = { ...ctxFor(DEFAULT), prompts: { precompact: templatePrompt('${BOT_NAME}') } }
-    const sanitise = (s: string) => s.replaceAll(HOOK_NODE_BIN, '${NODE_BIN}').replaceAll(PROJECT_ROOT, '${ROOT}')
-    const rendered = flatten(renderHooks(HOOK_MANIFEST, 'sub', ctx))
-      .map((h) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k, typeof v === 'string' ? sanitise(v) : v])))
     const live = JSON.parse(readFileSync(FIXTURE, 'utf-8')) as FlatHook[]
     expect(live).toHaveLength(39)
-    expect(sorted(rendered)).toEqual(sorted(live))
+    const desanitise = (s: string) => s.replaceAll('${NODE_BIN}', HOOK_NODE_BIN).replaceAll('${ROOT}', PROJECT_ROOT)
+    const placed = (hs: FlatHook[]): PlacedHook[] => hs.map(({ event, matcher, ...hook }) => ({
+      event: String(event), ...(matcher === undefined ? {} : { matcher }),
+      hook: Object.fromEntries(Object.entries(hook).map(([k, v]) => [k, typeof v === 'string' ? desanitise(v) : v])),
+    }))
+    const key = (p: PlacedHook) => JSON.stringify({ event: p.event, matcher: p.matcher, ...p.hook }, Object.keys({ event: 0, matcher: 0, ...p.hook }).sort())
+    const before = placed(live)
+    const after = placed(flatten(renderHooks(HOOK_MANIFEST, 'sub', ctx)))
+    const minus = (xs: PlacedHook[], ys: PlacedHook[]) => {
+      const left = ys.map(key)
+      return xs.filter((x) => { const i = left.indexOf(key(x)); if (i < 0) return true; left.splice(i, 1); return false })
+    }
+    const r = pairRewraps(minus(before, after), minus(after, before))
+    expect([r.pairs.length, r.dropped.length, r.added.length]).toEqual([32, 0, 0])
   })
 
   it('the playwright hook is rendered only for an agent with the browser capability (C3-3a)', () => {
@@ -204,23 +217,20 @@ describe('hook manifest, sub scope, against the live shape', () => {
     const groups = renderHooks(HOOK_MANIFEST, 'sub', ctxFor(DEFAULT, { browser: true })).PostToolUse!
     expect(groups.filter((g) => g.matcher === 'mcp__playwright__browser_.*')).toEqual([{
       matcher: 'mcp__playwright__browser_.*',
-      hooks: [{ type: 'command', command: `python3 ${PROJECT_ROOT}/scripts/hooks/browser-content-notice.py`, timeout: 10 }],
+      hooks: [{ type: 'command', command: `bash -c '[ -f "${PROJECT_ROOT}/scripts/hooks/browser-content-notice.py" ] && exec python3 "${PROJECT_ROOT}/scripts/hooks/browser-content-notice.py"; exit 0'`, timeout: 10 }],
     }])
   })
 })
 
 // The fail mode a command's own text gives it (Ron N1, sub wrappers), independent of the manifest's wrapper field.
 const FAIL_CLOSED = /^(?:test -x "[^"]+"|command -v python3 >\/dev\/null 2>&1) \|\| \{ echo "[^"]*" >&2; exit 2; \}; .*rc=\$\?; \[ "\$rc" = 0 \] \|\| \[ "\$rc" = 2 \] \|\| \{ echo "[^"]*" >&2; exit 2; \}; exit "\$rc"$/
-const BARE = /^python3 (?:\/[^\s"]+|"\/[^"]+")$/
-const NOT_BLOCKING_EVENTS = ['SessionStart', 'SessionEnd', 'PostToolUse', 'PostToolUseFailure']
 const SCRIPT_IN_COMMAND = /\/(scripts\/[\w./-]+\.(?:py|mjs|sh))/
 
 function failModeFromText(event: string, hook: { type: string; command?: string }): FailMode {
   if (hook.type === 'agent') return 'advisory'
   const cmd = hook.command ?? ''
   if (FAIL_CLOSED.test(cmd)) return 'closed'
-  if (cmd.startsWith("bash -c '[ -f ") && cmd.endsWith("; exit 0'") && !cmd.includes('fleet-freeze.json')) return 'open'
-  if (BARE.test(cmd) && NOT_BLOCKING_EVENTS.includes(event)) return 'open'
+  if (cmd.startsWith("bash -c '[ -f \"") && cmd.endsWith("; exit 0'") && !cmd.includes('fleet-freeze.json')) return 'open'
   throw new Error(`unclassified wrapper under ${event}: ${cmd.slice(0, 120)}`)
 }
 

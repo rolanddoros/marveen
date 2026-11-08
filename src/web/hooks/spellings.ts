@@ -47,8 +47,8 @@ const gateRun = (inv: string) => `if command -v timeout >/dev/null 2>&1; then ti
 const NOT_BLOCKING = ['SessionStart', 'SessionEnd', 'PostToolUse', 'PostToolUseFailure']
 
 const TEMPLATES: readonly Template[] = [
-  // Fail-open. failOpenExec is the main spelling and the planned C3-5b sub spelling (listed for sub already, so a
-  // revert of C3-5b still classifies the files it wrote).
+  // Fail-open. failOpenExec is the one open spelling of both scopes since C3-5; the others are retired, kept so a
+  // file written before C3-5 (or after its revert) still classifies.
   { kind: 'failOpenExec', failMode: 'open', scopes: ['main', 'sub'], text: `bash -c '[ -f "{P}" ] && exec {I} "{P}"{A}; exit 0'` },
   { kind: 'failOpenExecUnquoted', failMode: 'open', scopes: ['sub'], text: `bash -c '[ -f {U} ] && exec {I} {U}{A}; exit 0'` },
   { kind: 'bare', failMode: 'open', scopes: ['sub'], text: '{I} {U}{A}', events: NOT_BLOCKING },
@@ -64,8 +64,15 @@ const TEMPLATES: readonly Template[] = [
       + '(fail-closed while frozen): the gate script is missing and store/fleet-freeze.json exists, so every tool call is '
       + `blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard." >&2; exit 2; }; exit 0'`,
   },
-  // Fail-closed.
+  // Fail-closed. Since C3-5 the manifest's failClosed renders failClosedPythonProbe (both scopes), failClosedNodeProbe
+  // (main) and failClosedNodeBin (sub); failClosedRun and failClosedRunNodeProbe are retired.
   { kind: 'failClosedRun', failMode: 'closed', scopes: ['main'], text: gateRun('{I} "{P}"{A}') },
+  {
+    kind: 'failClosedNodeProbe', failMode: 'closed', scopes: ['main'],
+    text: 'command -v node >/dev/null 2>&1 || { echo "governance-kapu: a hook interpretere nem talalhato (node nincs a '
+      + 'PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a node-ot, vagy inditsd ujra a dashboardot." >&2; exit 2; }; '
+      + gateRun('{I} "{P}"{A}'),
+  },
   {
     kind: 'failClosedRunNodeProbe', failMode: 'closed', scopes: ['main'],
     text: 'command -v node >/dev/null 2>&1 || { echo "governance-kapu: node interpreter hianyzik, a kapu BLOKKOL" >&2; exit 2; }; '
@@ -142,7 +149,7 @@ export function classifySpelling(command: string, timeout: unknown, event: strin
     const interpreter = g.N ?? g.I
     if (g.N !== undefined ? ext !== 'mjs' : INTERPRETER_OF[ext] !== interpreter) continue
     if (t.kind === 'failClosedPythonProbe' && interpreter !== 'python3') continue
-    if (t.kind === 'failClosedRunNodeProbe' && interpreter !== 'node') continue
+    if ((t.kind === 'failClosedRunNodeProbe' || t.kind === 'failClosedNodeProbe') && interpreter !== 'node') continue
     if (g.L !== undefined && g.L !== path.slice(path.lastIndexOf('/') + 1)) continue
     if (g.R !== undefined && !path.startsWith(`${g.R}/scripts/`)) continue
     let deadline: number | undefined

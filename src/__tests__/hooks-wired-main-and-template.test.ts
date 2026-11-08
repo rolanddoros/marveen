@@ -46,10 +46,9 @@ describe('C1 PR 13a: the main agent settings (repo .claude/settings.json)', () =
     expect(guard[0].matcher).toBe('Bash')
     const g = guard[0].hooks[0]
     expect(g.timeout).toBe(10)
-    // Missing script or node: exit 0. Only an intentional 2 passes; every other status becomes 0.
-    // The behaviour itself is pinned in main-hooks-failsafe.test.ts.
-    expect(g.command).toContain('[ -f "$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs" ] && command -v node >/dev/null 2>&1 || exit 0;')
-    expect(g.command).toMatch(/\[ \$\? = 2 \] && exit 2; exit 0'$/)
+    // Fail-open in the one open spelling (C3-5b, failOpenExec): a missing script exits 0; any other status passes
+    // through, and only an intentional 2 blocks. The behaviour itself is pinned in main-hooks-failsafe.test.ts.
+    expect(g.command).toBe(`bash -c '[ -f "$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs" ] && exec node "$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs"; exit 0'`)
     expect(g.command).not.toContain('governance-kapu')
     const ups = mainSettings.hooks.UserPromptSubmit as { matcher?: string, hooks: { command: string, timeout: number }[] }[]
     const dv = ups.filter((e) => JSON.stringify(e).includes('directive-verify.py'))

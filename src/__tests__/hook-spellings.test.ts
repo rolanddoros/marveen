@@ -21,7 +21,9 @@ const ALL_ON: RenderContext = {
   root: ROOT, nodeBin: NODE_BIN, profile: { destructiveGate: true, credentialGate: true, secondReviewer: true },
   agent: { heartbeat: true, threadReply: true, senderRolePolicy: POLICY, browser: true }, prompts: { precompact: 'x' },
 }
-const WITH_DEADLINE = ['failOpenNodeProbe', 'failClosedRun', 'failClosedRunNodeProbe', 'failClosedPythonProbe', 'failClosedNodeBin']
+/** The spelling (spellings.ts kind) the manifest's wrapper renders for a script in a scope (C3-5: failClosed by interpreter). */
+const spellingKindOf = (wrapper: string, script: string, scope: HookScope): string => (wrapper !== 'failClosed' ? wrapper
+  : script.endsWith('.py') ? 'failClosedPythonProbe' : scope === 'sub' ? 'failClosedNodeBin' : 'failClosedNodeProbe')
 const P = (script: string) => `${ROOT}/scripts/hooks/${script}`
 
 describe('the known spellings are the manifest\'s', () => {
@@ -43,18 +45,18 @@ describe('the known spellings are the manifest\'s', () => {
             expect(e, `${event} ${s!.path}`).toBeDefined()
             const spec = specFor(e!, scope)
             const args = [...(spec.args ?? []), ...(scope === 'sub' ? e!.threadReplyArgs ?? [] : []), ...(scope === 'sub' && e!.agentFlag === 'senderRolePolicy' ? [POLICY] : [])]
-            expect([e!.id, s!.kind, s!.args, s!.deadline]).toEqual([e!.id, spec.wrapper, args, WITH_DEADLINE.includes(spec.wrapper) ? gateDeadlineSec(spec.timeout!) : undefined])
+            expect([e!.id, s!.kind, s!.args, s!.deadline]).toEqual([e!.id, spellingKindOf(spec.wrapper, e!.script, scope), args, spec.wrapper === 'failClosed' ? gateDeadlineSec(spec.timeout!) : undefined])
             // The spelling's fail mode is the one the manifest records for the entry (C3-5a-3); the kill switch's
             // closed-while-frozen spelling is its own mode, recorded as closed.
             expect([e!.id, s!.failMode]).toEqual([e!.id, spec.wrapper === 'failOpenExecClosedWhenFrozen' ? 'closedWhileFrozen' : spec.failMode])
-            seen.add(spec.wrapper)
+            seen.add(s!.kind)
           }
         }
       }
       expect(n).toBeGreaterThan(40)
       expect([...seen].sort()).toEqual(scope === 'main'
-        ? ['failClosedRun', 'failClosedRunNodeProbe', 'failOpenExec', 'failOpenExecClosedWhenFrozen', 'failOpenNodeProbe']
-        : ['bare', 'bareQuoted', 'failClosedNodeBin', 'failClosedPythonProbe', 'failOpenExecUnquoted'])
+        ? ['failClosedNodeProbe', 'failClosedPythonProbe', 'failOpenExec', 'failOpenExecClosedWhenFrozen']
+        : ['failClosedNodeBin', 'failClosedPythonProbe', 'failOpenExec'])
     })
   }
 
@@ -97,7 +99,7 @@ describe('classifySpelling: what is not a known spelling', () => {
     expect(classifySpelling(pythonGateCommand(P('x.mjs'), [], 10).replaceAll('python3 "', 'node "'), 10, 'PreToolUse')).toBeNull()
     const egress = renderHooks(HOOK_MANIFEST, 'main').PreToolUse!.flatMap((g) => g.hooks).find((h) => h.type === 'command' && h.command.includes('egress-gate.mjs'))!
     if (egress.type !== 'command') throw new Error('unreachable')
-    expect(classifySpelling(egress.command, egress.timeout, 'PreToolUse', 'main')?.kind).toBe('failClosedRunNodeProbe')
+    expect(classifySpelling(egress.command, egress.timeout, 'PreToolUse', 'main')?.kind).toBe('failClosedNodeProbe')
     expect(classifySpelling(egress.command.replaceAll('egress-gate.mjs', 'egress-gate.py').replaceAll('node "', 'python3 "'), egress.timeout, 'PreToolUse', 'main')).toBeNull()
   })
 

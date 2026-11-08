@@ -853,7 +853,7 @@ describe('wiring', () => {
     const deny = scaffold.slice(scaffold.indexOf('export function ensureBashEgressDeny('))
     expect(deny.slice(0, deny.indexOf('\n}\n'))).not.toContain('ensureBashEgressParser(')
     const manifest = readFileSync(join(ROOT, 'src', 'web', 'hooks', 'manifest.ts'), 'utf-8')
-    expect(manifest).toMatch(/\{ id: 'bash-egress-parser', script: 'scripts\/hooks\/bash-egress-parser\.mjs', events: \['PreToolUse'\], matcher: 'Bash', \.\.\.nodeGate \}/)
+    expect(manifest).toMatch(/\{ id: 'bash-egress-parser', script: 'scripts\/hooks\/bash-egress-parser\.mjs', events: \['PreToolUse'\], matcher: 'Bash', \.\.\.subGate \}/)
   })
 })
 
