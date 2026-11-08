@@ -13,9 +13,11 @@
 //     agent, per profile and per gate condition
 //     (src/__tests__/hook-manifest-sub.test.ts).
 //
-// Nothing calls this module yet: no settings file is written from it and no
-// caller changed (C3-3 makes the sub generator render from it, C3-4 turns the
-// main file into a checked artifact). It imports nothing at runtime on purpose,
+// The main agent's hooks block of .claude/settings.json and its sidecar
+// .claude/hooks.metadata.json are generated from this module into a checkout
+// (C3-4: main-artifact.ts, npm run hooks:generate; a test fails CI when the
+// committed files differ). No runtime caller yet (C3-3 makes the sub generator
+// render from it). It imports nothing at runtime on purpose,
 // so agent-scaffold.ts can import it later without a cycle.
 //
 // Recorded as found, not fixed: every wrapper spelling, timeout and fail mode
@@ -183,7 +185,8 @@ export interface HookManifestEntry extends HookSpec {
   /**
    * The entry's text in .claude/hooks.metadata.json (the sidecar of the main
    * settings, HOOKDRIFT926). Required on every entry the main agent renders,
-   * absent on every other (validateManifest 'main'); the sub render ignores it.
+   * absent on every other (validateSidecarText); the renders ignore it. The
+   * sidecar is generated from it (main-artifact.ts, npm run hooks:generate).
    */
   sidecar?: HookSidecarText
 }
@@ -302,7 +305,7 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
   { id: 'telegram-reply-directive', kind: 'directive', script: 'scripts/hooks/telegram-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
     sidecar: { purpose: 'UserPromptSubmit hook: inject a reply-tool directive whenever an inbound Telegram TEXT message arrives.' } },
   { id: 'provenance-gate', kind: 'directive', script: 'scripts/hooks/provenance-gate.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
-    sidecar: { purpose: 'Blocks a prompt that carries no provenance envelope (channel, scheduled task, peer), i.e. text injected straight into the pane.' } },
+    sidecar: { purpose: 'Flags, never blocks, a prompt with no provenance envelope (channel, scheduled task, peer), i.e. text injected straight into the pane, that asks for an irreversible or outward-facing operation.' } },
   { id: 'staleness-guard', kind: 'directive', script: 'scripts/hooks/staleness-guard.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 10, ...open, override: subOpen,
     sidecar: { purpose: 'Warns when an inbound channel message is processed long after it was sent (lagging poller, re-delivery after restart).' } },
   { id: 'memory-lookup-nudge', kind: 'directive', script: 'scripts/hooks/memory-lookup-nudge.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 3, ...open, override: subOpen,
@@ -693,6 +696,17 @@ function checkSidecarText(e: HookManifestEntry, spec: HookSpec): void {
 }
 
 /**
+ * The sidecar text of the main scope: every entry the main agent renders
+ * carries complete sidecar text (purpose, and labels for a matcher array, each
+ * array as long as the matcher array), no other entry carries any. Apart from
+ * validateManifest on purpose (Ron, C3-sch N2): a prose defect must not break
+ * renderHooks('main'). Called by the main artifact generator (main-artifact.ts).
+ */
+export function validateSidecarText(m: HookManifest): void {
+  for (const e of m.entries) checkSidecarText(e, specFor(e, 'main'))
+}
+
+/**
  * The sidecar id and purpose of one main matcher group: the group the entry
  * renders under `event` for its `matcherIndex`-th matcher (0 when the matcher
  * is not an array). The id is `<event in kebab-case>/<script stem>`, plus
@@ -717,8 +731,7 @@ export function sidecarGroupText(e: HookManifestEntry, event: HookEvent, matcher
  * entry of this scope that is registered under that event, every (entry, event)
  * of the scope is placed exactly once, profile and agent conditions only on
  * sub-only entries, and a not-rendered entry carries per-agent data and no place.
- * Main only: every rendered entry carries its sidecar text (purpose, and labels
- * for a matcher array, each array as long as the matcher array), no other does.
+ * The sidecar text is checked apart, by validateSidecarText.
  */
 export function validateManifest(m: HookManifest, scope: HookScope): void {
   const byId = new Map<string, HookManifestEntry>()
@@ -749,7 +762,6 @@ export function validateManifest(m: HookManifest, scope: HookScope): void {
     } else if (e.perAgent !== undefined) {
       throw new Error(`hook manifest: ${e.id}: perAgent is for not-rendered entries only`)
     }
-    if (scope === 'main') checkSidecarText(e, spec)
   }
   const layout = m.layout[scope]
   if (!layout) throw new Error(`hook manifest: no layout for scope ${scope}`)

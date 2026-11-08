@@ -22,9 +22,20 @@ A másik fele egy kis segédkönyvtár (`scripts/hooks/hook_switches.py`): egy e
 
 `.claude/hooks.metadata.json`, a settings-fájl mellett. Minden matcher-csoportnak (esemény + index) van benne egy stabil `id`, egy egysoros `purpose`, a `hook` név (a szkript fájlneve kiterjesztés nélkül), egy `gate` jelző és egy `fingerprint` (sha256 az eseményre, a matcherre és a parancs-szövegre; a timeout NEM része). Azért oldalfájl, mert a Claude Code settings-sémája nem enged saját kulcsot a hook-objektumokban.
 
+### A fő ágens settings-fájlja ebben a repóban generált (C3-4)
+
+A repó `.claude/settings.json` fájljának hooks-blokkja és az oldalfájl (`.claude/hooks.metadata.json`) egyetlen forrásból generálódik: a hook-manifestből (`src/web/hooks/manifest.ts`; a main bejegyzések `sidecar` szövege tartja a `purpose` mondatokat és az id-címkéket). Egyik fájlt se szerkeszd kézzel: a manifestet írd át, utána futtasd
+
+```bash
+npm run hooks:generate             # mindkét fájlt megírja ebbe a checkoutba
+npm run hooks:generate -- --check  # nem ír semmit; 1-gyel lép ki, ha egy fájl eltér
+```
+
+és mindkét fájlt commitold. A CI (`src/__tests__/hook-main-artifact.test.ts`) bukik, ha egy commitolt fájl eltér a generátor kimenetétől, és ellenőrzi, hogy a `hook-metadata.py --update` nem változtat rajtuk. A generátor az élő telepítést megtagadja. A `gate` jelző a `hook_switches.DEFAULT_NON_DISABLEABLE` listát követi; a generált oldalfájlban nincs `non_disableable` lista (az a telepítés saját kiegészítése), és van egy plusz felső kulcsa, a `_generated`, amit a validátor változatlanul átvisz és nem mér.
+
 ### Hook szerkesztése után
 
-Ha hookot adsz hozzá, törölsz, átírod a parancsát vagy a matcherét, vagy átrendezed őket, ugyanabban a commitban frissítsd az oldalfájlt:
+Az alábbi lépések minden más settings-fájlra érvényesek (egy telepítés saját példánya, egy teszt-fixture). Ha hookot adsz hozzá, törölsz, átírod a parancsát vagy a matcherét, vagy átrendezed őket, ugyanabban a commitban frissítsd az oldalfájlt:
 
 ```bash
 python3 scripts/hook-metadata.py --update     # újraírja az oldalfájlt és kiírja a diffet
