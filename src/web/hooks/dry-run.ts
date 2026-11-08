@@ -257,15 +257,25 @@ function shape(hooks: Record<string, unknown>, event: string): string {
   return `[${groups.map((g) => (Array.isArray(g?.hooks) ? g.hooks.length : 0)).join(',')}]`
 }
 
-function normalised(before: Record<string, unknown>, after: Record<string, unknown>, tag: Tagger): string[] {
+/**
+ * Layout changes the multiset cannot see: the event order, the group shape per event, and the hook order within
+ * an event. A rewrapped hook is compared under its before-side key (C3-5c), so "<event> order" means a hook really
+ * moved, not that its command text changed in place.
+ */
+function normalised(before: Record<string, unknown>, after: Record<string, unknown>, tag: Tagger, rewraps: ReadonlyArray<readonly [Flat, Flat]> = []): string[] {
   const out: string[] = []
   if (Object.keys(before).join('\n') !== Object.keys(after).join('\n')) out.push('event order')
-  const keys = (hooks: Record<string, unknown>, event: string) => flatten({ [event]: hooks[event] }, tag).map((f) => f.key).join('\n')
+  const asBefore = new Map<string, string[]>()
+  for (const [d, a] of rewraps) asBefore.set(a.key, [...(asBefore.get(a.key) ?? []), d.key])
+  const keys = (hooks: Record<string, unknown>, event: string, rename: Map<string, string[]> = new Map()) => {
+    const queue = new Map([...rename].map(([k, v]) => [k, [...v]]))
+    return flatten({ [event]: hooks[event] }, tag).map((f) => queue.get(f.key)?.shift() ?? f.key).join('\n')
+  }
   for (const event of Object.keys(after)) {
     const a = shape(before, event)
     const b = shape(after, event)
     if (a !== b) out.push(`${eventName(event, tag)} ${a} -> ${b}`)
-    else if (keys(before, event) !== keys(after, event)) out.push(`${eventName(event, tag)} order`)
+    else if (keys(before, event) !== keys(after, event, asBefore)) out.push(`${eventName(event, tag)} order`)
   }
   return out
 }
@@ -355,7 +365,7 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
         ...base, profile: flags.profileId, before: fb.length, after: fa.length,
         added: paired.added.map((x) => x.label), dropped: paired.dropped.map((x) => x.label), rewrapped: paired.pairs.map((p) => rewrapLabel(p, tag)),
         kept: plan.kept.map((k) => `${k.inManagedGroup ? '(was in a managed group) ' : ''}${flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] }, tag)[0].label}`),
-        normalised: normalised(before, after, tag), unsafe: plan.unsafe,
+        normalised: normalised(before, after, tag, paired.pairs), unsafe: plan.unsafe,
       }
       if (opts.diff) {
         // The `hooks` key only (Ron N2: the whole object put neighbouring keys' values into the context lines),
