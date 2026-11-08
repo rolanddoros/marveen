@@ -14,7 +14,7 @@
  */
 import { afterAll, describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -211,5 +211,76 @@ describe('npm run hooks:generate (scripts/generate-main-hooks.ts)', () => {
     expect(r.stderr).toContain('does not exist')
     expect(existsSync(join(empty, '.claude', 'hooks.metadata.json'))).toBe(false)
     expect(generator('--frobnicate').status).toBe(2)
+  })
+
+  // Ron 13824 (M3: `tmp = path` writes in place and stays green otherwise). A temp file renamed over the path
+  // replaces a symlinked settings file; an in-place write would go through the link into its target.
+  it('replaces each file by a rename: a symlinked settings file is replaced, its target untouched, no temp file left', () => {
+    const settings = JSON.parse(committedSettings()) as Record<string, unknown>
+    const root = scratchRoot({ settings: `${JSON.stringify({ ...settings, hooks: {} }, null, 2)}\n` })
+    const settingsPath = join(root, '.claude', 'settings.json')
+    const decoy = join(root, 'decoy-settings.json')
+    renameSync(settingsPath, decoy)
+    symlinkSync(decoy, settingsPath)
+    const decoyText = readFileSync(decoy, 'utf-8')
+
+    const r = generator('--root', root)
+    expect(r.status).toBe(0)
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(false)
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(committedSettings())
+    expect(readFileSync(decoy, 'utf-8')).toBe(decoyText)
+    expect(readdirSync(join(root, '.claude')).sort()).toEqual(['hooks.metadata.json', 'settings.json'])
+  })
+
+  // The temp file is created through the process umask, so what the generator keeps or sets is mode & ~umask. The
+  // child runs under a fixed umask 022 here, whatever the host's (Ron 14111: 0077 and 0027 broke a literal 0644).
+  it('a replaced file keeps its mode and a new one is 0644, each as the umask allows (mode & ~umask, run under umask 022) (Ron 14094 R7, R9)', () => {
+    const settings = JSON.parse(committedSettings()) as Record<string, unknown>
+    const root = scratchRoot({ settings: `${JSON.stringify({ ...settings, hooks: {} }, null, 2)}\n` })
+    chmodSync(join(root, '.claude', 'settings.json'), 0o640)
+    const r = spawnSync('/bin/sh', ['-c', 'umask 022 && exec "$@"', 'sh', TSX, GENERATOR, '--root', root], { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 60_000 })
+    expect(r.status, r.stderr).toBe(0)
+    // 0640 has a group bit: a generator that kept only the owner bits would leave 0600 (Ron R9).
+    expect(statSync(join(root, '.claude', 'settings.json')).mode & 0o777).toBe(0o640)
+    expect(statSync(join(root, '.claude', 'hooks.metadata.json')).mode & 0o777).toBe(0o644)
+  })
+})
+
+// Ron 13824 (M4: python3 without -I -B stays green otherwise). The lock list is read from a scratch copy of the
+// hook directory: -B writes no __pycache__ into it, and -I ignores PYTHONPATH, so a sitecustomize there never runs.
+describe('readHookSwitchLocks: an isolated, read-only python3', () => {
+  it('writes no bytecode next to hook_switches.py and runs no sitecustomize from PYTHONPATH', () => {
+    const root = scratch()
+    const hooksDir = join(root, 'scripts', 'hooks')
+    mkdirSync(hooksDir, { recursive: true })
+    copyFileSync(join(REPO_ROOT, 'scripts', 'hooks', 'hook_switches.py'), join(hooksDir, 'hook_switches.py'))
+    const site = join(root, 'site')
+    const marker = join(root, 'sitecustomize-ran')
+    mkdirSync(site)
+    writeFileSync(join(site, 'sitecustomize.py'), `open(${JSON.stringify(marker)}, 'w').close()\n`)
+
+    const saved = { path: process.env.PYTHONPATH, noBytecode: process.env.PYTHONDONTWRITEBYTECODE }
+    process.env.PYTHONPATH = site
+    delete process.env.PYTHONDONTWRITEBYTECODE
+    try {
+      expect(readHookSwitchLocks(root)).toEqual(LOCKS)
+    } finally {
+      if (saved.path === undefined) delete process.env.PYTHONPATH
+      else process.env.PYTHONPATH = saved.path
+      if (saved.noBytecode !== undefined) process.env.PYTHONDONTWRITEBYTECODE = saved.noBytecode
+    }
+    expect(readdirSync(hooksDir)).toEqual(['hook_switches.py'])
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('the sitecustomize probe is live: the same python3 call without -I runs it (positive control)', () => {
+    const root = scratch()
+    const site = join(root, 'site')
+    const marker = join(root, 'sitecustomize-ran')
+    mkdirSync(site)
+    writeFileSync(join(site, 'sitecustomize.py'), `open(${JSON.stringify(marker)}, 'w').close()\n`)
+    const r = spawnSync('python3', ['-B', '-c', 'pass'], { encoding: 'utf-8', env: { ...process.env, PYTHONPATH: site } })
+    expect(r.status).toBe(0)
+    expect(existsSync(marker)).toBe(true)
   })
 })
