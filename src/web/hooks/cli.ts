@@ -4,10 +4,10 @@
 // Read-only report: per sub-agent of the install at --root, what the sub-agent
 // settings generator (sub-generator.ts) would write into its
 // agents/<name>/.claude/settings.json `hooks`, against the file on disk:
-// hooks before -> after, the flattened multiset difference (+ added, - dropped:
-// the gate is EMPTY for every agent), the order/grouping changes, the hooks
-// kept as they are (an operator's own wiring, a switched-off gate's copy), and
-// with --diff the unified diff of the whole file. Nothing is written: the
+// hooks before -> after, the flattened multiset difference (+ added, - dropped,
+// ~ rewrapped: the same hook with another wrapper or timeout, C3-5a), the
+// order/grouping changes, the hooks kept as they are (an operator's own
+// wiring, a switched-off gate's copy), and with --diff the unified diff of the whole file. Nothing is written: the
 // generator acts in the dashboard (C3-3b), never from here. --dry-run is
 // mandatory, there is no other mode.
 //
@@ -23,8 +23,8 @@
 // only (hook-settings-dry-run.test.ts pins it: no config.js, no logger, no
 // database, no network, no writing fs call).
 //
-// Exit codes: 0 every agent's multiset EMPTY; 1 an agent with an added or
-// dropped hook, or an error; 2 usage (arguments, --root, unknown agent). A
+// Exit codes: 0 every agent's multiset EMPTY or rewrap only; 1 an agent with an
+// added or dropped hook, or an error; 2 usage (arguments, --root, unknown agent). A
 // crash also exits 1, with an empty stdout: read an empty stdout as a failed run.
 
 import { runHookSettingsCli } from './dry-run.js'
