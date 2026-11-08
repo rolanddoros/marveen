@@ -56,10 +56,9 @@ function stub(proj: string, name: string, code: number): void {
   writeFileSync(join(proj, 'scripts', 'hooks', name), body)
 }
 
-// The child-claude guard (C1 PR 13a, Kevin 13549 B1) blocks through a deny decision on stdout with exit 0;
-// any other failure of its own (crash, non-0/2 exit, timeout) lets Bash run, so it exits 0.
+// The child-claude guard (C1 PR 13a, Kevin 13549 B1) blocks through a deny decision on stdout with exit 0. Since
+// C3-5b it has the one open spelling (failOpenExec) like every other fail-open hook: a status passes through.
 const CHILD_GUARD = 'child-claude-channel-guard.mjs'
-const expectedRc = (h: Handler, code: number) => (scriptOf(h.command) === CHILD_GUARD && code !== 2 ? 0 : code)
 
 function run(shell: string, command: string, proj: string) {
   const r = spawnSync(shell, ['-c', command], {
@@ -101,7 +100,7 @@ describe('main agent hooks: explicit fail mode (A5-main-hooks-failsafe)', () => 
           for (const h of failOpen) {
             const r = run(shell, h.command, proj)
             const args = h.command.match(/\.(?:py|sh)" ((?:--?[a-z-]+ ?)+);/)?.[1]?.trim() ?? ''
-            expect({ rc: r.rc, stdout: r.stdout }, label(h)).toEqual({ rc: expectedRc(h, code), stdout: `args=${args} stdin={"x":1}` })
+            expect({ rc: r.rc, stdout: r.stdout }, label(h)).toEqual({ rc: code, stdout: `args=${args} stdin={"x":1}` })
           }
         }
       })
@@ -127,8 +126,11 @@ describe('main agent hooks: explicit fail mode (A5-main-hooks-failsafe)', () => 
   }
 })
 
-// Kevin 13549 B1 (AC: the guard on the main agent is FAIL-OPEN): a missing script, a missing node, a crash,
-// an exit other than 0/2 and a timeout all give rc 0, so the Bash call still runs.
+// Kevin 13549 B1 (AC: the guard on the main agent is FAIL-OPEN). Since C3-5b (plan-c3-5.md 3c item 5) it has the
+// one open spelling, failOpenExec: a missing script gives rc 0; a missing node (127), a crash (1) or an exit other
+// than 0/2 is a non-blocking error; a hang is ended by Claude Code's own hook timeout (10 s). Only exit 2 blocks, so
+// the Bash call still runs. Claude Code docs (code.claude.com/docs/en/hooks, Kevin 14080): "On most events, when a
+// hook fails or times out, Claude Code still carries out the action."
 describe('child-claude-channel-guard on the main agent: fail-open (C1 PR 13a B1)', () => {
   const guard = handlers.find((h) => scriptOf(h.command) === CHILD_GUARD)!
   const writeGuard = (proj: string, body: string) => writeFileSync(join(proj, 'scripts', 'hooks', CHILD_GUARD), body)
@@ -142,17 +144,17 @@ describe('child-claude-channel-guard on the main agent: fail-open (C1 PR 13a B1)
   for (const shell of SHELLS) {
     describe(shell, () => {
       it.each([
-        ['the script is missing', null],
-        ['the script crashes', `throw new Error('boom')\n`],
-        ['the script exits 3', `process.exit(3)\n`],
-        ['the script is not valid JavaScript', `this is not javascript (\n`],
-      ])('rc 0 when %s', (_name, body) => {
+        ['the script is missing', null, 0],
+        ['the script crashes', `throw new Error('boom')\n`, 1],
+        ['the script exits 3', `process.exit(3)\n`, 3],
+        ['the script is not valid JavaScript', `this is not javascript (\n`, 1],
+      ])('never 2 when %s (rc %i)', (_name, body, rc) => {
         const proj = project()
         if (body !== null) writeGuard(proj, body)
-        expect(run(shell, guard.command, proj).rc).toBe(0)
+        expect(run(shell, guard.command, proj).rc).toBe(rc)
       })
 
-      it('rc 0 when node is not on PATH', () => {
+      it('rc 127, never 2, when node is not on PATH (a non-blocking error)', () => {
         const proj = project()
         writeGuard(proj, `process.exit(2)\n`)
         const bin = mkdtempSync(join(tmp, 'bin-'))
@@ -164,18 +166,16 @@ describe('child-claude-channel-guard on the main agent: fail-open (C1 PR 13a B1)
           input: '{"x":1}', cwd: proj, encoding: 'utf-8', timeout: 30_000,
           env: { PATH: bin, HOME: proj, CLAUDE_PROJECT_DIR: proj },
         })
-        expect(r.status).toBe(0)
+        expect(r.status).toBe(127)
       })
     })
   }
 
-  it('rc 0 when the script hangs past its 8 s limit (inside the 10 s registration)', () => {
-    const proj = project()
-    writeGuard(proj, `setTimeout(() => {}, 60_000)\n`)
-    const started = Date.now()
-    expect(run('/bin/sh', guard.command, proj).rc).toBe(0)
-    expect(Date.now() - started).toBeLessThan(10_000)
-  }, 20_000)
+  it('a hang is ended by Claude Code\'s own 10 s hook timeout: no timeout prefix of its own, registered with 10', () => {
+    const entry = settings.hooks.PreToolUse.flatMap((g) => g.hooks).find((h) => h.command.includes(CHILD_GUARD)) as { command: string; timeout?: number }
+    expect(entry.timeout).toBe(10)
+    expect(entry.command).not.toMatch(/\btimeout\b/)
+  })
 
   it('a deny decision on stdout still reaches Claude Code (the guard blocks through stdout, exit 0)', () => {
     const proj = project()

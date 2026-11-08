@@ -38,7 +38,7 @@ import { loadProfileTemplate, type ProfileTemplate } from '../web/profiles.js'
 import { HEARTBEAT_AGENT_ID, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { logger } from '../logger.js'
 import { generateSubHooks, type KeptHook } from '../web/hooks/sub-generator.js'
-import { dryRun } from '../web/hooks/dry-run.js'
+import { dryRun, pairRewraps, type PlacedHook } from '../web/hooks/dry-run.js'
 import { withHeartbeatProbeLock } from './helpers/heartbeat-probe-lock.js'
 
 type Hooks = Record<string, Array<{ matcher?: unknown; hooks?: Array<Record<string, unknown>> }>>
@@ -102,6 +102,26 @@ function multiset(hooks: unknown): string[] {
   return out.sort()
 }
 
+/**
+ * The multiset difference left after the dry-run's rewrap pairing (C3-5b): the old chain writes the pre-C3-5
+ * spellings, the generator the normalised ones, so the two sides may differ only by rewraps (same hook, another
+ * known spelling or timeout). Unpaired hooks come back as multiset keys; {0 dropped, 0 added} = parity.
+ */
+function unpairedAfterRewrap(before: unknown, after: unknown): { pairs: number; dropped: string[]; added: string[] } {
+  const placed = (hooks: unknown): PlacedHook[] => Object.entries((hooks ?? {}) as Hooks).flatMap(([event, groups]) => groups
+    .flatMap((g) => (g.hooks ?? []).map((hook) => ({ event, ...(g.matcher === undefined ? {} : { matcher: g.matcher as string }), hook }))))
+  const key = (p: PlacedHook) => multiset({ [p.event]: [{ ...(p.matcher === undefined ? {} : { matcher: p.matcher }), hooks: [p.hook] }] })[0]
+  const minus = (xs: PlacedHook[], ys: PlacedHook[]) => {
+    const left = ys.map(key)
+    return xs.filter((x) => { const i = left.indexOf(key(x)); if (i < 0) return true; left.splice(i, 1); return false })
+  }
+  const [b, a] = [placed(before), placed(after)]
+  const r = pairRewraps(minus(b, a), minus(a, b))
+  return { pairs: r.pairs.length, dropped: r.dropped.map(key), added: r.added.map(key) }
+}
+const parity = (old: unknown, fresh: unknown) => { const r = unpairedAfterRewrap(old, fresh); return { dropped: r.dropped, added: r.added } }
+const NO_DIFF = { dropped: [], added: [] }
+
 // The spawn's inject* sequence as agent-scaffold.ts:1215-1243 ran it on c7f124ff (extras path aside). Test-only: it
 // goes with the injectors in 3b-2.
 function oldSpawnInjections(name: string, e: Record<string, unknown>, profile: ProfileTemplate): void {
@@ -164,9 +184,10 @@ describe('parity: the old chain and the generator give the same multiset', () =>
       const cfg = sub === 'sub-05' ? { team: { role: 'leader' } } : { securityProfile: 'default' }
       const profile = loadProfileTemplate(sub === 'sub-05' ? 'applier' : 'default')
       const settings = { permissions: { allow: [] }, hooks: liveBlock(sub) }
-      const fresh = multiset(newChain(`${PREFIX}${sub}`, settings, profile, cfg))
-      const old = multiset(oldChain(`${PREFIX}${sub}`, settings, profile, cfg))
-      if (JSON.stringify(fresh) !== JSON.stringify(old)) diffs.push(`${sub}: +${fresh.filter((x) => !old.includes(x)).length} -${old.filter((x) => !fresh.includes(x)).length}`)
+      const fresh = newChain(`${PREFIX}${sub}`, settings, profile, cfg)
+      const old = oldChain(`${PREFIX}${sub}`, settings, profile, cfg)
+      const r = unpairedAfterRewrap(old, fresh)
+      if (r.dropped.length || r.added.length) diffs.push(`${sub}: +${r.added.length} -${r.dropped.length}`)
     }
     expect(diffs).toEqual([])
   }, 120_000)
@@ -201,11 +222,11 @@ function gateCase(c: { profile?: Partial<ProfileTemplate>; config?: Record<strin
   const newOn = newChain(name, base, on, cfgOn)
   const oldOn = oldChain(name, base, on, cfgOn)
   expect(JSON.stringify(newOn)).toContain(c.script)
-  expect(multiset(newOn)).toEqual(multiset(oldOn))
+  expect(parity(oldOn, newOn)).toEqual(NO_DIFF)
   // OFF again, from the ON block: offRemoves entries go, the others stay as kept copies; the same both ways.
   setGates(undefined)
   const offBase = { permissions: { allow: [] }, hooks: oldOn }
-  expect(multiset(newChain(name, offBase, DEFAULT))).toEqual(multiset(oldChain(name, offBase, DEFAULT)))
+  expect(parity(oldChain(name, offBase, DEFAULT), newChain(name, offBase, DEFAULT))).toEqual(NO_DIFF)
 }
 
 describe('the boot writer (ensureSubHookBlock)', () => {
@@ -217,7 +238,8 @@ describe('the boot writer (ensureSubHookBlock)', () => {
     expect(S.ensureSubHookBlock(`${PREFIX}idem`, NO_EXTRAS)).toBe(false)
     expect(readFileSync(path, 'utf-8')).toBe(bytes)
     expect(statSync(path).mtimeMs).toBe(mtime)
-    expect(multiset(readJson(path).hooks)).toEqual(multiset(liveBlock('sub-02')))
+    // The live block is the pre-C3-5 shape: the window's 32 rewraps, nothing added or dropped.
+    expect(unpairedAfterRewrap(liveBlock('sub-02'), readJson(path).hooks)).toEqual({ pairs: 32, ...NO_DIFF })
     S.writeAgentSettingsFromProfile(`${PREFIX}idem`, DEFAULT, NO_EXTRAS)
     expect(S.ensureSubHookBlock(`${PREFIX}idem`, NO_EXTRAS)).toBe(false)
   })
@@ -230,9 +252,10 @@ describe('the boot writer (ensureSubHookBlock)', () => {
   it('rollback safety: the old boot chain over a generator-written block changes no hook', () => {
     const path = probe(`${PREFIX}rollback`, { permissions: { allow: [] }, hooks: liveBlock('sub-07') })
     expect(S.ensureSubHookBlock(`${PREFIX}rollback`, NO_EXTRAS)).toBe(true)
-    const written = multiset(readJson(path).hooks)
+    const written = readJson(path).hooks
     oldBoot(`${PREFIX}rollback`, DEFAULT)
-    expect(multiset(readJson(path).hooks)).toEqual(written)
+    // The old ensure* may put back their pre-C3-5 spellings (a rewrap); no hook is added or dropped.
+    expect(parity(written, readJson(path).hooks)).toEqual(NO_DIFF)
   })
 
   it('runs the PreCompact prompt migrations before the generator (Ron N3): a foreign root is re-anchored', () => {
@@ -416,7 +439,7 @@ describe('C3-3b-1b: the boot writer, pinned', () => {
     g.hooks!.push({ type: 'http', url: 'https://ops.example.invalid/session' })
     const settings = { permissions: { allow: [] }, hooks }
     const fresh = newChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT) as Hooks
-    expect(multiset(fresh)).toEqual(multiset(oldChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT)))
+    expect(parity(oldChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT), fresh)).toEqual(NO_DIFF)
     expect(fresh.SessionStart.find((x) => x.hooks?.some((h) => h.type === 'http'))?.matcher).toBe(tplMatcher)
     expect(JSON.stringify(fresh)).not.toContain(legacy)
   })
@@ -429,6 +452,6 @@ describe('C3-3b-1b: the boot writer, pinned', () => {
     expect(promptOf(plan.hooks)).toBe('the real prompt')
     expect(plan.kept).toEqual([{ event: 'PreCompact', matcher: 'auto', hook: noPrompt, inManagedGroup: true }])
     const settings = { permissions: { allow: [] }, hooks: { ...liveBlock('sub-01'), PreCompact: [{ matcher: 'auto', hooks: [noPrompt, real] }] } }
-    expect(multiset(newChain(`${PREFIX}n-h`, settings, DEFAULT))).toEqual(multiset(oldChain(`${PREFIX}n-h`, settings, DEFAULT)))
+    expect(parity(oldChain(`${PREFIX}n-h`, settings, DEFAULT), newChain(`${PREFIX}n-h`, settings, DEFAULT))).toEqual(NO_DIFF)
   })
 })

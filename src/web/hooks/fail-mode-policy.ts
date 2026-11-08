@@ -29,6 +29,18 @@ export const FAIL_MODE_POLICY: Readonly<Record<HookKind, FailMode>> = {
  */
 export const CLOSED_WHILE_FROZEN: readonly WrapperKind[] = ['failOpenExecClosedWhenFrozen']
 
+/**
+ * The fail mode each wrapper spells (C3-5): one spelling per mode, so a wrapper
+ * and the failMode recorded next to it can never disagree. `closed` has two:
+ * failClosed, and the kill switch's closed-while-frozen spelling (see above).
+ */
+export const WRAPPER_FAIL_MODE: Readonly<Record<WrapperKind, FailMode>> = {
+  failOpenExec: 'open',
+  failClosed: 'closed',
+  failOpenExecClosedWhenFrozen: 'closed',
+  agentPrompt: 'advisory',
+}
+
 /** The only event on which a hook may fail closed (see docs/hook-fail-modes.md). */
 export const CLOSED_EVENT = 'PreToolUse'
 
@@ -42,7 +54,7 @@ export interface FailModeException {
 
 /**
  * Entries whose recorded fail mode differs from the policy today. Recorded, not
- * fixed: removing a row means changing the wrapper (C3-5) or the policy, in the
+ * fixed: removing a row means changing the entry's wrapper and fail mode, or the policy, in the
  * same change. A row that no longer differs fails the check, so the list cannot
  * outlive the mismatch it names.
  */
@@ -51,9 +63,9 @@ export const FAIL_MODE_EXCEPTIONS: readonly FailModeException[] = [
     id: 'fleet-freeze-gate',
     scope: 'sub',
     failMode: 'open',
-    reason: 'The sub-agents get the template\'s plain fail-open wrapper, so a missing script lets calls through even '
-      + 'while frozen. Whether the kill switch should fail closed on the sub-agents is owner decision 3 (C3 plan), '
-      + 'taken with the wrapper fix (C3-5).',
+    reason: 'The sub-agents get the plain fail-open wrapper (failOpenExec), so a missing script lets calls through '
+      + 'even while frozen. Whether the kill switch should fail closed on the sub-agents is owner decision 3 (C3 plan), '
+      + 'pending, separate from the wrapper normalisation (C3-5).',
   },
   {
     id: 'child-claude-channel-guard',
@@ -100,6 +112,7 @@ export function failModePolicyFindings(
       const want = policy[e.kind]
       const x = byKey.get(key)
       if (x) used.add(key)
+      if (WRAPPER_FAIL_MODE[spec.wrapper] !== spec.failMode) findings.push(`${key}: wrapper ${spec.wrapper} does not spell fail mode ${spec.failMode}`)
       if (spec.failMode !== want) {
         if (!x) findings.push(`${key}: kind ${e.kind} should fail ${want}, the manifest records ${spec.failMode}, and no exception names it`)
         else if (x.failMode !== spec.failMode) findings.push(`${key}: the exception records ${x.failMode}, the manifest records ${spec.failMode}`)

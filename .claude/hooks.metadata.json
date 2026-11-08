@@ -208,7 +208,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing email sent from Bash.",
-        "fingerprint": "ff6e53bd1f418b70b823cde7238b0fc3315bb7ad9d0749ac04287408cbf1331b"
+        "fingerprint": "ec4a9258bc8601c8e88d47a342465aca34cecd4396144f6a5c770b88da30eacd"
       },
       {
         "index": 2,
@@ -216,7 +216,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing email (send_email tools).",
-        "fingerprint": "c394c746154806770e3163dc1ccde9be76c28e90f412891e308a986b42f3b9ee"
+        "fingerprint": "9dab8e61c68b55a698b06b89a367c252dd75d7bcf0558bbdceca1717307501cd"
       },
       {
         "index": 3,
@@ -224,7 +224,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing email (manage_email tools).",
-        "fingerprint": "21d1eaac63337a66a5a296e9e9bbf560edebf66d75735aefe3b14694fce8977d"
+        "fingerprint": "255edab2396d1bb298b5f8d1fbdea5e0c1dcea75a1233720ff6080c4e43b1c0c"
       },
       {
         "index": 4,
@@ -232,7 +232,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing email (Gmail connector tools).",
-        "fingerprint": "931cb2a709989038508ed2375e5bc3f48c570da0b0551c116fbcd019a09abb2f"
+        "fingerprint": "ffb0c4f22f245402ddbd54139b2f601b4f858bb6c57f49807d4e476ad1a370a8"
       },
       {
         "index": 5,
@@ -240,7 +240,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing email drafts (draft_email tools).",
-        "fingerprint": "ef3b4959d9a14558ff871e532b5c5f375aa52aebb2fc4c2e5e715ba5e6814bf2"
+        "fingerprint": "9446be4817c4e05d18f3882872aef6dc5fd5781143776c0abe76e6f93915e77b"
       },
       {
         "index": 6,
@@ -248,7 +248,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing email (send / draft / reply / forward tool family).",
-        "fingerprint": "377931b4032bc5f334e7ef61263cb78cdff5b35276161ba44fb5aec785bbf98b"
+        "fingerprint": "4907f9b3c0d692d6d9340b4f525216595a7e2772f73f556c0337a01cdd1456a3"
       },
       {
         "index": 7,
@@ -256,7 +256,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing Telegram reply / edit_message text.",
-        "fingerprint": "9958c78989ed7fbf5a0a53e77b70f12fb281caa4ce2832c70469b84ab6b6399e"
+        "fingerprint": "4ae74a6b35e93ed6b61d2772a299ac8834a6fe5171493dae323b1f0e5868765f"
       },
       {
         "index": 8,
@@ -264,7 +264,7 @@
         "hook": "outgoing-copy-gate",
         "gate": true,
         "purpose": "Copy QA gate on outgoing Discord reply / edit_message text.",
-        "fingerprint": "9381080810f59fe04a00a6cdef7767029e5c14bf91d88a7c4ad260ecd95dc939"
+        "fingerprint": "9424df6e4fcebc3fb44b84479cc76bd5910d92cba9f90b19aec865829e6d6ef9"
       },
       {
         "index": 9,
@@ -272,7 +272,7 @@
         "hook": "email-approval-gate",
         "gate": true,
         "purpose": "Level-aware approval gate on outgoing email sent from Bash (EMAILKAPU901).",
-        "fingerprint": "aaab71739fefaa88c806cee84a890a0d2178c12e878e571ebed65f4aaaa54fff"
+        "fingerprint": "8cdbc5abfdac0ad5cd2026654bad477f8e9bc051900131cc4944a4e5180748b3"
       },
       {
         "index": 10,
@@ -280,7 +280,7 @@
         "hook": "email-approval-gate",
         "gate": true,
         "purpose": "Level-aware approval gate on outgoing email (send_email tools).",
-        "fingerprint": "49e7869da6fb49a6da8992d56e1f1f55426292308ab7b5138d6253b340f83abe"
+        "fingerprint": "de0009746104efb1562d2f0380e245dba4ac352c33ac6cb9eddcdf7234bc4901"
       },
       {
         "index": 11,
@@ -288,7 +288,7 @@
         "hook": "email-approval-gate",
         "gate": true,
         "purpose": "Level-aware approval gate on outgoing email (manage_email tools).",
-        "fingerprint": "7115e2df1f4c3102095bdc55d92260a6dfa6cfe7b70d63c02997549ce9aeb491"
+        "fingerprint": "e3fd85f642d1b4ca22e6844a99aa287581eecf1514e214d20ce129f3c1c87c89"
       },
       {
         "index": 12,
@@ -296,7 +296,7 @@
         "hook": "email-approval-gate",
         "gate": true,
         "purpose": "Level-aware approval gate on outgoing email (Gmail connector tools).",
-        "fingerprint": "e8b9cbbb3265c886ec5a0ae834b99c83e8bb6552f34afc83a024d798dc9b6358"
+        "fingerprint": "74d5fd63bb8657dac559079cae7facb303168a8e6a59669c93d4b1519d835775"
       },
       {
         "index": 13,
@@ -304,7 +304,7 @@
         "hook": "email-approval-gate",
         "gate": true,
         "purpose": "Level-aware approval gate on outgoing email drafts (draft_email tools).",
-        "fingerprint": "b6744bc9efbe73b58e9d993024e5381b88dc301de9eeb53ea1bc6a20c63caf04"
+        "fingerprint": "82adcd70077808cfd14ddbb7cebab581012023f9bfc83d3d7219c3a2c002f403"
       },
       {
         "index": 14,
@@ -312,7 +312,7 @@
         "hook": "email-approval-gate",
         "gate": true,
         "purpose": "Level-aware approval gate on outgoing email (send / draft / reply / forward tool family).",
-        "fingerprint": "72a23ba7706a44b6d2ab90ee1643f7abfbd01a70adcb01128f07f32ada1cb21f"
+        "fingerprint": "f68e90b97545f48bcff4dd34e2acb4bef1d94b32d94bdf274966b537413473e4"
       },
       {
         "index": 15,
@@ -328,7 +328,7 @@
         "hook": "egress-gate",
         "gate": true,
         "purpose": "PreToolUse hook: WebFetch egress allowlist enforcement.",
-        "fingerprint": "94368f91e67d77d3cef978d63541bd2dcb5824dd82d2cc90404763644b622b87"
+        "fingerprint": "1ae5f224dea1eccf878c52910309ec2ae090e4646f5a32f2f64b88dec35f50c8"
       },
       {
         "index": 17,
@@ -352,7 +352,7 @@
         "hook": "db-write-gate",
         "gate": true,
         "purpose": "PreToolUse gate: agent writes to the dashboard's SECURITY surface (APPROVALDBGATE1030), for EVERY agent, the main agent included.",
-        "fingerprint": "ccb220ffc34e4c03f9b8267c0aee515a0a618a9ebd8e4650feb9e8c5c31be04e"
+        "fingerprint": "b6314fdc03011955ee226d678704152b676f86bd3b60883e2331fe1b46021605"
       },
       {
         "index": 20,
@@ -368,7 +368,7 @@
         "hook": "child-claude-channel-guard",
         "gate": true,
         "purpose": "PreToolUse hook (matcher: Bash): a session whose Telegram poller can be killed must not start a child `claude` that would kill it (CHILDCLAUDEPOLLER1010).",
-        "fingerprint": "76a32ad3a4c3d2ffaba12479249ec26bcd09ef6591eb933c10580e5e5cc38460"
+        "fingerprint": "62f0e7265779187a5f67cf1df8e5fd0bcbadd7cdaa34d8f531b4085cbee49128"
       },
       {
         "index": 22,

@@ -43,7 +43,9 @@ function render(profileId: string): void {
 }
 
 describe('WebSearch envelope: where it lands', () => {
-  const expected = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)}"`
+  // The one open spelling since C3-5b (failOpenExec, path quoted).
+  const p = join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)
+  const expected = `bash -c '[ -f "${p}" ] && exec python3 "${p}"; exit 0'`
 
   it('every shipped profile renders exactly one WebSearch envelope group, by absolute path', () => {
     const ids = listProfileTemplates().map((p) => p.id)

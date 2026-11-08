@@ -156,7 +156,7 @@
           {
             "type": "command",
             "command": "bash -c '[ -f \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\" ] && exec python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\"; exit 0'",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       },
@@ -226,7 +226,7 @@
           {
             "type": "command",
             "command": "bash -c '[ -f \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\" ] && exec python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\"; exit 0'",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       },
@@ -257,7 +257,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -267,7 +267,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -277,7 +277,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -287,7 +287,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -297,7 +297,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -307,7 +307,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -317,7 +317,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -327,7 +327,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]
@@ -337,7 +337,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -347,7 +347,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -357,7 +357,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -367,7 +367,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -377,7 +377,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -387,7 +387,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; else python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -407,7 +407,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: node interpreter hianyzik, a kapu BLOKKOL\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): egress-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (node nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a node-ot, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): egress-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -437,7 +437,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: node interpreter hianyzik, a kapu BLOKKOL\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 node \"$CLAUDE_PROJECT_DIR/scripts/hooks/db-write-gate.mjs\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/db-write-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): db-write-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (node nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a node-ot, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 node \"$CLAUDE_PROJECT_DIR/scripts/hooks/db-write-gate.mjs\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/db-write-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): db-write-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 10
           }
         ]
@@ -457,7 +457,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f \"$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs\" ] && command -v node >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 node \"$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs\"; fi; [ $? = 2 ] && exit 2; exit 0'",
+            "command": "bash -c '[ -f \"$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs\" ] && exec node \"$CLAUDE_PROJECT_DIR/scripts/hooks/child-claude-channel-guard.mjs\"; exit 0'",
             "timeout": 10
           }
         ]

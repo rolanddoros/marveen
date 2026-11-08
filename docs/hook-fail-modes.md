@@ -9,9 +9,10 @@ below. The manifest's fail mode is itself pinned to the real wrapper text by
 `hook-manifest-main.test.ts` and `hook-manifest-sub.test.ts`, so the check
 compares the policy with what the settings files really do.
 
-This document and its test change nothing at runtime: no wrapper, no settings
-file, no caller. Bringing the exceptions into line is the wrapper
-normalisation (C3-5).
+The policy and its test change nothing at runtime. Since the wrapper
+normalisation (C3-5) every fail mode has exactly one wrapper spelling, the same
+in both scopes (see "Wrapper spellings"); the named exceptions below are the
+only places where a hook's fail mode differs from its kind's.
 
 ## What a fail mode is
 
@@ -22,6 +23,33 @@ the wrapper the settings file puts around the script, not by the script.
 - `closed`: the failure blocks the call (exit 2).
 - `open`: the failure lets the call through.
 - `advisory`: the hook never blocks (a prompt-type hook).
+
+## Wrapper spellings
+
+One spelling per fail mode (C3-5; `WRAPPER_FAIL_MODE` in
+`fail-mode-policy.ts`, and the policy test fails on a wrapper that does not
+spell the recorded mode). `P` is the script path, quoted in every spelling:
+`"$CLAUDE_PROJECT_DIR/<script>"` in the main agent's tracked file, the absolute
+path in a sub-agent's file.
+
+- `open` = `failOpenExec`: `bash -c '[ -f "P" ] && exec <interp> "P" [args]; exit 0'`.
+  A missing script exits 0; a missing interpreter (127) or a crash is a
+  non-blocking error; a verdict of 2 passes through `exec`. No `timeout` prefix:
+  Claude Code's own hook timeout ends an open hook, and a timed-out hook is a
+  non-blocking error.
+- `closed` = `failClosed`: an interpreter probe that blocks with a message
+  naming the fix (`command -v python3` / `command -v node` on PATH; a sub-agent's
+  node gate checks the burnt-in node binary with `test -x`, because on nvm a bare
+  `node` is not on a hook's PATH), then the run under `timeout -k 1 D`
+  (D = timeout - 2, at least 1); any status other than 0 or 2 becomes 2.
+- `closed` while frozen = `failOpenExecClosedWhenFrozen`: the kill switch only
+  (below).
+- `advisory` = `agentPrompt`: a prompt-type hook, no command.
+
+The spellings retired by C3-5 (an unquoted path, a bare `python3 P`, a node
+probe that failed open, a closed run without a probe) are still listed in
+`src/web/hooks/spellings.ts`, so the settings dry-run classifies a file written
+before the change, or after a rollback.
 
 What a WORKING hook decides (allow, warn, block) is a separate question and is
 not covered here.
@@ -54,16 +82,16 @@ turn. The test enforces this for every entry that fails closed.
 ### The kill switch: closed while frozen
 
 For a `security-gate`, `closed` means any broken run blocks, always (the
-fail-closed run wrappers). For the `kill-switch`, `closed` means closed while
+`failClosed` wrapper). For the `kill-switch`, `closed` means closed while
 frozen (the main agent's `failOpenExecClosedWhenFrozen` wrapper). The test
 keeps the two apart: a kill switch must use a closed-while-frozen wrapper, and
 no other kind may.
 
 This line of the policy is PENDING OWNER DECISION 3 (C3 plan): whether the kill
 switch should fail closed on the sub-agents too. It records the direction the
-main agent already has; the question goes to the owner with the wrapper fix
-(C3-5). If the decision is "open", the policy row and the exception change in
-one commit.
+main agent already has; the decision is pending, separate from the wrapper
+normalisation (C3-5). If the decision is "open", the policy row and the
+exception change in one commit.
 
 ## Names that mislead
 
@@ -104,7 +132,7 @@ differs fails the test, so the list cannot outlive the mismatch it names.
 
 | hook | scope | fail mode today | policy | reason |
 |---|---|---|---|---|
-| `fleet-freeze-gate` | sub | `open` | `closed` (while frozen) | The sub-agents get the template's plain fail-open wrapper, so a missing script lets calls through even while frozen. Owner decision 3, taken with the wrapper fix (C3-5). |
+| `fleet-freeze-gate` | sub | `open` | `closed` (while frozen) | The sub-agents get the plain fail-open wrapper (`failOpenExec`), so a missing script lets calls through even while frozen. Owner decision 3, pending, separate from the wrapper normalisation (C3-5). |
 | `child-claude-channel-guard` | sub | `closed` | `open` | Decided per scope: fail-open on the main agent, the scaffold's sub-agent copy stays fail-closed (Kevin 13549 B1, `src/web/agent-scaffold.ts` at `CHILD_CLAUDE_GUARD_SCRIPT`). |
 
 Every other entry follows the policy in every scope it is part of.
@@ -130,13 +158,13 @@ The relation between them:
 
 - `closed` implies locked: a hook whose failure blocks must not be switchable
   off by an environment variable, or the closed wrapper protects nothing. The
-  test checks it for every main-agent entry against the sidecar: all 5 closed
-  hooks are `gate: true`. Since C3-4 the sidecar is generated from the
+  test checks it for every main-agent entry against the sidecar: every closed
+  hook is `gate: true`. Since C3-4 the sidecar is generated from the
   manifest (`npm run hooks:generate`) and its `gate` flag follows
   `DEFAULT_NON_DISABLEABLE`, so the test reads the generated sidecar, not a
   hand-kept count or list.
-- Locked does not imply closed. 11 of the 16 locked hooks fail open, and that
-  is right: `ledger-capture` must not be switched off (a disabled ledger loses
+- Locked does not imply closed. Most locked hooks fail open, and that is
+  right: `ledger-capture` must not be switched off (a disabled ledger loses
   channel messages silently), but a broken one must not make the agent deaf.
 
 A measured fact about the lock: at runtime it acts only in the hook scripts

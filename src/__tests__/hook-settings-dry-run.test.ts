@@ -270,13 +270,18 @@ describe('read-only: runtime under node --permission (read access only), guard p
 })
 
 describe('the report', () => {
-  it('12/12 EMPTY, the playwright hook kept on 5, one agent without settings, normalised order named', () => {
+  // The install is the pre-C3-5 live shape (the fixture), so this is the C3-5 window gate (plan-c3-5.md 3a): every
+  // agent rewrap only, 32 hooks each, 0 added, 0 dropped, exit 0.
+  it('the C3-5 window: 12/12 rewrap only (32 each), the playwright hook kept on 5, one agent without settings, normalised order named', () => {
     const r = dryRun({ root: install, nodeBin: NODE })
     const text = formatDryRun(r)
     expect(r.exit).toBe(0)
-    expect(text).toContain('\nsummary: 13 agent(s), 12/12 multiset EMPTY, 0 rewrap only, 1 without settings, 0 error; exit 0\n')
+    expect(text).toContain('\nsummary: 13 agent(s), 0/12 multiset EMPTY, 12 rewrap only, 1 without settings, 0 error; exit 0\n')
+    const compared = r.agents.filter((a) => a.name !== 'sub-13')
+    expect(compared.map((a) => [a.name, a.rewrapped.length, a.added.length, a.dropped.length])).toEqual(compared.map((a) => [a.name, 32, 0, 0]))
     expect(text.match(/kept as is: PostToolUse \[mcp__playwright__browser_\.\*\] browser-content-notice\.py timeout=(-|10)/g)).toHaveLength(5)
-    expect(text).toContain('sub-01: profile default, hooks 39 -> 39, multiset EMPTY, normalised: UserPromptSubmit [9,1,1] -> [11]; PreToolUse order')
+    expect(text).toContain('sub-01: profile default, hooks 39 -> 39, multiset rewrap only ~32, normalised: ')
+    expect(text).toContain('UserPromptSubmit [9,1,1] -> [11]; PreToolUse order')
     expect(text).toContain('sub-05: profile applier')
     expect(text).toContain('sub-13: no-settings')
   })
@@ -337,6 +342,9 @@ describe('the report', () => {
     writeFileSync(path, typeof text === 'string' ? text : JSON.stringify(s, null, 2))
     try { fn() } finally { writeFileSync(path, original) }
   }
+  // The install is the pre-C3-5 shape, so every agent already carries the window's 32 rewraps: an edit test reads
+  // only the lines of the hook it touched.
+  const rewrapsOf = (r: { agents: Array<{ rewrapped: string[] }> }, script: string) => r.agents[0].rewrapped.filter((l) => l.includes(` ${script} `))
   const groupOf = (s: Record<string, any>, script: string) => s.hooks.PreToolUse.find((g: unknown) => JSON.stringify(g).includes(script))
   const hookOf = (s: Record<string, any>, event: string, script: string): Record<string, unknown> =>
     s.hooks[event].flatMap((g: { hooks: unknown[] }) => g.hooks).find((h: { command?: string }) => String(h.command).includes(`/${script}`))
@@ -355,7 +363,7 @@ describe('the report', () => {
       const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
       expect(r.exit).toBe(0)
       expect([r.agents[0].dropped, r.agents[0].added]).toEqual([[], []])
-      expect(r.agents[0].rewrapped).toEqual(['UserPromptSubmit [-] staleness-guard.py wrapper failOpenExecUnquoted -> failOpenExecUnquoted, deadline - -> -, timeout 99999 -> 10'])
+      expect(rewrapsOf(r, 'staleness-guard.py')).toEqual(['UserPromptSubmit [-] staleness-guard.py wrapper failOpenExecUnquoted -> failOpenExec, deadline - -> -, timeout 99999 -> 10'])
       expect(r.summary).toMatchObject({ empty: 0, rewrapOnly: 1, drift: 0 })
     })
     // A gate's command carries its own deadline (timeout - 2): a timeout edited alone no longer matches it, so the
@@ -387,7 +395,7 @@ describe('the report', () => {
   it('an agent without settings.json: exit 0, but counted and listed apart (Kevin 13873)', () => {
     const r = dryRun({ root: install, nodeBin: NODE })
     expect(r.exit).toBe(0)
-    expect(r.summary).toEqual({ agents: 13, compared: 12, empty: 12, rewrapOnly: 0, drift: 0, noSettings: ['sub-13'], errors: [] })
+    expect(r.summary).toEqual({ agents: 13, compared: 12, empty: 0, rewrapOnly: 12, drift: 0, noSettings: ['sub-13'], errors: [] })
     expect(formatDryRun(r)).toContain('\n  without settings: sub-13\n')
   })
 
@@ -620,30 +628,41 @@ describe('the report', () => {
   const quotedOpen = (script: string) => `bash -c '[ -f "${hookPath(script)}" ] && exec python3 "${hookPath(script)}"; exit 0'`
 
   it('a wrapper-only change between two known spellings is a rewrap: kinds listed, counted apart, exit 0 (C3-5a)', () => {
-    withSettings('sub-03', (s) => { hookOf(s, 'UserPromptSubmit', 'staleness-guard.py').command = quotedOpen('staleness-guard.py') }, () => {
+    withSettings('sub-03', (s) => {
+      // Already the rendered spelling: no longer a rewrap. A bare SessionEnd hook moved to the old unquoted spelling:
+      // still a rewrap, now from that spelling.
+      hookOf(s, 'UserPromptSubmit', 'staleness-guard.py').command = quotedOpen('staleness-guard.py')
+      const p = hookPath('clear-capture.py')
+      hookOf(s, 'SessionEnd', 'clear-capture.py').command = `bash -c '[ -f ${p} ] && exec python3 ${p}; exit 0'`
+    }, () => {
       const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
       expect(r.exit).toBe(0)
       expect([r.agents[0].dropped, r.agents[0].added]).toEqual([[], []])
-      const line = 'UserPromptSubmit [-] staleness-guard.py wrapper failOpenExec -> failOpenExecUnquoted, deadline - -> -, timeout 10 -> 10'
-      expect(r.agents[0].rewrapped).toEqual([line])
+      expect(rewrapsOf(r, 'staleness-guard.py')).toEqual([])
+      const line = 'SessionEnd [-] clear-capture.py wrapper failOpenExecUnquoted -> failOpenExec, deadline - -> -, timeout 15 -> 15'
+      expect(rewrapsOf(r, 'clear-capture.py')).toEqual([line])
+      expect(r.agents[0].rewrapped).toHaveLength(31)
       expect(r.summary).toMatchObject({ agents: 1, compared: 1, empty: 0, rewrapOnly: 1, drift: 0 })
       const text = formatDryRun(r)
-      expect(text).toContain('sub-03: profile default, hooks 39 -> 39, multiset rewrap only ~1, ')
+      expect(text).toContain('sub-03: profile default, hooks 39 -> 39, multiset rewrap only ~31, ')
       expect(text).toContain(`\n  ~ ${line}\n`)
       expect(text).toContain('\nsummary: 1 agent(s), 0/1 multiset EMPTY, 1 rewrap only, 0 without settings, 0 error; exit 0\n')
     })
   })
 
-  it('the two C3-5 shapes, as a rollback would see them: wrapper + timeout, and a gate\'s timeout with its deadline', () => {
+  it('the two C3-5 timeout shapes: the window rewraps them (wrapper + timeout, a gate\'s timeout with its deadline); an install already on them pairs byte-identical', () => {
+    const r0 = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+    expect([...rewrapsOf(r0, 'outgoing-copy-gate.py'), ...rewrapsOf(r0, 'voice-reply-directive.py')]).toEqual([
+      'PreToolUse [mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message] outgoing-copy-gate.py wrapper failClosedPythonProbe -> failClosedPythonProbe, deadline 8 -> 13, timeout 10 -> 15',
+      'UserPromptSubmit [-] voice-reply-directive.py wrapper failOpenExecUnquoted -> failOpenExec, deadline - -> -, timeout 60 -> 180',
+    ])
     withSettings('sub-03', (s) => {
       Object.assign(hookOf(s, 'UserPromptSubmit', 'voice-reply-directive.py'), { command: quotedOpen('voice-reply-directive.py'), timeout: 180 })
       Object.assign(hookOf(s, 'PreToolUse', 'outgoing-copy-gate.py'), { command: pythonGateCommand(hookPath('outgoing-copy-gate.py'), [], 15), timeout: 15 })
     }, () => {
       const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
-      expect(r.agents[0].rewrapped.sort()).toEqual([
-        'PreToolUse [mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message] outgoing-copy-gate.py wrapper failClosedPythonProbe -> failClosedPythonProbe, deadline 13 -> 8, timeout 15 -> 10',
-        'UserPromptSubmit [-] voice-reply-directive.py wrapper failOpenExec -> failOpenExecUnquoted, deadline - -> -, timeout 180 -> 60',
-      ])
+      expect([...rewrapsOf(r, 'outgoing-copy-gate.py'), ...rewrapsOf(r, 'voice-reply-directive.py')]).toEqual([])
+      expect(r.agents[0].rewrapped).toHaveLength(30)
       const lines: string[] = []
       expect(runHookSettingsCli(['--dry-run', '--root', install, '--node-bin', NODE, '--json', '--agent', 'sub-03'], (x) => lines.push(x), () => {})).toBe(0)
       expect(JSON.parse(lines.join('')).summary).toMatchObject({ rewrapOnly: 1, drift: 0 })
@@ -662,10 +681,14 @@ describe('the report', () => {
       // C3-5a-3 (Ron 14109): an open wrapper on a closed gate, same interpreter, path and arguments: a fail-mode flip.
       ['open wrapper on a closed gate', (s) => { hookOf(s, 'PreToolUse', 'outgoing-copy-gate.py').command = quotedOpen('outgoing-copy-gate.py') }],
     ]
+    // The edited hook (event + script): marveen-commands.py also sits under UserPromptSubmit, a window rewrap.
+    const touchedOf: Record<string, [string, string]> = { argument: ['Stop', 'marveen-commands.py'], 'open wrapper on a closed gate': ['PreToolUse', 'outgoing-copy-gate.py'] }
     for (const [what, edit] of edits) {
       withSettings('sub-03', edit, () => {
         const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true })
-        expect([what, r.exit, r.agents[0].dropped.length, r.agents[0].added.length, r.agents[0].rewrapped]).toEqual([what, 1, 1, 1, []])
+        const [event, script] = touchedOf[what] ?? ['UserPromptSubmit', 'staleness-guard.py']
+        const touched = rewrapsOf(r, script).filter((l) => l.startsWith(`${event} `))
+        expect([what, r.exit, r.agents[0].dropped.length, r.agents[0].added.length, touched]).toEqual([what, 1, 1, 1, []])
         for (const out of [formatDryRun(r), JSON.stringify(r)]) expect(out, what).not.toContain('CANARY_7f3a')
       })
     }
@@ -768,9 +791,10 @@ describe('isRewrap: each pairing rule (C3-5a)', () => {
       ['stderr redirect before the path', (c) => (c.includes('exec python3 ') ? c.replace('exec python3 ', 'exec python3 2>/dev/null ') : null)],
       ['exec dropped', (c) => (c.includes('&& exec ') ? c.replace('&& exec ', '&& ') : null)],
       ['open tail exit 0 -> exit 2', (c) => (c.endsWith("; exit 0'") ? `${c.slice(0, -"exit 0'".length)}exit 2'` : null)],
-      ['[ -f P ] replaced by true', (c, p) => (c.includes(`[ -f ${p} ]`) ? c.replace(`[ -f ${p} ]`, 'true') : null)],
-      ['tested path P, run path another script', (c, p) => (c.includes('&& exec python3 ') ? c.replace(`exec python3 ${p}`, `exec python3 ${ROOT}/scripts/hooks/other-evil.py`) : null)],
-      ['run path = prefix + P', (c, p) => (c.includes('&& exec python3 ') ? c.replace(`exec python3 ${p}`, `exec python3 /tmp/x${p}`) : null)],
+      // The sub render quotes the path since C3-5b (failOpenExec in both scopes).
+      ['[ -f P ] replaced by true', (c, p) => (c.includes(`[ -f "${p}" ]`) ? c.replace(`[ -f "${p}" ]`, 'true') : null)],
+      ['tested path P, run path another script', (c, p) => (c.includes('&& exec python3 ') ? c.replace(`exec python3 "${p}"`, `exec python3 "${ROOT}/scripts/hooks/other-evil.py"`) : null)],
+      ['run path = prefix + P', (c, p) => (c.includes('&& exec python3 ') ? c.replace(`exec python3 "${p}"`, `exec python3 "/tmp/x${p}"`) : null)],
       ['|| true on the gate invocation', (c) => (c.includes('rc=$?') ? c.replaceAll(gateInv, '$1$2 || true') : null)],
       ['gate tail exit "$rc" -> exit 0', (c) => (c.endsWith('exit "$rc"') ? `${c.slice(0, -'exit "$rc"'.length)}exit 0` : null)],
       ['gate: another status no longer blocks', (c) => (c.includes('[ "$rc" = 2 ] ||') ? c.replace('[ "$rc" = 2 ] ||', '[ "$rc" = 2 ] || [ "$rc" = 1 ] ||') : null)],
@@ -820,9 +844,12 @@ describe('isRewrap: each pairing rule (C3-5a)', () => {
       const name = `${orig.event} ${s.path.slice(s.path.lastIndexOf('/') + 1)} ${s.kind}`
       if (s.failMode === 'open') {
         counts.open++
-        // The planned C3-5b spelling of an open sub hook.
-        const planned: PlacedHook = { ...orig, hook: { ...orig.hook, command: openExec(s.interpreter, s.path, s.args) } }
-        if (!isRewrap(orig, planned) || !isRewrap(planned, orig)) wrong.push(`planned pair not a rewrap: ${name}`)
+        // C3-5b renders the quoted failOpenExec; the retired unquoted spelling (the window's before side, and a
+        // revert's after side) pairs with it in both directions.
+        if (s.kind !== 'failOpenExec') wrong.push(`open sub hook not on failOpenExec: ${name}`)
+        const a = s.args.map((x) => ` ${x}`).join('')
+        const retired: PlacedHook = { ...orig, hook: { ...orig.hook, command: `bash -c '[ -f ${s.path} ] && exec ${s.interpreter} ${s.path}${a}; exit 0'` } }
+        if (!isRewrap(orig, retired) || !isRewrap(retired, orig)) wrong.push(`C3-5b pair not a rewrap: ${name}`)
       } else {
         counts.closed++
         // The same interpreter, path and arguments under the open wrapper: a flip, in both directions.
@@ -838,20 +865,30 @@ describe('isRewrap: each pairing rule (C3-5a)', () => {
     expect(wrong).toEqual([])
     expect(counts.open).toBeGreaterThan(30)
     expect(counts.closed).toBeGreaterThan(5)
-    // Main (the dry-run compares sub files only; the planned main pairs are checked on their spellings).
+    // Main (the dry-run compares sub files only, so the main pairs are checked on their spellings): each hook C3-5b
+    // re-spells, against the spelling it had before (rebuilt here from the retired templates), keeps its mode.
     const main = renderHooks(HOOK_MANIFEST, 'main')
     const mainPairs: string[] = []
     for (const [event, groups] of Object.entries(main)) {
       for (const h of groups!.flatMap((g) => g.hooks)) {
         if (h.type !== 'command') continue
         const s = classifySpelling(h.command, h.timeout, event, 'main')!
-        const planned = s.kind === 'failOpenNodeProbe' ? openExec(s.interpreter, s.path, s.args)
-          : s.kind === 'failClosedRun' && s.interpreter === 'python3' ? pythonGateCommand(s.path, s.args, h.timeout!) : null
-        if (planned === null) continue
-        const p = classifySpelling(planned, h.timeout, event, 'main')!
-        mainPairs.push(`${s.kind} ${s.failMode} -> ${p.kind} ${p.failMode}`)
+        const q = `"${s.path}"${s.args.map((x) => ` ${x}`).join('')}`
+        const run = `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${s.deadline} ${s.interpreter} ${q}; else ${s.interpreter} ${q}; fi`
+        const old = s.kind === 'failClosedPythonProbe' ? h.command.slice(h.command.indexOf('if command -v timeout'))
+          : s.kind === 'failClosedNodeProbe' ? `command -v node >/dev/null 2>&1 || { echo "governance-kapu: node interpreter hianyzik, a kapu BLOKKOL" >&2; exit 2; }; ${h.command.slice(h.command.indexOf('if command -v timeout'))}`
+            : s.path.endsWith('child-claude-channel-guard.mjs')
+              ? `bash -c '[ -f "${s.path}" ] && command -v node >/dev/null 2>&1 || exit 0; ${run.replace(String(s.deadline), String(Number(h.timeout) - 2))}; [ $? = 2 ] && exit 2; exit 0'`
+              : null
+        if (old === null) continue
+        const o = classifySpelling(old, h.timeout, event, 'main')!
+        mainPairs.push(`${o.kind} ${o.failMode} -> ${s.kind} ${s.failMode}`)
       }
     }
-    expect([...new Set(mainPairs)].sort()).toEqual(['failClosedRun closed -> failClosedPythonProbe closed', 'failOpenNodeProbe open -> failOpenExec open'])
+    expect([...new Set(mainPairs)].sort()).toEqual([
+      'failClosedRun closed -> failClosedPythonProbe closed',
+      'failClosedRunNodeProbe closed -> failClosedNodeProbe closed',
+      'failOpenNodeProbe open -> failOpenExec open',
+    ])
   })
 })

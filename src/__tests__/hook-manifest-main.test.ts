@@ -144,8 +144,8 @@ describe('hook manifest validation', () => {
     expect(() => validateManifest(withEntries(bad), 'main')).toThrow(/argument needs quoting/)
   })
 
-  it('rejects a sub-only wrapper in the main render', () => {
-    const bad = entries.map((e) => (e.id === 'clear-capture' ? { ...e, wrapper: 'bare' as const } : e))
-    expect(() => renderHooks(withEntries(bad), 'main')).toThrow(/not a main-agent spelling/)
+  it('rejects a wrapper with no spelling for the entry: failClosed on a shell script (C3-5: python3 and node only)', () => {
+    const bad = entries.map((e) => (e.id === 'channel-image-resize' ? { ...e, wrapper: 'failClosed' as const, failMode: 'closed' as const } : e))
+    expect(() => renderHooks(withEntries(bad), 'main')).toThrow(/has no fail-closed spelling/)
   })
 })
