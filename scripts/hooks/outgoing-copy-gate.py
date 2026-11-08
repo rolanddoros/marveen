@@ -1413,7 +1413,20 @@ def _python_module_sends(module, cwd, cmd_words, read_script) -> bool:
     return _judge_candidates(paths, "py", read_script)[1]
 
 
-def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
+# EGATEREASON1108: why a fail-closed branch called a script run a send. The verdict does not change; the reason
+# only lets the approval gate say WHY in its deny (Johnny 14000: a `$S/x.py` run was refused as "email_send
+# level 1", which read like a verdict on the script's content).
+SCRIPT_NOT_LITERAL = "not_literal"    # `$`, a glob or `{` in the script path, or a relative path after such a cd
+SCRIPT_NOT_READABLE = "not_readable"  # the named script cannot be read when the hook runs (missing, written later)
+
+
+def _fail_closed(reasons, reason, script) -> bool:
+    if reasons is not None:
+        reasons.append((reason, script))
+    return True
+
+
+def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words, reasons=None) -> bool:
     if not toks:
         return False
     prog = _basename(toks[0])
@@ -1422,7 +1435,8 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if depth >= _SHELL_C_DEPTH:
             return False
         for i in range(len(rest) - 1):
-            if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
+            if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words,
+                                                                  reasons=reasons):
                 return True
         return False
     if _PYTHON.match(prog):
@@ -1447,7 +1461,7 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         paths = _resolve_script_paths(toks[0], cwd, cmd_words)
         ext_kind = "py" if re.search(r"\.py$", toks[0], re.I) else "node" if _SCRIPT_FILE.search(toks[0]) else None
         if _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
-            return True
+            return _fail_closed(reasons, SCRIPT_NOT_LITERAL, toks[0])
         addr = _address_flag_given(rest)
         readable = False
         for p in paths:
@@ -1467,22 +1481,29 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if not ext_kind:
             # no candidate with a kind is readable: a #! line cannot be known, the extension gives none
             return False
-        return True  # the kind is known and no candidate is readable: fail-closed
+        # the kind is known and no candidate is readable: fail-closed
+        return _fail_closed(reasons, SCRIPT_NOT_LITERAL if _UNDECIDABLE_PATH.search(toks[0]) else SCRIPT_NOT_READABLE,
+                            toks[0])
     else:
         return False
     if script is None:
         return False
     if _UNDECIDABLE_PATH.search(script):
-        return True  # what runs is undecidable here: fail-closed
+        return _fail_closed(reasons, SCRIPT_NOT_LITERAL, script)  # what runs is undecidable here: fail-closed
     if _relative_under_undecidable_cd(script, cwd, cmd_words):
-        return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
+        # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
+        return _fail_closed(reasons, SCRIPT_NOT_LITERAL, script)
     readable, verdict = _judge_candidates(_resolve_script_paths(script, cwd, cmd_words), kind, read_script)
     if readable:
         return verdict
-    return bool(_SCRIPT_FILE.search(script) or "/" in script)  # a missing script is a send; `bun test` is not
+    if _SCRIPT_FILE.search(script) or "/" in script:  # a missing script is a send; `bun test` is not
+        return _fail_closed(reasons, SCRIPT_NOT_READABLE, script)
+    return False
 
 
-def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
+def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=(), reasons=None) -> bool:
+    """True when a command runs a script file that sends (or that cannot be judged: fail-closed). `reasons`, when a
+    list, receives (reason, script) for a fail-closed verdict (EGATEREASON1108); the verdict is the same without it."""
     if read_script is None:
         read_script = _read_script_head
     try:
@@ -1490,7 +1511,7 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
     except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
     cmd_words = list(_cd_words) + [w for toks in segments for w in toks]
-    return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
+    return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words, reasons)
                for toks in segments for h in _command_heads(toks))
 
 
