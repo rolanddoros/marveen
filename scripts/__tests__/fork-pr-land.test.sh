@@ -27,7 +27,11 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t
 export FORK_PR_LAND_POLL_SLEEP=0
 unset GH_TOKEN GITHUB_TOKEN GH_HOST
 
-if ! git merge-tree --write-tree HEAD HEAD >/dev/null 2>&1 && ! git -C "$ROOT" merge-tree --write-tree HEAD HEAD >/dev/null 2>&1; then
+# The capability control runs in its own scratch repo, not in the cwd or ROOT: the suite must also run from a
+# `git archive` export or any non-repo directory.
+CAP="$SANDBOX/cap"; git init -q "$CAP" && git -C "$CAP" commit -q --allow-empty -m cap \
+  || { echo "FATAL: cannot make a scratch git repo in $CAP" >&2; exit 2; }
+if ! git -C "$CAP" merge-tree --write-tree HEAD HEAD >/dev/null 2>&1; then
   echo "SKIP (control unmet): this git has no 'merge-tree --write-tree' (needs git >= 2.38)" >&2; exit 77
 fi
 
@@ -50,6 +54,7 @@ case "$1 $2" in
       git -C "$t/c" add moved.txt; git -C "$t/c" commit -qm moved; git -C "$t/c" push -q origin HEAD:main; rm -rf "$t"
     fi
     [ -z "${STUB_BREAK_LS:-}" ] || git config --file "$STUB_BREAK_LS" remote.fork.uploadpack /nonexistent-upload-pack
+    [ "${STUB_GH_VIEW:-ok}" != fail ] || { echo "stub: HTTP 502" >&2; exit 1; }
     n="$(grep -c '^pr view' "$GH_LOG")"
     if [ "${STUB_GH_UNKNOWN_FIRST:-0}" = 1 ] && [ "$n" -eq 1 ]; then echo UNKNOWN; else echo "${STUB_GH_MERGEABLE:-MERGEABLE}"; fi ;;
   "pr merge")
@@ -64,6 +69,11 @@ case "$1 $2" in
     t="$(mktemp -d)"; git clone -q "$STUB_FORK" "$t/c"
     if [ "${STUB_GH_MERGE:-ok}" = wrong ]; then
       echo extra >> "$t/c/extra.txt"; git -C "$t/c" add extra.txt; git -C "$t/c" commit -qm "not a merge"
+    elif [ "${STUB_GH_MERGE:-ok}" = squash ]; then
+      # the right tree, but one parent (a squash): only the main^2 = head check can tell
+      git -C "$t/c" merge -q --no-ff --no-edit "origin/$STUB_BRANCH"
+      sq="$(git -C "$t/c" commit-tree "$(git -C "$t/c" rev-parse 'HEAD^{tree}')" -p origin/main -m squash)"
+      git -C "$t/c" reset -q --hard "$sq"
     else
       git -C "$t/c" merge -q --no-ff --no-edit "origin/$STUB_BRANCH"
     fi
@@ -150,6 +160,19 @@ check ".github touched: exit 13" is "$RC" 13; check ".github touched: no push, n
 check ".github touched: the path is named" grep -qF ".github/workflows/x.yml" "$C/err"
 mk_case claude; wt_commit .claude/settings.json "{}"; finish; land
 check ".claude touched: exit 13" is "$RC" 13; check ".claude touched: no push, no gh" no_push_no_gh
+mk_case moved; main_commit .github/workflows/ci.yml "on: push"; git -C "$WT" fetch -q fork; git -C "$WT" merge -q --ff-only fork/main
+git -C "$WT" mv .github/workflows/ci.yml ci-moved.yml; git -C "$WT" commit -qm "move the workflow out"; finish; land
+check "protected file moved out of .github (git mv): exit 13" is "$RC" 13
+check "protected file moved out: no push, no gh" no_push_no_gh
+check "protected file moved out: the source path is named" grep -qF ".github/workflows/ci.yml" "$C/err"
+mk_case nonascii; wt_commit ".github/workflows/$(printf '\303\251').yml" "on: push"; finish; land
+check "top-level protected file with a non-ASCII name: exit 13" is "$RC" 13
+check "top-level non-ASCII protected file: no push, no gh" no_push_no_gh
+mk_case nestednonascii; wt_commit "sub/.claude/$(printf '\303\251').json" "{}"; finish; land
+check "nested protected file with a non-ASCII name: exit 13" is "$RC" 13
+check "nested non-ASCII protected file: no push, no gh" no_push_no_gh
+mk_case nested; wt_commit "agents/x/.claude/settings.json" "{}"; finish; land
+check "nested .claude path: exit 13" is "$RC" 13
 mk_case mainside; wt_commit feature.txt "feature"; main_commit .github/workflows/y.yml "on: pr"; finish; land
 check ".github only on main (not landing): exit 0" is "$RC" 0
 mk_case allowed; wt_commit .github/workflows/x.yml "on: push"; finish; land --allow-protected-paths
@@ -182,6 +205,14 @@ check "merge says 'merge conflicts': exit 16" is "$RC" 16
 check "merge says 'merge conflicts': manual step printed" grep -qF "Next manual step" "$C/err"
 mk_case mergefail; wt_commit feature.txt "feature"; finish; STUB_GH_MERGE=fail land
 check "other merge failure: exit 17" is "$RC" 17; check "other merge failure: main untouched" is "$(fork_main)" "$MAIN0"
+mk_case unknown; wt_commit feature.txt "feature"; finish; FORK_PR_LAND_POLLS=3 STUB_GH_MERGEABLE=UNKNOWN land
+check "mergeable still UNKNOWN after the polls: exit 20" is "$RC" 20
+check "UNKNOWN: polled exactly 3 times, no merge call" is "$(gh_calls view)$(gh_calls merge)" 30
+check "UNKNOWN: loud line names the PR" grep -qF "PR #7 is open, but GitHub still reports mergeable=UNKNOWN" "$C/err"
+mk_case viewfail; wt_commit feature.txt "feature"; finish; STUB_GH_VIEW=fail land
+check "gh pr view fails: exit 20" is "$RC" 20
+check "gh pr view fails: no merge call" is "$(gh_calls merge)" 0
+check "gh pr view fails: says the PR is open and view failed" grep -qF "PR #7 is open, but gh pr view failed" "$C/err"
 mk_case mainmoved; wt_commit feature.txt "feature"; finish; STUB_GH_MOVE_MAIN=1 land
 check "main moved before merge: exit 11" is "$RC" 11; check "main moved before merge: no merge call" is "$(gh_calls merge)" 0
 mk_case mainls; wt_commit feature.txt "feature"; finish; STUB_BREAK_LS="$WT/.git/config" land
@@ -191,6 +222,10 @@ echo "(f) post-merge verification (step 6)"
 mk_case wrongmerge; wt_commit feature.txt "feature"; finish; STUB_GH_MERGE=wrong land
 check "landed main != predicted: exit 18" is "$RC" 18
 check "landed main != predicted: loud 'WAS MERGED'" grep -qF "WAS MERGED" "$C/err"
+mk_case squash; wt_commit feature.txt "feature"; finish; STUB_GH_MERGE=squash land
+check "right tree, but no GO head as second parent (squash): exit 18" is "$RC" 18
+check "squash: the landed tree really is the predicted one" is "$(git --git-dir="$FORK" rev-parse 'refs/heads/main^{tree}')" "$TREE"
+check "squash: the message names the second parent" grep -qF "second parent ''" "$C/err"
 
 mk_case fetchafter; wt_commit feature.txt "feature"; finish
 # The remote vanishes right after the merge: the post-merge fetch fails.
@@ -216,9 +251,21 @@ check "short --head: exit 2" is "$RC" 2; check "short --head: no push, no gh" no
 mk_case norepo; wt_commit feature.txt "feature"; finish; RC=0
 "$LAND" --worktree "$WT" --head "$HEADSHA" --tree "$TREE" --branch "$BR" --title T --body-file "$C/body.md" > "$C/out" 2> "$C/err" || RC=$?
 check "missing --repo: exit 2" is "$RC" 2; check "missing --repo: no push, no gh" no_push_no_gh
+for bad in main develop upstream-main "bad..name" "x y" "-x" "@{-1}" HEAD; do
+  mk_case "br$(printf '%s' "$bad" | tr -c 'A-Za-z0-9' '_')"; wt_commit feature.txt "feature"; finish; MAIN_BEFORE="$(fork_main)"
+  # run from inside the worktree: there @{-1} expands to the previous branch (main), so only the
+  # "the name is unchanged by check-ref-format" rule refuses it
+  RC=0; ( cd "$WT" && "$LAND" --worktree "$WT" --head "$HEADSHA" --tree "$TREE" --branch "$bad" --repo test/repo \
+    --title T --body-file "$C/body.md" ) > "$C/out" 2> "$C/err" || RC=$?
+  check "--branch '$bad': exit 2" is "$RC" 2
+  check "--branch '$bad': nothing pushed, no gh" bash -c '[ "$1" = "$2" ] && [ ! -s "$3" ] && [ -z "$(git --git-dir="$4" for-each-ref refs/heads | grep -v refs/heads/main)" ]' _ "$(fork_main)" "$MAIN_BEFORE" "$GH_LOG" "$FORK"
+done
 mk_case notitle; wt_commit feature.txt "feature"; finish; RC=0
 "$LAND" --worktree "$WT" --head "$HEADSHA" --tree "$TREE" --branch "$BR" --repo test/repo --body-file "$C/body.md" > "$C/out" 2> "$C/err" || RC=$?
 check "missing --title: exit 2" is "$RC" 2; check "missing --title: no push, no gh" no_push_no_gh
+
+mk_case pollsbad; wt_commit feature.txt "feature"; finish; FORK_PR_LAND_POLLS=abc land
+check "FORK_PR_LAND_POLLS not a number: exit 2" is "$RC" 2; check "FORK_PR_LAND_POLLS not a number: no push, no gh" no_push_no_gh
 
 echo "(i) source rules"
 check "set -euo pipefail" grep -qE '^set -euo pipefail$' "$LAND"

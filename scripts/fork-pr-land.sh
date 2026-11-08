@@ -19,6 +19,9 @@
 #  16  GitHub reports merge conflicts (criss-cross, #56): PR left open, manual step printed
 #  17  gh pr merge failed            18 merged, but main^{tree} != --tree or main^2 != head
 #  19  git fetch failed (step 2: nothing done yet; step 6: the PR WAS merged, verify by hand)
+#  20  PR open, its mergeable state not verified (gh pr view failed, or still UNKNOWN after the polls)
+# Step 6 reads the remote main TIP: a push by anyone else right after the merge also gives 18 (then
+# check the PR's merge commit by hand). --branch must not be main, develop or upstream-main.
 # No token handling: gh uses its own auth. No eval; every value is a literal argument.
 set -euo pipefail
 
@@ -50,8 +53,21 @@ done
 [ -f "$BODY" ] || die 2 "--body-file not found: $BODY"
 command -v git >/dev/null 2>&1 || die 2 "git not on PATH"
 command -v gh >/dev/null 2>&1 || die 2 "gh not on PATH"
+case "$BRANCH" in
+  main|develop|upstream-main) die 2 "--branch $BRANCH is a protected fork branch; give the PR branch" ;;
+esac
+git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 && [ "$(git check-ref-format --branch "$BRANCH")" = "$BRANCH" ] \
+  || die 2 "--branch is not a valid branch name: $BRANCH"
 POLLS="${FORK_PR_LAND_POLLS:-10}" POLL_SLEEP="${FORK_PR_LAND_POLL_SLEEP:-3}"
+[[ "$POLLS" =~ ^[0-9]+$ ]] || die 2 "FORK_PR_LAND_POLLS must be a whole number (got: $POLLS)"
 g() { git -C "$WT" "$@"; }
+# NUL-separated paths in, the protected ones out (top-level or nested .github/ and .claude/), one per line.
+protected_paths() {
+  local p
+  while IFS= read -r -d '' p; do
+    case "$p" in .github/*|.claude/*|*/.github/*|*/.claude/*) printf '%s\n' "$p" ;; esac
+  done
+}
 
 # 1. The worktree is at the GO head and clean (untracked files count as dirty).
 actual="$(g rev-parse HEAD)" || die 10 "not a git worktree: $WT"
@@ -67,8 +83,10 @@ mt_rc=0; mt_out="$(g merge-tree --write-tree "$MAIN" "$HEAD_SHA")" || mt_rc=$?
 [ "$mt_rc" -eq 0 ] || die 12 "merge-tree failed (exit $mt_rc)"
 got_tree="$(printf '%s\n' "$mt_out" | head -n 1)"
 [ "$got_tree" = "$TREE" ] || die 11 "merge tree $got_tree != predicted tree $TREE (main $MAIN)"
-changed="$(g diff --name-only "$MAIN" "$TREE")" || die 13 "cannot list the changed paths (git diff failed)"
-protected="$(printf '%s\n' "$changed" | grep -E '(^|/)\.(github|claude)/' || true)"
+# -z: names raw, never quoted (a quoted ".github/..." would slip past the match); --no-renames: a moved
+# protected file shows its source path as a deletion, not only its new name.
+protected="$(g diff --name-only -z --no-renames "$MAIN" "$TREE" | protected_paths)" \
+  || die 13 "cannot list the changed paths (git diff failed)"
 if [ -n "$protected" ]; then
   if [ "$ALLOW_PROTECTED" -eq 1 ]; then
     loud "WARNING: this merge changes protected paths (allowed by --allow-protected-paths):
@@ -112,11 +130,17 @@ Next manual step (the skill's recipe):
 # 4b. Criss-cross detection: GitHub's own mergeable verdict (UNKNOWN while it computes).
 state="UNKNOWN"
 for _ in $(seq 1 "$POLLS"); do
-  state="$(gh pr view "$PR" -R "$REPO" --json mergeable -q .mergeable)" || die 17 "gh pr view failed"
+  state="$(gh pr view "$PR" -R "$REPO" --json mergeable -q .mergeable)" \
+    || die 20 "PR #$PR is open, but gh pr view failed: its mergeable state is not verified; nothing merged"
   [ "$state" = "UNKNOWN" ] || break
   sleep "$POLL_SLEEP"
 done
 [ "$state" != "CONFLICTING" ] || conflict_stop
+if [ "$state" = "UNKNOWN" ]; then
+  loud "PR #$PR is open, but GitHub still reports mergeable=UNKNOWN after $POLLS polls. Not merged (fail-closed).
+Check it by hand (gh pr view $PR -R $REPO --json mergeable) before any merge."
+  die 20 "mergeable state of PR #$PR not verified"
+fi
 echo "4b. GitHub mergeable: $state"
 
 # 4c. main has not moved since the prediction.
@@ -137,7 +161,8 @@ MERGE="$(g rev-parse --verify "refs/remotes/$REMOTE/main^{commit}")"
 landed_tree="$(g rev-parse "$MERGE^{tree}")"
 second="$(g rev-parse --verify -q "$MERGE^2" || true)"
 if [ "$landed_tree" != "$TREE" ] || [ "$second" != "$HEAD_SHA" ]; then
-  loud "PR #$PR WAS MERGED, but $REMOTE/main $MERGE does not match: tree $landed_tree (want $TREE), second parent '$second' (want $HEAD_SHA)."
+  loud "PR #$PR WAS MERGED, but $REMOTE/main $MERGE does not match: tree $landed_tree (want $TREE), second parent '$second' (want $HEAD_SHA).
+$REMOTE/main may also have moved by an unrelated push right after the merge: check the PR's merge commit by hand."
   die 18 "post-merge verification failed"
 fi
 echo "MERGED pr=$PR merge=$MERGE tree=$TREE"
