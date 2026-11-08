@@ -22,9 +22,20 @@ The other half is a small helper library (`scripts/hooks/hook_switches.py`): one
 
 `.claude/hooks.metadata.json`, next to the settings file. Every matcher group (event + index) has a stable `id`, a one-line `purpose`, the `hook` name (script file stem), a `gate` flag and a `fingerprint` (sha256 over the event, the matcher and the command text; the timeout is NOT part of it). It is a sidecar because the Claude Code settings schema allows no custom keys on hook objects.
 
+### The main agent's settings in this repository are generated (C3-4)
+
+The hooks block of this repository's `.claude/settings.json` and its sidecar `.claude/hooks.metadata.json` are generated from one source, the hook manifest `src/web/hooks/manifest.ts` (each main entry's `sidecar` text holds its `purpose` sentences and id labels). Do not edit either file by hand: change the manifest, then run
+
+```bash
+npm run hooks:generate             # writes both files into this checkout
+npm run hooks:generate -- --check  # writes nothing; exit 1 when a file differs
+```
+
+and commit both files. CI (`src/__tests__/hook-main-artifact.test.ts`) fails when a committed file differs from the generator output, and checks that `hook-metadata.py --update` changes nothing on them. The generator refuses the live install. The `gate` flag follows `hook_switches.DEFAULT_NON_DISABLEABLE`; the generated sidecar carries no `non_disableable` list (that is an install's own addition) and one extra top-level key, `_generated`, which the validator carries over and does not measure.
+
 ### After editing hooks
 
-When you add, remove, re-command, re-match or reorder hooks, update the sidecar in the same commit:
+The steps below apply to any other settings file (an install's own copy, a test fixture). When you add, remove, re-command, re-match or reorder hooks, update the sidecar in the same commit:
 
 ```bash
 python3 scripts/hook-metadata.py --update     # rewrites the sidecar and prints the diff

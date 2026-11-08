@@ -1,6 +1,7 @@
 {
   "version": 1,
   "_comment": "Sidecar for the hooks block of settings.json (HOOKDRIFT926). One entry per matcher group, same event and index. After editing hooks run: python3 scripts/hook-metadata.py --update, review the printed diff, fix any TODO purpose, commit both files. Optional top-level 'non_disableable': extra hook names (this install's own gates / audit ledgers) that MARVEEN_DISABLED_HOOKS may never switch off; it can only add to the built-in list in scripts/hooks/hook_switches.py.",
+  "_generated": "GENERATED for the main agent from src/web/hooks/manifest.ts, together with the hooks block of .claude/settings.json. Do not edit either by hand: change the manifest, run npm run hooks:generate, commit both files (CI compares them with the generator output).",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -32,7 +33,7 @@
         "id": "user-prompt-submit/provenance-gate",
         "hook": "provenance-gate",
         "gate": true,
-        "purpose": "Blocks a prompt that carries no provenance envelope (channel, scheduled task, peer), i.e. text injected straight into the pane.",
+        "purpose": "Flags, never blocks, a prompt with no provenance envelope (channel, scheduled task, peer), i.e. text injected straight into the pane, that asks for an irreversible or outward-facing operation.",
         "fingerprint": "5d5c371e07002d14bd0066c620f3986bf2c592b70aa47ff2097d3161375fd087"
       },
       {

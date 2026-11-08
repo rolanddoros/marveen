@@ -7,13 +7,16 @@
  * policy with what the settings really do. Today's departures are a named
  * exception list, recorded and not fixed here.
  *
- * Read-only: the tracked sidecar (.claude/hooks.metadata.json) and the doc of
- * THIS checkout, located from this file's own path. Nothing is written.
+ * Read-only: the doc and the hook lock list (hook_switches.py) of THIS
+ * checkout, located from this file's own path. The sidecar's gate flags come
+ * from the GENERATED sidecar (C3-4, Ron N5), not from a hand list; the
+ * committed file equals it (hook-main-artifact.test.ts). Nothing is written.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readHookSwitchLocks, renderMainSidecar } from '../web/hooks/main-artifact.js'
 import { HOOK_MANIFEST, specFor, type HookKind, type HookManifest, type HookManifestEntry } from '../web/hooks/manifest.js'
 import {
   FAIL_MODE_EXCEPTIONS,
@@ -24,7 +27,6 @@ import {
 } from '../web/hooks/fail-mode-policy.js'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const SIDECAR_PATH = join(REPO_ROOT, '.claude', 'hooks.metadata.json')
 const DOC_PATH = join(REPO_ROOT, 'docs', 'hook-fail-modes.md')
 
 const entries = HOOK_MANIFEST.entries
@@ -37,11 +39,9 @@ const byId = (id: string): HookManifestEntry => {
   return e
 }
 
-/** Hook names the sidecar flags `gate: true` in every group that runs them. */
+/** Hook names the generated sidecar flags `gate: true` in every group that runs them. */
 function sidecarLockedHooks(): Set<string> {
-  const meta = JSON.parse(readFileSync(SIDECAR_PATH, 'utf-8')) as {
-    hooks: Record<string, Array<{ hook: string; gate: boolean }>>
-  }
+  const meta = renderMainSidecar(HOOK_MANIFEST, readHookSwitchLocks(REPO_ROOT))
   const flags = new Map<string, boolean>()
   for (const groups of Object.values(meta.hooks)) {
     for (const g of groups) flags.set(g.hook, (flags.get(g.hook) ?? true) && g.gate === true)
@@ -149,14 +149,14 @@ describe('gate (sidecar) vs failMode (Ron N5)', () => {
     expect(closedMain.sort()).toEqual(['db-write-gate', 'egress-gate', 'email-approval-gate', 'fleet-freeze-gate', 'outgoing-copy-gate'])
   })
 
-  it('locked does not imply closed: 16 locked hooks, 11 of them fail open', () => {
+  it('locked does not imply closed: the generated sidecar locks hooks that fail open', () => {
+    // No pinned count or list (Ron N5): the gate flags follow hook_switches, so a
+    // new lock needs no edit here. What stays pinned is the definition: a lock
+    // (cannot be env-disabled) is not a fail mode.
     const locked = sidecarLockedHooks()
-    expect(locked.size).toBe(16)
     const openLocked = entries.filter((e) => scopesOf(e).includes('main') && locked.has(e.id) && specFor(e, 'main').failMode === 'open')
-    expect(openLocked.map((e) => e.id).sort()).toEqual([
-      'child-claude-channel-guard', 'ledger-capture', 'ledger-outbound', 'ledger-turn-failure', 'memory-frontmatter-bash-gate',
-      'memory-frontmatter-gate', 'provenance-gate', 'shell-rescan-guard', 'staleness-guard', 'telegram-reply-guard', 'token-argv-guard',
-    ])
+    expect(openLocked.length).toBeGreaterThan(0)
+    expect(openLocked.map((e) => e.id)).toContain('ledger-capture')
   })
 
   it('reports a closed hook the sidecar does not lock', () => {

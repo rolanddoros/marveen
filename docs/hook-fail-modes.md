@@ -130,8 +130,11 @@ The relation between them:
 
 - `closed` implies locked: a hook whose failure blocks must not be switchable
   off by an environment variable, or the closed wrapper protects nothing. The
-  test checks it for every main-agent entry against the sidecar (read only):
-  all 5 closed hooks are `gate: true`.
+  test checks it for every main-agent entry against the sidecar: all 5 closed
+  hooks are `gate: true`. Since C3-4 the sidecar is generated from the
+  manifest (`npm run hooks:generate`) and its `gate` flag follows
+  `DEFAULT_NON_DISABLEABLE`, so the test reads the generated sidecar, not a
+  hand-kept count or list.
 - Locked does not imply closed. 11 of the 16 locked hooks fail open, and that
   is right: `ledger-capture` must not be switched off (a disabled ledger loses
   channel messages silently), but a broken one must not make the agent deaf.
