@@ -23,7 +23,7 @@
 //
 // Normalised in C3-5: one wrapper spelling per fail mode in both scopes
 // (WrapperKind), and one timeout per hook; the main/sub differences left are
-// matchers and the two named fail-mode exceptions. Which fail mode each hook SHOULD
+// matchers and one named fail-mode exception. Which fail mode each hook SHOULD
 // have is the policy in docs/hook-fail-modes.md (C3-2): every entry carries its
 // `kind`, and src/__tests__/hook-fail-mode-policy.test.ts checks the recorded
 // failMode against the policy of that kind, with a named exception list.
@@ -50,8 +50,8 @@ export type HookScope = 'main' | 'sub'
  *   open     -- the failure lets the call through
  *   advisory -- the hook never blocks (a prompt-type hook)
  *
- * One named case: the main agent's fleet-freeze-gate is recorded `closed`,
- * but its wrapper lets a missing script through while the fleet runs and
+ * One named case: the fleet-freeze-gate is recorded `closed` in both scopes
+ * (owner decision 3, Roland TG 2967), but its wrapper lets a missing script through while the fleet runs and
  * blocks only while store/fleet-freeze.json exists, the one state in which
  * the gate stops anything. So `closed` there means "closed while frozen", not
  * the failClosed behaviour (any broken gate blocks, always).
@@ -97,7 +97,7 @@ export type HookKind =
  *                                 2 becomes 2. The probe: `command -v python3` / `command -v node`
  *                                 (PATH), on a sub-agent's node gate `test -x <HOOK_NODE_BIN>`
  *   failOpenExecClosedWhenFrozen  failOpenExec, but a missing script blocks while
- *                                 store/fleet-freeze.json exists (the main fleet-freeze-gate only)
+ *                                 store/fleet-freeze.json exists (the fleet-freeze-gate only, both scopes)
  *   agentPrompt                   a prompt-type hook (`type: agent`), no command
  * The retired spellings (C3-5) are listed in spellings.ts, so the settings
  * dry-run still classifies a file written before.
@@ -345,9 +345,9 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
     } },
 
   // PreToolUse
-  // Main: fail-open while the fleet runs; a missing script blocks only while
-  // frozen, the one state in which this gate stops anything. Sub: plain fail-open.
-  { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed', override: { sub: { wrapper: 'failOpenExec', failMode: 'open' } },
+  // Both scopes (owner decision 3): fail-open while the fleet runs; a missing script
+  // blocks only while frozen, the one state in which this gate stops anything.
+  { id: 'fleet-freeze-gate', kind: 'kill-switch', script: 'scripts/hooks/fleet-freeze-gate.sh', scope: 'both', events: ['PreToolUse'], matcher: '*', timeout: 5, wrapper: 'failOpenExecClosedWhenFrozen', failMode: 'closed',
     sidecar: { purpose: 'PreToolUse hook (matcher "*"), KILLSWITCH1022: while the fleet is frozen (store/fleet-freeze.json exists), every tool call is denied with exit 2.' } },
   { id: 'outgoing-copy-gate', kind: 'security-gate', script: 'scripts/hooks/outgoing-copy-gate.py', scope: 'both', events: ['PreToolUse'], matcher: ['Bash', ...MAIN_MAIL_MATCHERS, TELEGRAM_REPLY_EDIT, DISCORD_REPLY_EDIT], timeout: 15, wrapper: 'failClosed', failMode: 'closed', override: { sub: { matcher: TELEGRAM_REPLY_EDIT } }, ownMatchers: [TELEGRAM_REPLY_EDIT],
     sidecar: {
@@ -603,7 +603,9 @@ function hookCommandFor(spec: HookSpec, script: string, args: readonly string[],
       if (scope === 'sub') checkPlainPath('ctx.root', root)
       return `bash -c '[ -f "${p}" ] && exec ${interp} "${p}"${a}; exit 0'`
     case 'failOpenExecClosedWhenFrozen':
-      if (scope !== 'main') break
+      // Both scopes (owner decision 3). The root sits inside the single-quoted bash -c twice: on a sub-agent it
+      // gets the same plain-path check as failOpenExec (the main root is checked apart).
+      if (scope === 'sub') checkPlainPath('ctx.root', root)
       return `bash -c '[ -f "${p}" ] && exec ${interp} "${p}"${a}; [ -e "${root}/${FLEET_FREEZE_MARKER}" ] && `
         + `{ echo "${FLEET_FREEZE_MISSING_MSG}" >&2; exit 2; }; exit 0'`
     case 'failClosed': {

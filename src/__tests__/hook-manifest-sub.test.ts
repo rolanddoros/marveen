@@ -185,9 +185,11 @@ function flatten(hooks: RenderedHooks): FlatHook[] {
 const sorted = (xs: FlatHook[]): string[] => xs.map((x) => JSON.stringify(x, Object.keys(x).sort())).sort()
 
 describe('hook manifest, sub scope, against the live shape', () => {
-  // The fixture stays the live shape before C3-5 (the window's before side). The render differs from it only by
-  // rewraps (the settings dry-run's own rule): 32 of the 39 hooks, nothing added or dropped (plan-c3-5.md 3a).
-  it('renders the live sub-agents\' multiset up to 32 rewraps, nothing added or dropped (fixture, the pre-C3-5 shape)', () => {
+  // The fixture stays the live shape before C3-5 (the window's before side). The render differs from it by rewraps
+  // (the settings dry-run's own rule): 31 of the 39 hooks (plan-c3-5.md 3a), and by the one fail-mode change of owner
+  // decision 3: the fleet-freeze-gate, open in the fixture, is closed while frozen now. A fail-mode change is no
+  // rewrap, so that hook is dropped and added, nothing else is.
+  it('renders the live sub-agents\' multiset up to 31 rewraps and the fleet-freeze-gate fail-mode change (fixture, the pre-C3-5 shape)', () => {
     const ctx = { ...ctxFor(DEFAULT), prompts: { precompact: templatePrompt('${BOT_NAME}') } }
     const live = JSON.parse(readFileSync(FIXTURE, 'utf-8')) as FlatHook[]
     expect(live).toHaveLength(39)
@@ -204,7 +206,11 @@ describe('hook manifest, sub scope, against the live shape', () => {
       return xs.filter((x) => { const i = left.indexOf(key(x)); if (i < 0) return true; left.splice(i, 1); return false })
     }
     const r = pairRewraps(minus(before, after), minus(after, before))
-    expect([r.pairs.length, r.dropped.length, r.added.length]).toEqual([32, 0, 0])
+    expect([r.pairs.length, r.dropped.length, r.added.length]).toEqual([31, 1, 1])
+    for (const [x, frozenTail] of [[r.dropped[0], false], [r.added[0], true]] as const) {
+      expect([x.event, x.matcher, String(x.hook.command).includes('/scripts/hooks/fleet-freeze-gate.sh')]).toEqual(['PreToolUse', '*', true])
+      expect(String(x.hook.command).includes('store/fleet-freeze.json')).toBe(frozenTail)
+    }
   })
 
   it('the playwright hook is rendered only for an agent with the browser capability (C3-3a)', () => {
@@ -224,12 +230,15 @@ describe('hook manifest, sub scope, against the live shape', () => {
 
 // The fail mode a command's own text gives it (Ron N1, sub wrappers), independent of the manifest's wrapper field.
 const FAIL_CLOSED = /^(?:test -x "[^"]+"|command -v python3 >\/dev\/null 2>&1) \|\| \{ echo "[^"]*" >&2; exit 2; \}; .*rc=\$\?; \[ "\$rc" = 0 \] \|\| \[ "\$rc" = 2 \] \|\| \{ echo "[^"]*" >&2; exit 2; \}; exit "\$rc"$/
+const CLOSED_WHILE_FROZEN_TEXT = /^bash -c '\[ -f "[^"]+" \] && exec \S+ "[^"]+"; \[ -e "[^"]+\/store\/fleet-freeze\.json" \] && \{ echo "[^"]*" >&2; exit 2; \}; exit 0'$/
 const SCRIPT_IN_COMMAND = /\/(scripts\/[\w./-]+\.(?:py|mjs|sh))/
 
 function failModeFromText(event: string, hook: { type: string; command?: string }): FailMode {
   if (hook.type === 'agent') return 'advisory'
   const cmd = hook.command ?? ''
   if (FAIL_CLOSED.test(cmd)) return 'closed'
+  // The kill switch (owner decision 3): closed while frozen, recorded `closed` (CLOSED_WHILE_FROZEN).
+  if (CLOSED_WHILE_FROZEN_TEXT.test(cmd)) return 'closed'
   if (cmd.startsWith("bash -c '[ -f \"") && cmd.endsWith("; exit 0'") && !cmd.includes('fleet-freeze.json')) return 'open'
   throw new Error(`unclassified wrapper under ${event}: ${cmd.slice(0, 120)}`)
 }
@@ -255,18 +264,18 @@ describe('hook manifest failMode, sub scope', () => {
     return counts
   }
 
-  it('every sub hook of a default agent: 7 closed, 31 open, 1 advisory (39 settings entries)', () => {
-    expect(check(ctxFor(DEFAULT))).toEqual({ closed: 7, open: 31, advisory: 1 })
+  it('every sub hook of a default agent: 8 closed, 30 open, 1 advisory (39 settings entries)', () => {
+    expect(check(ctxFor(DEFAULT))).toEqual({ closed: 8, open: 30, advisory: 1 })
   })
 
-  it('with every condition on: 13 closed, 32 open, 1 advisory (46 settings entries)', () => {
-    expect(check(ctxFor(ALL_SWITCHES, { heartbeat: true, threadReply: true, senderRolePolicy: POLICY, browser: true }))).toEqual({ closed: 13, open: 32, advisory: 1 })
+  it('with every condition on: 14 closed, 31 open, 1 advisory (46 settings entries)', () => {
+    expect(check(ctxFor(ALL_SWITCHES, { heartbeat: true, threadReply: true, senderRolePolicy: POLICY, browser: true }))).toEqual({ closed: 14, open: 31, advisory: 1 })
   })
 
-  it('counts the sub entries: 13 closed, 29 open, 1 advisory', () => {
+  it('counts the sub entries: 14 closed, 28 open, 1 advisory (the kill switch closed while frozen, owner decision 3)', () => {
     const counts = { closed: 0, open: 0, advisory: 0 }
     for (const e of HOOK_MANIFEST.entries.filter((x) => x.scope !== 'main')) counts[specFor(e, 'sub').failMode]++
-    expect(counts).toEqual({ closed: 13, open: 29, advisory: 1 })
+    expect(counts).toEqual({ closed: 14, open: 28, advisory: 1 })
   })
 })
 
@@ -327,6 +336,14 @@ describe('hook manifest render inputs (Ron N4)', () => {
       expect(() => renderHooks(HOOK_MANIFEST, 'sub', { ...ctxFor(DEFAULT), root })).toThrow(/ctx.root must be/)
       expect(() => renderHooks(HOOK_MANIFEST, 'main', { root })).toThrow(/ctx.root must be/)
     }
+  })
+
+  // Owner decision 3: the kill switch's sub render puts the root inside the bash -c twice (the gate path and the flag
+  // file), so it checks the root itself, not only through the entries rendered next to it.
+  it('the fleet-freeze-gate alone: its sub render rejects the same roots', () => {
+    const only: HookManifest = { entries: HOOK_MANIFEST.entries.filter((e) => e.id === 'fleet-freeze-gate'), layout: { sub: { PreToolUse: ['fleet-freeze-gate'] } } }
+    expect(JSON.stringify(renderHooks(only, 'sub', ctxFor(DEFAULT)))).toContain('/store/fleet-freeze.json')
+    for (const root of bad) expect(() => renderHooks(only, 'sub', { ...ctxFor(DEFAULT), root }), root).toThrow(/ctx.root must be/)
   })
 
   // Ron 13754: the node binary only ever stands inside double quotes, so its rule is wider than the root's.

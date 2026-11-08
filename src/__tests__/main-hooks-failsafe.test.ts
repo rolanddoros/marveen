@@ -12,9 +12,10 @@
 //   - fleet-freeze-gate.sh: fail closed only while the fleet is frozen (missing script + freeze file -> 2).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { HOOK_MANIFEST, renderHooks } from '../web/hooks/manifest.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SETTINGS_PATH = process.env.MAIN_SETTINGS_UNDER_TEST ?? join(ROOT, '.claude', 'settings.json')
@@ -182,5 +183,71 @@ describe('child-claude-channel-guard on the main agent: fail-open (C1 PR 13a B1)
     const deny = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}'
     writeGuard(proj, `process.stdout.write(${JSON.stringify(deny)})\n`)
     expect(run('/bin/sh', guard.command, proj)).toMatchObject({ rc: 0, stdout: deny })
+  })
+})
+
+// Owner decision 3 (Roland, 2026-11-08): the kill switch is closed while frozen on the sub-agents too. The sub
+// command is the manifest's own render for a project root (absolute, burnt in), run as Claude Code runs it.
+describe('fleet-freeze-gate on a sub-agent: closed while frozen, like the main agent (owner decision 3)', () => {
+  const subGate = (root: string): string => {
+    const hooks = renderHooks(HOOK_MANIFEST, 'sub', { root, nodeBin: process.execPath, profile: {}, agent: {}, prompts: { precompact: 'x' } })
+    const h = hooks.PreToolUse!.flatMap((g) => g.hooks).find((x) => x.type === 'command' && x.command.includes('fleet-freeze-gate.sh'))
+    if (h?.type !== 'command') throw new Error('no sub fleet-freeze-gate')
+    return h.command
+  }
+  const freeze = (proj: string) => writeFileSync(join(proj, 'store', 'fleet-freeze.json'), '{}')
+  const realGate = (proj: string) => writeFileSync(join(proj, 'scripts', 'hooks', 'fleet-freeze-gate.sh'),
+    readFileSync(join(ROOT, 'scripts', 'hooks', 'fleet-freeze-gate.sh'), 'utf-8'))
+
+  it('renders the closed-while-frozen spelling with the project root burnt in', () => {
+    const proj = project()
+    const cmd = subGate(proj)
+    expect(cmd).toContain(`[ -e "${proj}/store/fleet-freeze.json" ] && { echo "fleet-freeze-gate (fail-closed while frozen)`)
+    expect(cmd).not.toContain('$CLAUDE_PROJECT_DIR')
+  })
+
+  for (const shell of SHELLS) {
+    describe(shell, () => {
+      it('frozen, the gate script missing: rc 2, and the message names the cause and the fix', () => {
+        const proj = project()
+        freeze(proj)
+        const r = run(shell, subGate(proj), proj)
+        expect(r.rc).toBe(2)
+        expect(r.stderr).toContain('fail-closed while frozen')
+        expect(r.stderr).toContain('restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard')
+      })
+
+      it('not frozen, the gate script missing: rc 0 (a broken gate never stops the fleet)', () => {
+        const proj = project()
+        expect(run(shell, subGate(proj), proj).rc).toBe(0)
+      })
+
+      it('frozen, the gate script present: the gate itself denies (rc 2)', () => {
+        const proj = project()
+        realGate(proj)
+        freeze(proj)
+        const r = run(shell, subGate(proj), proj)
+        expect(r.rc).toBe(2)
+        expect(r.stderr).toContain('KILLSWITCH1022')
+      })
+
+      it('not frozen, the gate script present: rc 0', () => {
+        const proj = project()
+        realGate(proj)
+        expect(run(shell, subGate(proj), proj).rc).toBe(0)
+      })
+
+      it('an unreadable flag file counts as frozen: with the gate script missing, rc 2', () => {
+        const proj = project()
+        freeze(proj)
+        chmodSync(join(proj, 'store', 'fleet-freeze.json'), 0o000)
+        expect(run(shell, subGate(proj), proj).rc).toBe(2)
+      })
+    })
+  }
+
+  it('the main agent\'s spelling is the same wrapper, only the root differs ($CLAUDE_PROJECT_DIR)', () => {
+    const main = handlers.find(isFreezeGate)!.command
+    expect(subGate('/srv/m').replaceAll('/srv/m', '$CLAUDE_PROJECT_DIR')).toBe(main)
   })
 })

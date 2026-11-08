@@ -57,14 +57,23 @@ describe('hook fail-mode policy', () => {
 
   it('the exception list is exactly today\'s measured departures', () => {
     expect(FAIL_MODE_EXCEPTIONS.map((x) => `${x.id} (${x.scope}) ${x.failMode}`)).toEqual([
-      'fleet-freeze-gate (sub) open',
       'child-claude-channel-guard (sub) closed',
     ])
-    // Without the list, the checker reports these two departures and nothing else.
+    // Without the list, the checker reports this one departure and nothing else.
     expect(failModePolicyFindings(HOOK_MANIFEST, [])).toEqual([
-      'fleet-freeze-gate (sub): kind kill-switch should fail closed, the manifest records open, and no exception names it',
       'child-claude-channel-guard (sub): kind guard should fail open, the manifest records closed, and no exception names it',
     ])
+  })
+
+  // Owner decision 3 (Roland, 2026-11-08): the kill switch is closed while frozen in both scopes, so its former
+  // sub-agent exception is gone, and putting it back is a stale row.
+  it('the fleet-freeze-gate is closed while frozen on the sub-agents too; its old exception row is stale', () => {
+    const freeze = byId('fleet-freeze-gate')
+    expect([specFor(freeze, 'main'), specFor(freeze, 'sub')].map((s) => [s.wrapper, s.failMode])).toEqual([
+      ['failOpenExecClosedWhenFrozen', 'closed'], ['failOpenExecClosedWhenFrozen', 'closed'],
+    ])
+    expect(failModePolicyFindings(HOOK_MANIFEST, [...FAIL_MODE_EXCEPTIONS, { id: 'fleet-freeze-gate', scope: 'sub', failMode: 'open', reason: 'x' }]))
+      .toEqual(['fleet-freeze-gate (sub): stale exception, the manifest now records closed as the policy of kill-switch says; remove the row'])
   })
 
   it('every entry has a kind the policy knows, in each scope it belongs to (main 41, sub 43)', () => {
@@ -110,13 +119,13 @@ describe('the policy checker catches each kind of departure', () => {
     const base = [...FAIL_MODE_EXCEPTIONS]
     expect(failModePolicyFindings(HOOK_MANIFEST, [...base, { id: 'egress-gate', scope: 'main', failMode: 'open', reason: 'x' }]))
       .toEqual(['egress-gate (main): stale exception, the manifest now records closed as the policy of security-gate says; remove the row'])
-    expect(failModePolicyFindings(HOOK_MANIFEST, [{ ...base[0], failMode: 'advisory' }, base[1]]))
-      .toEqual(['fleet-freeze-gate (sub): the exception records advisory, the manifest records open'])
+    expect(failModePolicyFindings(HOOK_MANIFEST, [{ ...base[0], failMode: 'advisory' }]))
+      .toEqual(['child-claude-channel-guard (sub): the exception records advisory, the manifest records closed'])
     expect(failModePolicyFindings(HOOK_MANIFEST, [...base, { id: 'email-approval-gate', scope: 'sub', failMode: 'open', reason: 'x' }]))
       .toEqual(['email-approval-gate (sub): exception names no entry of that scope'])
-    expect(failModePolicyFindings(HOOK_MANIFEST, [...base, base[1]]))
+    expect(failModePolicyFindings(HOOK_MANIFEST, [...base, base[0]]))
       .toEqual(['child-claude-channel-guard (sub): listed twice as an exception'])
-    expect(failModePolicyFindings(HOOK_MANIFEST, [base[0], { ...base[1], reason: ' ' }]))
+    expect(failModePolicyFindings(HOOK_MANIFEST, [{ ...base[0], reason: ' ' }]))
       .toEqual(['child-claude-channel-guard (sub): exception without a reason'])
   })
 
@@ -133,10 +142,11 @@ describe('the policy checker catches each kind of departure', () => {
     expect(failModePolicyFindings(frozenGate)).toEqual([
       'egress-gate (main): wrapper failOpenExecClosedWhenFrozen is closed only while frozen, which only a kill-switch may be',
     ])
-    const freeze = byId('fleet-freeze-gate')
-    const alwaysClosed = withEntries(replace('fleet-freeze-gate', { wrapper: 'failClosed', override: freeze.override }))
+    // Both scopes since owner decision 3: an always-closed wrapper on the kill switch is caught in each.
+    const alwaysClosed = withEntries(replace('fleet-freeze-gate', { wrapper: 'failClosed' }))
     expect(failModePolicyFindings(alwaysClosed)).toEqual([
       'fleet-freeze-gate (main): a kill-switch fails closed while frozen, but wrapper failClosed is not a closed-while-frozen spelling',
+      'fleet-freeze-gate (sub): a kill-switch fails closed while frozen, but wrapper failClosed is not a closed-while-frozen spelling',
     ])
   })
 

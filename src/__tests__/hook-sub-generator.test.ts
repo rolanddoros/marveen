@@ -74,13 +74,18 @@ describe('the 12 live sub-agent hooks blocks (fixture)', () => {
   })
 
   for (const n of names) {
-    // The fixture is the pre-C3-5 shape: the generator's output differs from it only by the window's 32 rewraps
-    // (plan-c3-5.md 3a), nothing added or dropped.
-    it(`${n}: rewrap only (32), playwright kept as is, manifest layout, fixpoint`, () => {
+    // The fixture is the pre-C3-5 shape: the generator's output differs from it by the window's rewraps, 31 of
+    // them (plan-c3-5.md 3a), and by owner decision 3: the fleet-freeze-gate goes from open to closed while frozen,
+    // a fail-mode change, so it is dropped and added (no rewrap). Nothing else is added or dropped.
+    it(`${n}: 31 rewraps + the fleet-freeze-gate fail-mode change, playwright kept as is, manifest layout, fixpoint`, () => {
       const current = onThisCheckout(rebuild(n))
       const plan = generateSubHooks(current, inputs())
       const r = rewrapDiff(current, plan.hooks)
-      expect([r.pairs.length, r.dropped.length, r.added.length]).toEqual([32, 0, 0])
+      expect([r.pairs.length, r.dropped.length, r.added.length]).toEqual([31, 1, 1])
+      for (const [x, frozenTail] of [[r.dropped[0], false], [r.added[0], true]] as const) {
+        expect([x.event, x.matcher, String(x.hook.command).includes('/scripts/hooks/fleet-freeze-gate.sh')]).toEqual(['PreToolUse', '*', true])
+        expect(String(x.hook.command).includes('store/fleet-freeze.json')).toBe(frozenTail)
+      }
       const pw = (current.PostToolUse ?? []).filter((g) => g.matcher === PLAYWRIGHT)
       expect(plan.kept.map((k) => k.matcher)).toEqual(pw.map(() => PLAYWRIGHT))
       expect((plan.hooks.PostToolUse ?? []).slice(-pw.length || undefined).filter((g) => g.matcher === PLAYWRIGHT)).toEqual(pw)

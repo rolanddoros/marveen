@@ -42,8 +42,8 @@ path in a sub-agent's file.
   node gate checks the burnt-in node binary with `test -x`, because on nvm a bare
   `node` is not on a hook's PATH), then the run under `timeout -k 1 D`
   (D = timeout - 2, at least 1); any status other than 0 or 2 becomes 2.
-- `closed` while frozen = `failOpenExecClosedWhenFrozen`: the kill switch only
-  (below).
+- `closed` while frozen = `failOpenExecClosedWhenFrozen`: the kill switch only,
+  in both scopes (below).
 - `advisory` = `agentPrompt`: a prompt-type hook, no command.
 
 The spellings retired by C3-5 (an unquoted path, a bare `python3 P`, a node
@@ -65,7 +65,7 @@ and protects nothing in exchange.
 | kind | fail mode | what belongs here | why |
 |---|---|---|---|
 | `security-gate` | `closed` | A PreToolUse gate on a trust boundary or a governance rule: egress, outgoing mail and copy, approvals, the security tables of the dashboard database, schedules, kanban writes, credentials, destructive commands. | Fail-open would remove the protection without a trace; fail-closed is loud and names the fix. |
-| `kill-switch` | `closed` | The fleet freeze (`fleet-freeze-gate`). Closed WHILE FROZEN: a broken gate blocks only while `store/fleet-freeze.json` exists. | The red button stops anything only while the fleet is frozen; there it must not open. Unfrozen there is nothing to protect, so a broken script must not stop the fleet. Pending owner decision 3 (see below). |
+| `kill-switch` | `closed` | The fleet freeze (`fleet-freeze-gate`). Closed WHILE FROZEN: a broken gate blocks only while `store/fleet-freeze.json` exists. | The red button stops anything only while the fleet is frozen; there it must not open. Unfrozen there is nothing to protect, so a broken script must not stop the fleet. Both scopes: owner decision 3 (see below). |
 | `guard` | `open` | A PreToolUse check against an accident, not a trust boundary: shell re-scan, child `claude` killing the poller, memory frontmatter, the token on an argv. | A broken guard would stop every Bash or Write call; the cost of one missed accident is bounded. The scripts say so themselves (see "Names that mislead"). |
 | `enforcer` | `open` | A hook that holds the turn open until a rule is met (Stop): the Telegram reply guard. | A Stop hook that fails closed never lets the turn end. |
 | `directive` | `open` | Puts something into the context: a directive, nudge, notice, replay, or an inbox delivery (UserPromptSubmit, PostToolUse, SessionStart). | A UserPromptSubmit exit 2 swallows the prompt: the deaf-agent incident in `src/web/hook-registration-guard.ts`. |
@@ -83,15 +83,14 @@ turn. The test enforces this for every entry that fails closed.
 
 For a `security-gate`, `closed` means any broken run blocks, always (the
 `failClosed` wrapper). For the `kill-switch`, `closed` means closed while
-frozen (the main agent's `failOpenExecClosedWhenFrozen` wrapper). The test
-keeps the two apart: a kill switch must use a closed-while-frozen wrapper, and
-no other kind may.
+frozen (the `failOpenExecClosedWhenFrozen` wrapper). The test keeps the two
+apart: a kill switch must use a closed-while-frozen wrapper, and no other kind
+may.
 
-This line of the policy is PENDING OWNER DECISION 3 (C3 plan): whether the kill
-switch should fail closed on the sub-agents too. It records the direction the
-main agent already has; the decision is pending, separate from the wrapper
-normalisation (C3-5). If the decision is "open", the policy row and the
-exception change in one commit.
+Owner decision 3 (Roland, 2026-11-08): the kill switch is closed while frozen on
+the sub-agents too, the same wrapper as on the main agent. With the fleet frozen
+and the gate script missing, every agent blocks the call and says why; unfrozen,
+a missing script lets the call through on every agent.
 
 ## Names that mislead
 
@@ -132,7 +131,6 @@ differs fails the test, so the list cannot outlive the mismatch it names.
 
 | hook | scope | fail mode today | policy | reason |
 |---|---|---|---|---|
-| `fleet-freeze-gate` | sub | `open` | `closed` (while frozen) | The sub-agents get the plain fail-open wrapper (`failOpenExec`), so a missing script lets calls through even while frozen. Owner decision 3, pending, separate from the wrapper normalisation (C3-5). |
 | `child-claude-channel-guard` | sub | `closed` | `open` | Decided per scope: fail-open on the main agent, the scaffold's sub-agent copy stays fail-closed (Kevin 13549 B1, `src/web/agent-scaffold.ts` at `CHILD_CLAUDE_GUARD_SCRIPT`). |
 
 Every other entry follows the policy in every scope it is part of.
