@@ -24,6 +24,8 @@ const h = vi.hoisted(() => ({
   persona: {} as Record<string, boolean>,
   names: [] as string[],
   writePersona: vi.fn(),
+  // C3-3b (Ron N-C): the template seed scaffoldAgentDir writes, when a test needs to see it kept.
+  seedSettings: null as string | null,
 }))
 
 vi.mock('../web/agent-config.js', async (importOriginal) => {
@@ -53,7 +55,10 @@ vi.mock('../web/agent-scaffold.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../web/agent-scaffold.js')>()
   return {
     ...orig,
-    scaffoldAgentDir: (name: string) => { mkdirSync(join(h.root, name), { recursive: true }) },
+    scaffoldAgentDir: (name: string) => {
+      mkdirSync(join(h.root, name, '.claude'), { recursive: true })
+      if (h.seedSettings !== null) writeFileSync(join(h.root, name, '.claude', 'settings.json'), h.seedSettings)
+    },
     writeAgentSettingsFromProfile: vi.fn(),
     generateClaudeMd: async (...args: unknown[]) => {
       h.claudeArgs.push(args)
@@ -155,6 +160,7 @@ beforeEach(() => {
   h.persona = { [NAME]: true }
   h.names = []
   h.writePersona.mockReset()
+  h.seedSettings = null
   process.env[CLI_VERSION_OVERRIDE_ENV] = ''
   resetClaudeCliVersionCache()
 })
@@ -444,5 +450,48 @@ describe('POST /api/agents/:name/channels/telegram: attaching Telegram later (C1
     expect(r.status).toBe(200)
     expect(r.body.ok).toBe(true)
     expect(noPersonaWarns(warn)).toHaveLength(0)
+  })
+})
+
+// C3-3b (Ron N-C, Kevin 13962): a failed hook render must not leave a new agent without its context guard or its
+// persona. The route runs every step, keeps the template seed as the settings file, and answers the 500 at the end.
+describe('POST /api/agents: a failed hook-settings render (C3-3b)', () => {
+  it('context guard seeded, persona written, settings left as the template seed, 500 at the end, class only logged', async () => {
+    const scaffold = await import('../web/agent-scaffold.js')
+    const store = await import('../web/context-guard-store.js')
+    const { HookShapeError } = await import('../web/hooks/sub-generator.js')
+    const seed = '{ "seed": "template" }\n'
+    h.seedSettings = seed
+    vi.mocked(scaffold.writeAgentSettingsFromProfile).mockImplementationOnce(() => { throw new HookShapeError('CANARY-nc-event') })
+    vi.mocked(store.seedContextGuardForNewAgent).mockClear()
+    const warn = vi.spyOn(logger, 'warn')
+    const r = await create({ telegram: true })
+    expect(r.status).toBe(500)
+    expect(r.body).toEqual({ error: 'hook settings could not be generated; the agent was created, its settings are the template seed', name: NAME })
+    expect(store.seedContextGuardForNewAgent).toHaveBeenCalledWith(NAME)
+    expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toBe('# generated CLAUDE\n')
+    expect(readFileSync(join(dir(), 'SOUL.md'), 'utf8')).toBe('# generated SOUL\n')
+    expect(readFileSync(join(dir(), '.claude', 'settings.json'), 'utf8')).toBe(seed)
+    expect(warn).toHaveBeenCalledWith({ agent: NAME, error: 'HookShapeError' }, 'agent created, but its hook settings could not be generated (C3-3b)')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('CANARY-nc-event')
+  })
+
+  it('the personality fallback still lands and is reported in the 500', async () => {
+    const scaffold = await import('../web/agent-scaffold.js')
+    h.fail = true
+    vi.mocked(scaffold.writeAgentSettingsFromProfile).mockImplementationOnce(() => { throw new TypeError('x') })
+    const r = await create({ telegram: false })
+    expect(r.status).toBe(500)
+    expect(r.body.personalityPending).toBe(true)
+    expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toContain('SABLON')
+    expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(true)
+  })
+
+  it('a successful render still answers 200 (the writer ran once)', async () => {
+    const scaffold = await import('../web/agent-scaffold.js')
+    vi.mocked(scaffold.writeAgentSettingsFromProfile).mockClear()
+    const r = await create({ telegram: false })
+    expect(r.status).toBe(200)
+    expect(scaffold.writeAgentSettingsFromProfile).toHaveBeenCalledTimes(1)
   })
 })

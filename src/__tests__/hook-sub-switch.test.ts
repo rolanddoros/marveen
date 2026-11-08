@@ -264,7 +264,10 @@ describe('error rule: any throw leaves the file as it is, the log names the agen
     const proc = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
     expect(proc).toMatch(/try \{\n\s+writeAgentSettingsFromProfile\(name, profile\)\n\s+\} catch \(err\) \{\n\s+const error = hookErrorSummary\(err\)\n[^\n]*logger\.warn\(\{ agent: name, error \}[^\n]*\n\s+return \{ ok: false, error: `hook settings: \$\{error\}` \}/)
     const routes = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'routes', 'agents.ts'), 'utf-8')
-    expect(routes.match(/logger\.warn\(\{ agent: name, error: hookErrorSummary\(err\) \}/g)).toHaveLength(2)
+    // The PUT refuses; the create runs on and answers 500 at the end (Ron N-C, behaviour in agent-create-telegram-route).
+    expect(routes.match(/logger\.warn\(\{ agent: name, error: hookErrorSummary\(err\) \}/g)).toHaveLength(1)
+    expect(routes).toMatch(/\} catch \(err\) \{\n\s+return \{ ok: false, error: hookErrorSummary\(err\) \}/)
+    expect(routes).toContain('const hookSettings = writeNewAgentHookSettings(name, loadProfileTemplate(profileId))')
     expect(routes).toMatch(/writeAgentSecurityProfile\(name, requested\)\n\s+try \{\n\s+writeAgentSettingsFromProfile\(name, profile\)/)
   })
 })

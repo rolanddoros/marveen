@@ -808,6 +808,21 @@ export async function refuseIfCliCannotLaunch(model: string): Promise<Record<str
   }
 }
 
+/**
+ * C3-3b (Ron N-C): the create route's hook-settings write, without a throw. A failed generator render leaves the file
+ * as the template seed scaffoldAgentDir wrote (the writer throws before its one write); the error is the class only
+ * (hookErrorSummary: never a message from the settings file). The route carries on with the context guard and the
+ * persona, and answers the 500 at the end.
+ */
+function writeNewAgentHookSettings(name: string, profile: Parameters<typeof writeAgentSettingsFromProfile>[1]): { ok: true } | { ok: false; error: string } {
+  try {
+    writeAgentSettingsFromProfile(name, profile)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: hookErrorSummary(err) }
+  }
+}
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -1239,15 +1254,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
     writeAgentPersonaAtCreation(name, telegram)
-    try {
-      writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
-    } catch (err) {
-      // C3-3b: the hook block could not be generated; the file is the template seed scaffoldAgentDir wrote, and the
-      // next spawn tries again. The error class only (hookErrorSummary): never a message from the settings file.
-      logger.warn({ agent: name, error: hookErrorSummary(err) }, 'agent created, but its hook settings could not be generated (C3-3b)')
-      json(res, { error: 'hook settings could not be generated; the agent was created, its settings are the template seed' }, 500)
-      return true
-    }
+    // C3-3b: a failed hook render does not stop the creation (Ron N-C): the context guard and the persona below still
+    // run, the answer is a 500 at the end, and the next spawn renders the hooks again.
+    const hookSettings = writeNewAgentHookSettings(name, loadProfileTemplate(profileId))
+    if (!hookSettings.ok) logger.warn({ agent: name, error: hookSettings.error }, 'agent created, but its hook settings could not be generated (C3-3b)')
     // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).
     // Written as an explicit store row rather than by moving
     // DEFAULT_CONTEXT_GUARD: the default is also what hidden technical workers
@@ -1399,6 +1409,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const skippedField = personaSkipped.length > 0
       ? { personalitySkipped: personaSkipped.map(s => ({ file: s.file, generatedPath: s.sidecarPath })) }
       : {}
+
+    if (!hookSettings.ok) {
+      json(res, {
+        error: 'hook settings could not be generated; the agent was created, its settings are the template seed',
+        name, ...(personalityPendingDetail !== null ? { personalityPending: true } : {}), ...skippedField,
+      }, 500)
+      return true
+    }
 
     if (personalityPendingDetail !== null) {
       // The warning says what actually happens next. An earlier wording promised
