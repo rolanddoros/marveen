@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
+import { hookErrorSummary } from './hooks/sub-generator.js'
 import {
   paneLooksIdle,
   decideSubmitFollowup,
@@ -2383,7 +2384,16 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // 'default' (deny-by-default). Keeps a fresh install's tech-lead an applier
     // without hardcoding agent names.
     const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
-    writeAgentSettingsFromProfile(name, profile)
+    // C3-3b: the hooks block comes from the generator; a throw writes nothing (the file keeps its old bytes). Caught
+    // here, not by the outer catch: a specific error for the caller, and a log line with the error class only (the
+    // outer catch logs the full message, which can carry a key from the settings file, Ron N7).
+    try {
+      writeAgentSettingsFromProfile(name, profile)
+    } catch (err) {
+      const error = hookErrorSummary(err)
+      logger.warn({ agent: name, error }, 'agent not started: its hook settings could not be generated, settings.json left as it is (C3-3b)')
+      return { ok: false, error: `hook settings: ${error}` }
+    }
     // AGENT_TOKENS (agent-tokens.ts): on -> provision the agent's own dashboard
     // token (0600, idempotent) and point its CLAUDE.md at it; off -> point it
     // back at the shared token. BEFORE the generated sections are re-rendered,

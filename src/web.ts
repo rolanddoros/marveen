@@ -21,7 +21,7 @@ import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { forEachAgentIsolated } from './web/agent-seed-loop.js'
 import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './web/agent-scaffold.js'
+import { ensureSubHookBlock, ensureProjectRootInClaudeMd, ensureBashEgressDeny, ensureMainScopeBashEgressParser, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -691,19 +691,10 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     logger.info({ reason: hookDecision.reason, projectRoot: PROJECT_ROOT }, 'Hook registration skipped')
   } else {
     try {
-      const patched: string[] = []
+      const subHooksWritten: string[] = []
       const rootPatched: string[] = []
-      const stalePatched: string[] = []
-      const provPatched: string[] = []
-      const egressPatched: string[] = []
       const bashEgressPatched: string[] = []
       const bashEgressUncovered: string[] = []
-      const bashParserPatched: string[] = []
-      const govPatched: string[] = []
-      const copyGatePatched: string[] = []
-      const childGuardPatched: string[] = []
-      const envelopePatched: string[] = []
-      const extraHooksPatched: string[] = []
       const pruned: string[] = []
       // BASH_EGRESS_HOST_ALLOW: the main agent's parser hook lives in the project-local
       // settings and only while the switch is on. FIRST, because ensureBashEgressDeny
@@ -723,13 +714,13 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         // file no longer exists (e.g. a deleted worktree instance's paths), so
         // the re-registration below lands on a clean, unblocked settings file.
         pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName)))
-        if (ensureAgentHooks(agentName)) patched.push(agentName)
+        // C3-3b: a sub-agent's whole hooks block from the hook manifest's generator, one write (the ten ensure*
+        // backfills it replaces were each a read-modify-write). The main agent: refused inside, its hooks are
+        // repo-shipped project settings (#1305). Before the Bash egress deny below, which reads the parser hook.
+        if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)
         // HOSTMOVE923: same guard as the hook writes -- a worktree instance must
         // not re-anchor the live fleet's CLAUDE.md onto ITS root.
         if (ensureProjectRootInClaudeMd(agentName)) rootPatched.push(agentName)
-        if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
-        if (ensureAgentProvenanceHook(agentName)) provPatched.push(agentName)
-        if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         // The Bash egress deny needs the main agent's OWN config dir: its
         // nominal settings path is the shared ~/.claude, which is also the
         // operator's own interactive shell, and the operator asked to stay out
@@ -739,14 +730,6 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         const bashDenyDir = agentName === MAIN_AGENT_ID ? mainAgentConfigDirIfSeparate() : null
         if (agentName === MAIN_AGENT_ID && !bashDenyDir) bashEgressUncovered.push(agentName)
         else if (ensureBashEgressDeny(agentName, bashDenyDir)) bashEgressPatched.push(agentName)
-        if (ensureBashEgressParser(agentName)) bashParserPatched.push(agentName)
-        if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
-        if (ensureTelegramCopyGate(agentName)) copyGatePatched.push(agentName)
-        if (ensureChildClaudeGuard(agentName)) childGuardPatched.push(agentName)
-        if (ensureWebSearchEnvelope(agentName)) envelopePatched.push(agentName)
-        // Install-local extras (store/extra-hooks.json) LAST: after every
-        // built-in backfill above, so they stay behind the built-in gates.
-        if (ensureExtraHookEntries(agentName)) extraHooksPatched.push(agentName)
         ensureQuarantineReader(agentName)
       }, (agentName, err) => logger.warn({ err, agent: agentName }, 'Agent hook backfill failed for one agent; the others continue (ROSTERALIAS1026)'))
       // EGRESSRENDER824: a grant added to store/egress-allowlist.json must
@@ -763,20 +746,11 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       // watches the shared store, a worktree / sandbox instance does not.
       watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
-      if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
+      if (subHooksWritten.length) logger.info({ agents: subHooksWritten }, 'sub hook block written: hooks rendered from the hook manifest into agent settings.json (C3-3b)')
       if (rootPatched.length) logger.info({ patched: rootPatched }, 'CLAUDE.md install-anchored paths re-anchored on the current PROJECT_ROOT (HOSTMOVE923)')
-      if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
-      if (provPatched.length) logger.info({ patched: provPatched }, 'provenance-gate UserPromptSubmit hook backfilled into agent settings.json')
-      if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
       if (bashEgressPatched.length) logger.info({ patched: bashEgressPatched }, 'Bash egress deny rules backfilled into agent settings.json (permissions.deny)')
       if (bashEgressUncovered.length) logger.warn({ agents: bashEgressUncovered },
         'Bash egress deny NOT applied to the main agent: it runs on the shared user config root, which is also the operator\'s own shell. Give it a config dir of its own (MAIN_AGENT_ISOLATED_CONFIG / MAIN_AGENT_CONFIG_DIR) to cover it without covering the operator.')
-      if (bashParserPatched.length) logger.info({ patched: bashParserPatched }, 'bash-egress-parser Bash hook backfilled into agent settings.json (EGRESSPARSER923)')
-      if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
-      if (copyGatePatched.length) logger.info({ patched: copyGatePatched }, 'outgoing-copy-gate wired onto the Telegram send tools in agent settings.json (GATECOPY828)')
-      if (childGuardPatched.length) logger.info({ patched: childGuardPatched }, 'child-claude channel guard wired onto Bash in agent settings.json (CHILDCLAUDEPOLLER1010)')
-      if (envelopePatched.length) logger.info({ patched: envelopePatched }, 'WebSearch untrusted-content envelope wired as PostToolUse in agent settings.json (MARVEENGAPS1020)')
-      if (extraHooksPatched.length) logger.info({ patched: extraHooksPatched }, 'install-local extra hook entries (store/extra-hooks.json) synced into agent settings.json')
     } catch (err) {
       logger.warn({ err }, 'Agent hook backfill skipped')
     }

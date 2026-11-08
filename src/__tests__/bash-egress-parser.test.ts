@@ -838,13 +838,22 @@ describe('wiring', () => {
     expect(parserEntries(s)).toHaveLength(1)
   })
 
+  // C3-3b: both paths render the whole hooks block from the manifest, where the parser is a sub entry with no condition.
   it('is called from the spawn path and the startup migration', () => {
     const scaffold = readFileSync(join(ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
     const spawn = scaffold.slice(scaffold.indexOf('export function writeAgentSettingsFromProfile'))
     const spawnBody = spawn.slice(0, spawn.indexOf('\n}\n'))
-    expect(spawnBody).toContain('if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)')
+    expect(spawnBody).toContain('const plan = subSettingsHooks(name, existing, profile, extraHooksPath)')
     const web = readFileSync(join(ROOT, 'src', 'web.ts'), 'utf-8')
-    expect(web).toMatch(/if \(ensureBashEgressParser\(agentName\)\) bashParserPatched\.push\(agentName\)/)
+    expect(web).toContain('if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)')
+    expect(web).not.toMatch(/ensureBashEgressParser\(/)
+    // The boot writes the parser hook through the generator BEFORE the Bash egress deny reads it, and the deny no
+    // longer wires it itself (a second writer of the same hook, the old injector's spelling).
+    expect(web.indexOf('if (ensureSubHookBlock(agentName))')).toBeLessThan(web.indexOf('ensureBashEgressDeny(agentName, bashDenyDir)'))
+    const deny = scaffold.slice(scaffold.indexOf('export function ensureBashEgressDeny('))
+    expect(deny.slice(0, deny.indexOf('\n}\n'))).not.toContain('ensureBashEgressParser(')
+    const manifest = readFileSync(join(ROOT, 'src', 'web', 'hooks', 'manifest.ts'), 'utf-8')
+    expect(manifest).toMatch(/\{ id: 'bash-egress-parser', script: 'scripts\/hooks\/bash-egress-parser\.mjs', events: \['PreToolUse'\], matcher: 'Bash', \.\.\.nodeGate \}/)
   })
 })
 

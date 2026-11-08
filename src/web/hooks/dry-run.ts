@@ -12,7 +12,7 @@ import { unifiedDiff, splitRaw, type DiffLine } from '../claude-md/line-diff.js'
 import { isAgentName } from '../claude-md/agent-name.js'
 import { EXTRA_HOOK_EVENTS, loadExtraHookEntries } from '../extra-hook-entries.js'
 import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand } from './manifest.js'
-import { generateSubHooks, HookShapeError, scriptBasename } from './sub-generator.js'
+import { generateSubHooks, hookErrorSummary, HookShapeError, scriptBasename } from './sub-generator.js'
 import { isUnsafeHookCommand, listSubAgents, mainAgentIdOf, resolveHookNodeBin, subHookFlags } from './sub-inputs.js'
 
 export class UsageError extends Error {}
@@ -232,8 +232,7 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
   // errors carry only shipped text and the install's paths (shown as ${ROOT}, ${NODE_BIN}).
   const errorText = (err: unknown): string => (err instanceof SettingsReadError ? err.message
     : err instanceof HookShapeError ? `hooks.${eventName(err.event, tag)} is not a list; the generator leaves this file alone`
-      : err instanceof Error && err.message.startsWith('hook manifest: ') ? show(err.message)
-        : `unexpected error (${err instanceof Error ? err.name : typeof err})`)
+      : hookErrorSummary(err, show))
   const extras = loadExtraHookEntries(join(root, 'store', 'extra-hooks.json'), {
     projectRoot: root,
     shippedScriptsDir: join(root, 'scripts'),
@@ -264,7 +263,7 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
       const report: AgentDryRun = {
         ...base, profile: flags.profileId, before: fb.length, after: fa.length,
         added: minus(fa, fb), dropped: minus(fb, fa),
-        kept: plan.kept.map((k) => flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] }, tag)[0].label),
+        kept: plan.kept.map((k) => `${k.inManagedGroup ? '(was in a managed group) ' : ''}${flatten({ [k.event]: [{ matcher: k.matcher, hooks: [k.hook] }] }, tag)[0].label}`),
         normalised: normalised(before, after, tag), unsafe: plan.unsafe,
       }
       if (opts.diff) {

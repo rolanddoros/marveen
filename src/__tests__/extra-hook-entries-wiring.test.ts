@@ -42,9 +42,10 @@ const gateRel = `local-hooks/${TEST_AGENT}-post-gate.py`
 const logRel = `local-hooks/${TEST_AGENT}-action-log.py`
 let createdHooksDir = false
 
+// The startup migration: since C3-3b the boot re-renders the whole hooks block (ensureSubHookBlock), extras included.
 // Through the namespace: a base without the feature has no such export.
 const ensureExtra = (name: string, path?: string): boolean =>
-  (scaffold as unknown as { ensureExtraHookEntries: (n: string, p?: string) => boolean }).ensureExtraHookEntries(name, path)
+  (scaffold as unknown as { ensureSubHookBlock: (n: string, p?: string) => boolean }).ensureSubHookBlock(name, path)
 
 function cleanup(): void {
   for (const rel of [gateRel, logRel]) rmSync(join(PROJECT_ROOT, rel), { force: true })
@@ -85,7 +86,8 @@ const LOG = { event: 'PostToolUse', matcher: 'Bash', script: logRel, failClosed:
 type Group = { matcher?: string; hooks: Array<{ type: string; command: string; timeout?: number }> }
 type Settings = { hooks: Record<string, Group[]> }
 const parse = (s: string) => JSON.parse(s) as Settings
-const isExtra = (g: Group) => g.hooks.every((h) => h.command.startsWith(MARK))
+// A hook without a command (the PreCompact agent hook, rendered since C3-3b) is never an extra.
+const isExtra = (g: Group) => g.hooks.every((h) => typeof h.command === 'string' && h.command.startsWith(MARK))
 const extras = (s: string) => Object.entries(parse(s).hooks).flatMap(([ev, gs]) => gs.filter(isExtra).map((g) => ({ ev, g })))
 function withoutExtras(s: string): string {
   const o = parse(s)

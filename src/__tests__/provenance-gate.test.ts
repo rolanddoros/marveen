@@ -365,7 +365,10 @@ describe('provenance-gate wiring (static)', () => {
 
   it('is backfilled into existing agents on startup', () => {
     const web = readFileSync(join(ROOT, 'src', 'web.ts'), 'utf-8')
-    expect(web).toContain('ensureAgentProvenanceHook')
+    // C3-3b: the boot's one call re-renders the whole block from the hook manifest (an entry of both scopes).
+    expect(web).toContain('if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)')
+    expect(readFileSync(join(ROOT, 'src', 'web', 'hooks', 'manifest.ts'), 'utf-8'))
+      .toMatch(/\{ id: 'provenance-gate', kind: 'directive', script: 'scripts\/hooks\/provenance-gate\.py', scope: 'both', events: \['UserPromptSubmit'\]/)
   })
 
   it('is listed as a known hook script so stale entries are prunable', () => {

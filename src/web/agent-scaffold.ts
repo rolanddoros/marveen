@@ -11,17 +11,18 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { agentDir, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
+import { agentDir, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { shellWord } from './sanitize.js'
 import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
-import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
+import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
 import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand, renderSubHook, specFor, type HookManifestEntry, type RenderContext } from './hooks/manifest.js'
-import { ENVELOPE_TOOLS, envelopeToolsCovered } from './hooks/sub-generator.js'
-import { isUnsafeHookCommand, resolveHookNodeBin } from './hooks/sub-inputs.js'
+import { ENVELOPE_TOOLS, envelopeToolsCovered, generateSubHooks, hookErrorSummary, scriptBasename, type KeptHook, type SubHookPlan } from './hooks/sub-generator.js'
+import { isUnsafeHookCommand, resolveHookNodeBin, senderRolePolicyOf, subHookFlags } from './hooks/sub-inputs.js'
+import { senderRoleGatesPath } from './sender-role-gate-store.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -1208,40 +1209,133 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // commands (rm/mv/sudo/...) and credential-file reads, blocked regardless of
   // permission mode. The MAIN_AGENT_ID is exempt from
   // (a), (b) and (d) but NOT from (c) -- every agent can be hijacked via an
-  // injected WebFetch call, including the main one. Merge/deploy is NOT gated: the operator
+  // injected WebFetch call, including the main one (its egress gate is in its
+  // repo-shipped project settings). Merge/deploy is NOT gated: the operator
   // authorizes those autonomously (so test/deploy runs are never blocked); the
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
-  if (agentGetsEmailGate(name)) {
-    injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
+  // (e) the dashboard DB's security surface and this install's gate wiring (APPROVALDBGATE1030). C3-3b: the whole
+  // hooks block, these gates and the extras included, comes from the hook manifest's generator (subSettingsHooks
+  // below). A throw there leaves the file as it is: nothing is written. The main agent's hooks are repo-shipped
+  // project settings (#1305); no caller renders the main agent through this function, and its hooks stay untouched.
+  if (name !== MAIN_AGENT_ID) {
+    const plan = subSettingsHooks(name, existing, profile, extraHooksPath)
+    existing.hooks = plan.hooks
+    reportManagedGroupHooks(name, plan.kept)
   }
-  if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
-  // (e) the dashboard DB's security surface and this install's gate wiring
-  // (APPROVALDBGATE1030): every sub-agent; the main agent's entry is
-  // repo-shipped in the tracked .claude/settings.json.
-  if (agentGetsGovernanceGates(name)) injectDbWriteGate(existing)
-  if (agentGetsKanbanWriteGate(name)) {
-    injectKanbanWriteGate(existing)
-    injectDigestProvenanceGate(existing)
-  }
-  if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
-  const senderRolePolicy = agentGetsSenderRoleGate(name) ? readAgentSenderRoleGatePolicy(name) : null
-  if (senderRolePolicy) {
-    injectSenderRoleGate(existing, senderRolePolicy)
-  } else {
-    removeSenderRoleGate(existing)
-  }
-  if (agentGetsChildClaudeGuard(name)) injectChildClaudeGuard(existing)
-  if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
-  if (agentGetsCredentialGate(name, profile)) injectCredentialGate(existing)
-  if (agentGetsSecondReviewer(name, profile)) injectSecondReviewerGate(existing)
-  else removeSecondReviewerGate(existing)
-  injectEgressGate(existing)
-  if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
-  if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
-  // Install-local extras LAST, so they land after every built-in gate.
-  injectExtraHookEntries(name, existing, extraHooksPath)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+}
+
+// C3-3b: a sub-agent's settings.json `hooks` block comes from the hook manifest's generator (hooks/sub-generator.ts)
+// on every write path: the boot (ensureSubHookBlock) and the spawn, create and security-profile PUT
+// (writeAgentSettingsFromProfile). The inputs are the dry-run's (hooks/dry-run.ts, hooks/sub-inputs.ts), so its
+// verdict is what the writer does; only the three profile switches come from the profile the caller passes. Any
+// throw leaves the file as it is and is reported by hookErrorSummary only (Ron N7: never a message from the file).
+
+/** The settings template's hooks, placeholders resolved: the PreCompact prompt seed and the migrations' reference. */
+function settingsTemplateHooks(): Record<string, unknown> | null {
+  try {
+    const tpl = JSON.parse(resolveTemplatePlaceholders(readFileSync(join(PROJECT_ROOT, 'templates', 'settings.json.template'), 'utf-8')))
+    const hooks = tpl?.hooks
+    return hooks && typeof hooks === 'object' && !Array.isArray(hooks) ? hooks as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+function templatePreCompactPrompt(tplHooks: Record<string, unknown> | null): string | undefined {
+  const groups = Array.isArray(tplHooks?.PreCompact) ? tplHooks.PreCompact as HookEntry[] : []
+  for (const g of groups) {
+    for (const h of g?.hooks ?? []) if (h?.type === 'agent' && typeof h.prompt === 'string') return h.prompt
+  }
+  return undefined
+}
+
+/**
+ * The prompt and command migrations ensureAgentHooks ran at boot, in its order, now on every write path and before
+ * the generator reads the current PreCompact prompt (Ron N3). The legacy-command and matcher passes stay too: the
+ * generator recognises a hook by its current spelling, so an unmigrated legacy command would be kept AND rendered.
+ */
+function migrateSubHookBlock(hooks: Record<string, unknown>, tplHooks: Record<string, unknown> | null): void {
+  if (tplHooks) upgradeLegacyHookCommands(hooks, tplHooks)
+  upgradeForeignRootInHookPrompts(hooks, PROJECT_ROOT)
+  const retired = readRetiredHookPrompts()
+  if (tplHooks) upgradeRetiredHookPrompts(hooks, tplHooks, retired)
+  upgradeTaskStateHeaderInHookPrompts(hooks)
+  upgradePreCompactRecipesToHelper(hooks)
+  if (tplHooks) {
+    upgradeRetiredHookPrompts(hooks, tplHooks, retired)
+    syncHookMatchers(hooks, tplHooks)
+  }
+}
+
+function loadSubExtras(path: string): readonly ExtraHookEntry[] {
+  logExtraHooksDigest(path)
+  const { entries, errors } = loadExtraHookEntries(path, extraHookDeps())
+  if (errors.length) {
+    const key = `${path}\n${errors.join('\n')}`
+    if (!_loggedExtraHookProblems.has(key)) {
+      _loggedExtraHookProblems.add(key)
+      logger.error({ path, errors, applied: entries.length }, 'extra-hooks.json: invalid entries IGNORED (built-in hooks unaffected)')
+    }
+  }
+  return entries
+}
+
+/** One sub-agent's generated hooks block; `settings` is not changed. Throws: the caller then writes nothing. */
+export function subSettingsHooks(name: string, settings: Record<string, unknown>, profile: ProfileTemplate, extraHooksPath = extraHooksConfigPath()): SubHookPlan {
+  if (name === MAIN_AGENT_ID) throw new Error('the main agent has no generated sub-agent hooks block')
+  const cur = settings.hooks
+  const current = cur && typeof cur === 'object' && !Array.isArray(cur) ? structuredClone(cur as Record<string, unknown>) : {}
+  const tplHooks = settingsTemplateHooks()
+  migrateSubHookBlock(current, tplHooks)
+  const prompt = templatePreCompactPrompt(tplHooks)
+  return generateSubHooks(current, {
+    root: PROJECT_ROOT,
+    nodeBin: HOOK_NODE_BIN,
+    profile: { destructiveGate: profileWantsDestructiveGate(profile), credentialGate: profileWantsCredentialGate(profile), secondReviewer: profileWantsSecondReviewer(profile) },
+    // The sender-role table through the store's own path function (the same file; tests point it elsewhere).
+    agent: { ...subHookFlags(PROJECT_ROOT, name).agent, senderRolePolicy: senderRolePolicyOf(PROJECT_ROOT, name, senderRoleGatesPath()) },
+    ...(prompt === undefined ? {} : { prompts: { precompact: prompt } }),
+    isUnsafe: isUnsafeHookCommand,
+    extras: loadSubExtras(extraHooksPath),
+  })
+}
+
+/** Ron N2 (Johnny 13927): an operator hook found next to a manifest hook is kept; the boot and spawn log say so. */
+function reportManagedGroupHooks(name: string, kept: readonly KeptHook[]): void {
+  for (const k of kept) {
+    if (!k.inManagedGroup) continue
+    const command = typeof k.hook.command === 'string' ? k.hook.command : null
+    logger.warn({ agent: name, event: k.event, matcher: k.matcher ?? null, hook: command === null ? 'non-command hook' : (scriptBasename(command) ?? 'command') },
+      'operator hook kept inside a managed hook group (Ron N2): the gate is rendered in a group of its own, this hook stays as it is')
+  }
+}
+
+/** Boot: re-renders one sub-agent's hooks block and writes the file only when its bytes change. Never throws. */
+export function ensureSubHookBlock(name: string, extraHooksPath = extraHooksConfigPath()): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  try {
+    let raw: string | null = null
+    try {
+      raw = readFileSync(settingsPath, 'utf-8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    const settings: unknown = raw === null ? {} : JSON.parse(raw)
+    if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) throw new TypeError('not a JSON object')
+    const plan = subSettingsHooks(name, settings as Record<string, unknown>, loadProfileTemplate(resolveAgentSecurityProfile(name)), extraHooksPath)
+    reportManagedGroupHooks(name, plan.kept)
+    const next = JSON.stringify({ ...settings, hooks: plan.hooks }, null, 2)
+    if (next === raw) return false
+    mkdirSync(dirname(settingsPath), { recursive: true })
+    atomicWriteFileSync(settingsPath, next)
+    return true
+  } catch (err) {
+    logger.warn({ agent: name, error: hookErrorSummary(err) }, 'sub-agent hook block NOT written, settings.json left as it is (C3-3b)')
+    return false
+  }
 }
 
 // Install-local extra hook entries (store/extra-hooks.json), see
@@ -1790,12 +1884,8 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  // A sub-agent's parser hook is wired FIRST (idempotent): the legacy rules leave
-  // only a settings file the parser already covers, so without this the boot that
-  // turns the switch on would keep them until the next one.
-  if (name !== MAIN_AGENT_ID && bashEgressHostAllowEnabled() && ensureBashEgressParser(name)) {
-    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
-  }
+  // A sub-agent's parser hook comes from the generator, which the boot runs before this (C3-3b; it was wired here
+  // first so the legacy rules could go in the same boot).
   const parserCovers = bashEgressHostAllowEnabled() && bashEgressParserCovers(name, settings, mainScopeSettingsPath)
   if (!mergeBashEgressDeny(settings, parserCovers)) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })

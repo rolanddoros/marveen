@@ -143,9 +143,14 @@ describe('the FINAL settings file after a re-render', () => {
     // guarantee is two lines in the scaffold: the destructive gate sits behind
     // its predicate, and the egress gate deliberately does NOT (every agent can
     // be hijacked through an injected WebFetch, the main one included).
+    // C3-3b: the writer renders sub-agents only (the main agent's hooks are repo-shipped, its egress gate there),
+    // the destructive gate behind its profile flag; the egress gate is a manifest entry of both scopes, no flag.
     const src = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(src).toContain('if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)')
-    expect(src).toMatch(/^ {2}injectEgressGate\(existing\)$/m)
+    expect(src).toContain('destructiveGate: profileWantsDestructiveGate(profile)')
+    expect(src).toContain("if (name === MAIN_AGENT_ID) throw new Error('the main agent has no generated sub-agent hooks block')")
+    const manifest = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'hooks', 'manifest.ts'), 'utf-8')
+    expect(manifest).toMatch(/\{ id: 'destructive-gate', [^}]*profileFlag: 'destructiveGate'/)
+    expect(manifest).toMatch(/\{ id: 'egress-gate', kind: 'security-gate', script: 'scripts\/hooks\/egress-gate\.mjs', scope: 'both', events: \['PreToolUse'\], matcher: 'WebFetch'/)
   })
 
   it('RED-BEFORE property: a template-only render loses the gate', () => {

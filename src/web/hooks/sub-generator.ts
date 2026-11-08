@@ -42,7 +42,13 @@ export interface SubHookInputs extends RenderContext {
 type Hook = Record<string, unknown>
 type Group = { matcher?: unknown; hooks?: unknown; [k: string]: unknown }
 
-export interface KeptHook { event: string; matcher?: string; hook: Hook }
+export interface KeptHook {
+  event: string
+  matcher?: string
+  hook: Hook
+  /** A hook that is not the manifest's, found in a group next to a manifest hook (Ron N2, Johnny 13927: kept, and reported). */
+  inManagedGroup?: true
+}
 
 export interface SubHookPlan {
   hooks: Record<string, Group[]>
@@ -105,7 +111,19 @@ export function ownerOf(m: HookManifest, event: string, matcher: unknown, hook: 
 export class HookShapeError extends Error {
   constructor(readonly event: string) {
     super(`hooks.${event} is not a list; the generator leaves this file alone`)
+    this.name = 'HookShapeError'
   }
+}
+
+/**
+ * What of a generator or writer error may be logged or printed (Ron N7, 13916): a manifest error's own text
+ * (shipped text and the install's root and node paths, which `show` may replace), else the error class only. Never
+ * any other message: a HookShapeError's carries an event key from the settings file, a TypeError's can carry one.
+ */
+export function hookErrorSummary(err: unknown, show: (s: string) => string = (s) => s): string {
+  if (err instanceof Error && err.message.startsWith('hook manifest: ')) return show(err.message)
+  if (err instanceof HookShapeError) return 'HookShapeError'
+  return `unexpected error (${err instanceof Error ? err.name : typeof err})`
 }
 
 /**
@@ -125,23 +143,32 @@ export function generateSubHooks(existing: unknown, inputs: SubHookInputs, m: Ho
   const keptGroups: Record<string, Group[]> = {}
   const kept: KeptHook[] = []
   let prompt: string | undefined
+  let promptSeen = false
   for (const [event, groups] of Object.entries(current)) {
     if (!Array.isArray(groups)) throw new HookShapeError(event)
     for (const g of groups as unknown[]) {
       const keep = (group: unknown) => (keptGroups[event] ??= []).push(group as Group)
       if (!isObject(g) || !Array.isArray(g.hooks) || isExtraHookGroup(g)) { keep(g); continue }
       const rest: Hook[] = []
-      for (const h of g.hooks as unknown[]) {
+      const owners = (g.hooks as unknown[]).map((h) => (isObject(h) ? ownerOf(m, event, g.matcher, h) : null))
+      g.hooks.forEach((h, i) => {
         const hook = isObject(h) ? h : {}
-        const owner = isObject(h) ? ownerOf(m, event, g.matcher, hook) : null
+        let owner = owners[i]
         if (owner && specFor(owner, 'sub').wrapper === 'agentPrompt') {
-          if (prompt === undefined && typeof hook.prompt === 'string') prompt = hook.prompt
-          continue
+          // The first agent hook is the prompt the render keeps; a further one is the operator's: kept as a
+          // foreign hook and listed, never dropped (Ron N3, Johnny 13927).
+          if (!promptSeen) {
+            promptSeen = true
+            if (typeof hook.prompt === 'string') prompt = hook.prompt
+            return
+          }
+          owner = null
         }
-        if (owner && !keepWhenOwned(owner)) continue
+        if (owner && !keepWhenOwned(owner)) return
         rest.push(h as Hook)
-        kept.push({ event, ...(typeof g.matcher === 'string' ? { matcher: g.matcher } : {}), hook })
-      }
+        const inManagedGroup = owner === null && owners.some((o, j) => o !== null && j !== i)
+        kept.push({ event, ...(typeof g.matcher === 'string' ? { matcher: g.matcher } : {}), hook, ...(inManagedGroup ? { inManagedGroup: true as const } : {}) })
+      })
       if (rest.length > 0) keep(rest.length === g.hooks.length ? g : { ...g, hooks: rest })
     }
   }
