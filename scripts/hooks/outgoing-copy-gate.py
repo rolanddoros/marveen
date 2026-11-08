@@ -438,9 +438,11 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
-def _mask_subshell_markers(cmd: str) -> str:
+def _mask_subshell_markers(cmd: str, subst_mark: str = "") -> str:
     """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
-    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom)."""
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
+    CDGATE1108: `subst_mark` goes in front of the `;` of a `$(` / backtick, so the cd scan sees that a
+    substitution stood there; the default "" gives the same output as before."""
     out = []
     q = None  # None | "'" | '"'
     i, n = 0, len(cmd)
@@ -456,18 +458,20 @@ def _mask_subshell_markers(cmd: str) -> str:
             q = ch; out.append(ch); i += 1; continue
         if ch == "\\" and i + 1 < n:
             out.append(cmd[i:i + 2]); i += 2; continue
-        if ch == "\n" or ch == "`":
+        if ch == "\n":
             out.append(";"); i += 1; continue
+        if ch == "`":
+            out.append(subst_mark + ";"); i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
-            out.append(";"); i += 2; continue
+            out.append(subst_mark + ";"); i += 2; continue
         out.append(ch); i += 1
     return "".join(out)
 
 
-def _segments_tokens(cmd: str):
+def _segments_tokens(cmd: str, subst_mark: str = ""):
     """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
+    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd), subst_mark),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     segments, cur = [], []
@@ -1134,12 +1138,36 @@ def _read_script_head(path: str, limit: int = _SCRIPT_READ_LIMIT):
 
 
 _CD_OPTIONS = ("-P", "-L", "-e", "-@")
+# CDGATE1108 (Johnny 14067): the cd scan words come from _cd_scan_words, not the flat segment words. There a
+# `$(` / backtick left _SUBST_MARK where it stood, and every segment starts with _CD_SEG, so DIR is read from the
+# cd's own segment only. Before, `cd $(mktemp -d) && python3 x.py` read DIR as "mktemp" (a literal relative dir):
+# the script was looked up under cwd/mktemp and passed. Any of these characters in DIR makes it non-literal.
+_SUBST_MARK = "\x00"
+_CD_SEG = None
+_CD_NON_LITERAL = re.compile(r"[*?[{$`<>\x00]")
+
+
+def _cd_scan_words(cmd, outer=()):
+    """CDGATE1108: the words _cd_bases reads: the outer command's (a `sh -c` body), then each segment of cmd
+    after a _CD_SEG, with a substitution marked. Raises ValueError like _segments_tokens."""
+    words = list(outer)
+    for toks in _segments_tokens(cmd, _SUBST_MARK):
+        words += [_CD_SEG] + toks
+    return words
+
+
+def _cd_dir_unknowable(d) -> bool:
+    """CDGATE1108: a cd target that cannot be known here: none, `-`, `~user`, or a non-literal character."""
+    return (not d or d == "-" or (d.startswith("~") and not (d == "~" or d.startswith("~/")))
+            or bool(_CD_NON_LITERAL.search(d)))
 
 
 def _cd_bases(cwd, cmd_words):
     """MAILGATESCRIPT1027 R1: (bases, undecidable): the directories a relative script may be under -- cwd, and
     every literal `cd DIR` target of the command (cumulative over chained cds, and DIR alone under cwd).
-    undecidable: some `cd` names a directory that cannot be known here (a variable, `-`, `~user`, none)."""
+    undecidable: some `cd` names a directory that cannot be known here (a variable, a substitution, `-`,
+    `~user`, none at the end of the command). A bare `cd` whose segment ends goes to HOME, unless the next
+    segment starts with a word that cannot be known: that word may cd again, so it stays undecidable (CDGATE1108)."""
     cwd_abs = isinstance(cwd, str) and os.path.isabs(cwd)
     cur = cwd if cwd_abs else None
     bases = [cwd] if cwd_abs else []
@@ -1155,8 +1183,19 @@ def _cd_bases(cwd, cmd_words):
         if i < len(cmd_words) and cmd_words[i] == "--":
             i += 1  # MAILGATESCRIPT1027 R2: `--` ends the options, the next word is DIR even when it starts with `-`
         d = cmd_words[i] if i < len(cmd_words) else None
+        if i < len(cmd_words) and d is _CD_SEG:
+            # CDGATE1108: a bare `cd` (its segment ends here) goes to HOME; a non-literal head of the next segment
+            # (`cd && $X; ...`, X="cd /y") may cd again: undecidable, as before (Kevin 14209, tightening only)
+            # the word the old flat reading took as DIR: past the segment boundaries and the options
+            rest = [w for w in cmd_words[i + 1:] if w is not _CD_SEG]
+            k = 0
+            while k < len(rest) and rest[k] in _CD_OPTIONS:
+                k += 1
+            if k < len(rest) and rest[k] == "--":
+                k += 1
+            d = None if _cd_dir_unknowable(rest[k] if k < len(rest) else None) else "~"
         tilde = d is not None and (d == "~" or d.startswith("~/"))
-        if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)):
+        if _cd_dir_unknowable(d):
             undecidable = True
             cur = None
             continue
@@ -1508,9 +1547,9 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         read_script = _read_script_head
     try:
         segments = _segments_tokens(cmd)
+        cmd_words = _cd_scan_words(cmd, _cd_words)  # CDGATE1108: a cd's DIR from its own segment
     except ValueError:
         return False  # unparseable: is_send_invocation's legacy fallback already judged it
-    cmd_words = list(_cd_words) + [w for toks in segments for w in toks]
     return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words, reasons)
                for toks in segments for h in _command_heads(toks))
 

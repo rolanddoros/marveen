@@ -406,7 +406,8 @@ sends, and the gate must be able to read the file to tell (MAILGATESCRIPT1027):
 run a script by a literal absolute path to a file that already exists (write
 it first, then run it in a separate call); a `$VAR`, a glob or `{` in the
 script path, a relative script path after a `cd` whose target cannot be known
-(a variable, `-`, `~user`), or a file that a heredoc writes in the same command
+(a variable, a `$(...)` or backtick substitution, `-`, `~user`; CDGATE1108), or
+a file that a heredoc writes in the same command
 (not on disk yet when the hook runs), counts as a send, and the deny says so
 (EGATEREASON1108). The deny names the first part of the command it refused for
 this reason; another part of the same command can still be refused on its own.
