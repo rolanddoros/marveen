@@ -198,7 +198,8 @@ describe('WebSearch envelope: where it lands', () => {
 
   it('is backfilled into the existing fleet at startup', () => {
     const web = readFileSync(join(ROOT, 'src', 'web.ts'), 'utf-8')
-    expect(web).toContain('if (ensureWebSearchEnvelope(agentName)) envelopePatched.push(agentName)')
+    // C3-3b: the boot's one call re-renders the whole block, the envelope included.
+    expect(web).toContain('if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)')
   })
 })
 

@@ -6,6 +6,7 @@ import type { ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { logger } from '../../logger.js'
+import { hookErrorSummary } from '../hooks/sub-generator.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
@@ -1238,7 +1239,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
     writeAgentPersonaAtCreation(name, telegram)
-    writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
+    try {
+      writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
+    } catch (err) {
+      // C3-3b: the hook block could not be generated; the file is the template seed scaffoldAgentDir wrote, and the
+      // next spawn tries again. The error class only (hookErrorSummary): never a message from the settings file.
+      logger.warn({ agent: name, error: hookErrorSummary(err) }, 'agent created, but its hook settings could not be generated (C3-3b)')
+      json(res, { error: 'hook settings could not be generated; the agent was created, its settings are the template seed' }, 500)
+      return true
+    }
     // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).
     // Written as an explicit store row rather than by moving
     // DEFAULT_CONTEXT_GUARD: the default is also what hidden technical workers
@@ -1850,7 +1859,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profile = loadProfileTemplate(requested)
     if (profile.id !== requested) { json(res, { error: `Unknown profile: ${requested}` }, 400); return true }
     writeAgentSecurityProfile(name, requested)
-    writeAgentSettingsFromProfile(name, profile)
+    try {
+      writeAgentSettingsFromProfile(name, profile)
+    } catch (err) {
+      logger.warn({ agent: name, error: hookErrorSummary(err) }, 'security profile saved, but the hook settings could not be generated (C3-3b)')
+      json(res, { error: 'hook settings could not be generated; settings.json left as it is', profileSaved: true }, 500)
+      return true
+    }
     json(res, { ok: true, requiresRestart: isAgentRunning(name) })
     return true
   }

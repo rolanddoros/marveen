@@ -31,6 +31,7 @@ import { pruneStaleHooksFromSettingsFile } from '../web/hook-registration-guard.
 import { listProfileTemplates, loadProfileTemplate, type ProfileTemplate } from '../web/profiles.js'
 import { AGENTS_BASE_DIR, senderRoleGatePolicyArg, writeAgentSecurityProfile } from '../web/agent-config.js'
 import { HEARTBEAT_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { withHeartbeatProbeLock } from './helpers/heartbeat-probe-lock.js'
 import {
   HOOK_MANIFEST, renderHooks, specFor, validateManifest,
   type FailMode, type HookManifest, type HookManifestEntry, type RenderContext, type RenderedHooks,
@@ -150,7 +151,8 @@ describe('hook manifest, sub scope, against the real code path', () => {
   }
 
   it('the heartbeat agent (kanban-write and digest-provenance gates)', () => {
-    expectSame(renderHooks(HOOK_MANIFEST, 'sub', ctxFor(DEFAULT, { heartbeat: true })), runRealPath(HEARTBEAT_AGENT_ID))
+    // The heartbeat directory is shared with hook-sub-switch (parallel workers): one at a time.
+    expectSame(renderHooks(HOOK_MANIFEST, 'sub', ctxFor(DEFAULT, { heartbeat: true })), withHeartbeatProbeLock(AGENTS_BASE_DIR, () => runRealPath(HEARTBEAT_AGENT_ID)))
   })
 
   it('the email thread-reply capability (flag on the email gate)', () => {

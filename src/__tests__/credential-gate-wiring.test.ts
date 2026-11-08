@@ -85,13 +85,14 @@ describe('OFF: the rendered settings.json is byte-identical to a render without 
     expect(absent).not.toContain('credential-gate')
   })
 
+  // C3-3b: the gate is the manifest entry behind the `credentialGate` profile flag, and the writer sets that flag
+  // from the profile's own switch only.
   it('the only code path to the gate is behind its predicate (pinned in source)', () => {
     const src = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(src).toContain('if (agentGetsCredentialGate(name, profile)) injectCredentialGate(existing)')
-    expect(src).toContain('if (needCredential) injectCredentialGate(settings)')
-    // Exactly these two call sites: a third, unguarded one would wire the gate
-    // into every install.
-    expect(src.match(/injectCredentialGate\((existing|settings)\)/g)).toHaveLength(2)
+    expect(src).toContain('credentialGate: profileWantsCredentialGate(profile)')
+    const manifest = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'hooks', 'manifest.ts'), 'utf-8')
+    expect(manifest.match(/credential-gate\.py/g)).toHaveLength(1)
+    expect(manifest).toMatch(/\{ id: 'credential-gate', [^}]*profileFlag: 'credentialGate'/)
   })
 
   it('the startup migration leaves an OFF agent byte-identical', () => {

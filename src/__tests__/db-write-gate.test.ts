@@ -795,8 +795,12 @@ describe('wiring', () => {
   })
   it('the scaffold wires it for every sub-agent and the startup migration repairs it (pinned in source)', () => {
     const src = readFileSync(join(REPO, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(src).toContain('if (agentGetsGovernanceGates(name)) injectDbWriteGate(existing)')
-    expect(src).toContain('if (needDbGate) injectDbWriteGate(settings)')
+    // C3-3b: the writer and the boot render a sub-agent's whole hooks block from the hook manifest, where the gate
+    // is an entry of both scopes with no flag (every sub-agent).
+    expect(src).toContain('    const plan = subSettingsHooks(name, existing, profile, extraHooksPath)\n    existing.hooks = plan.hooks\n')
+    expect(readFileSync(join(REPO, 'src', 'web.ts'), 'utf-8')).toContain('if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)')
+    expect(readFileSync(join(REPO, 'src', 'web', 'hooks', 'manifest.ts'), 'utf-8'))
+      .toMatch(/\{ id: 'db-write-gate', kind: 'security-gate', script: 'scripts\/hooks\/db-write-gate\.mjs', scope: 'both', events: \['PreToolUse'\]/)
   })
   it('it is a known hook script and cannot be switched off by an env var', () => {
     expect(KNOWN_HOOK_SCRIPTS).toContain('db-write-gate.mjs')

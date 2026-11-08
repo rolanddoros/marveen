@@ -177,7 +177,8 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
 
   it('web.ts re-anchors CLAUDE.md inside the same guarded loop as the hook writes', () => {
     const loop = WEB.slice(WEB.indexOf('if (!hookDecision.register)'))
-    const hooksCall = loop.indexOf('if (ensureAgentHooks(agentName)) patched.push(agentName)')
+    // C3-3b: the hook write of the loop is the one generator call.
+    const hooksCall = loop.indexOf('if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)')
     const rootCall = loop.indexOf('if (ensureProjectRootInClaudeMd(agentName)) rootPatched.push(agentName)')
     expect(hooksCall).toBeGreaterThan(-1)
     expect(rootCall).toBeGreaterThan(hooksCall)

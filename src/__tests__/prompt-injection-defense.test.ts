@@ -297,29 +297,23 @@ describe('injectEgressGate (source-level checks)', () => {
     // agentGetsGovernanceGates (sub-agent only), the egress gate must run for
     // ALL agents including the main agent. Verify the call is NOT wrapped in
     // an if(agentGets...) conditional.
-    expect(scaffoldSrc).toMatch(/injectEgressGate\(existing\)/)
-    // The call line itself must be a bare statement, not a conditional
-    const callLine = scaffoldSrc
-      .split('\n')
-      .find((l) => l.includes('injectEgressGate(existing)'))
-    expect(callLine).toBeTruthy()
-    // Bare call: line is just whitespace + the call, no leading 'if(...)'
-    expect(callLine!.trim()).toBe('injectEgressGate(existing)')
+    // C3-3b: the writer renders the manifest; the egress gate entry is of both scopes and carries no flag, so every
+    // sub-agent gets it (the main agent: its repo-shipped project settings).
+    expect(scaffoldSrc).toContain('const plan = subSettingsHooks(name, existing, profile, extraHooksPath)')
+    const manifestSrc = readFileSync(join(REPO_ROOT, 'src', 'web', 'hooks', 'manifest.ts'), 'utf8')
+    const line = manifestSrc.split('\n').find((l) => l.includes("id: 'egress-gate'"))
+    expect(line).toContain("scope: 'both'")
+    expect(line).not.toMatch(/profileFlag|agentFlag/)
   })
 
+  // C3-3b: the boot backfill re-renders every sub-agent's whole block (egress gate and staleness guard included)
+  // with one call in the per-agent loop.
   it('ensureEgressGate is called in web.ts alongside ensureAgentStalenessHook', () => {
     const webSrc = readFileSync(join(REPO_ROOT, 'src', 'web.ts'), 'utf8')
-    expect(webSrc).toContain('ensureEgressGate(agentName)')
-    // It must be co-located with the existing migration calls
-    expect(webSrc).toContain('ensureAgentStalenessHook(agentName)')
-    const egressIdx = webSrc.indexOf('ensureEgressGate(agentName)')
-    const stalenessIdx = webSrc.indexOf('ensureAgentStalenessHook(agentName)')
-    // They should appear within 10 lines of each other
-    const lineDiff = Math.abs(
-      webSrc.slice(0, egressIdx).split('\n').length -
-      webSrc.slice(0, stalenessIdx).split('\n').length,
-    )
-    expect(lineDiff).toBeLessThanOrEqual(10)
+    const loop = webSrc.slice(webSrc.indexOf('forEachAgentIsolated([MAIN_AGENT_ID, ...listAllAgentNames()]'))
+    expect(loop.slice(0, loop.indexOf('ROSTERALIAS1026'))).toContain('if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)')
+    expect(webSrc).not.toContain('ensureEgressGate(agentName)')
+    expect(webSrc).not.toContain('ensureAgentStalenessHook(agentName)')
   })
 
   it('egress-gate.mjs exists on disk at the expected repo path', () => {

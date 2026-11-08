@@ -307,12 +307,17 @@ describe('child-claude guard: the real hook process', () => {
 })
 
 describe('child-claude guard: where it lands', () => {
+  // C3-3b: the spawn writer renders a sub-agent's whole hooks block from the hook manifest, where the guard is an
+  // entry of both scopes with no flag (every sub-agent); the main agent's is repo-shipped.
   it('is injected on spawn for sub-agents', () => {
-    expect(SCAFFOLD).toContain('if (agentGetsChildClaudeGuard(name)) injectChildClaudeGuard(existing)')
+    expect(SCAFFOLD).toContain('    const plan = subSettingsHooks(name, existing, profile, extraHooksPath)\n    existing.hooks = plan.hooks\n')
+    const manifest = readFileSync(join(__dirname, '..', 'web', 'hooks', 'manifest.ts'), 'utf-8')
+    expect(manifest).toMatch(/\{ id: 'child-claude-channel-guard', kind: 'guard', script: 'scripts\/hooks\/child-claude-channel-guard\.mjs', scope: 'both', events: \['PreToolUse'\], matcher: 'Bash'/)
   })
 
   it('is backfilled into the existing fleet at startup', () => {
-    expect(WEB).toContain('if (ensureChildClaudeGuard(agentName)) childGuardPatched.push(agentName)')
+    // C3-3b: the boot's one call re-renders the whole block, the guard included.
+    expect(WEB).toContain('if (ensureSubHookBlock(agentName)) subHooksWritten.push(agentName)')
   })
 
   it('exempts the main agent, like the outgoing-copy gate', () => {
