@@ -13,6 +13,8 @@
 /** A command matched to a known spelling: which one, and what its slots hold. */
 export interface Spelling {
   kind: string
+  /** What a failure of the hook does (C3-5a-3): lets the call through, blocks it, or blocks only while frozen. */
+  failMode: FailMode
   /** python3, node, bash, or the burnt-in node binary of failClosedNodeBin. */
   interpreter: string
   /** The script path the command runs (every occurrence in the template is this same path). */
@@ -24,15 +26,19 @@ export interface Spelling {
 
 type Scope = 'main' | 'sub'
 
+/** open: a failure lets the call through; closed: it blocks (exit 2); closedWhileFrozen: the kill switch's own. */
+export type FailMode = 'open' | 'closed' | 'closedWhileFrozen'
+
 interface Template {
   kind: string
+  failMode: FailMode
   scopes: readonly Scope[]
   text: string
   /** Only on these events (a spelling whose failure exit can block nothing, see `bare` in manifest.ts). */
   events?: readonly string[]
 }
 
-// Slots: {P} script path, {I} interpreter word, {A} argument words (each after a blank), {D} gate deadline,
+// Slots: {P} script path where it stands in double quotes, {U} script path where it stands unquoted, {I} interpreter word, {A} argument words (each after a blank), {D} gate deadline,
 // {L} gate label (the script's file name), {N} node binary, {R} install root.
 const GATE_TAIL = '; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "governance-kapu (fail-closed): {L}: a kapu nem 0-val vagy '
   + '2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu '
@@ -43,49 +49,55 @@ const NOT_BLOCKING = ['SessionStart', 'SessionEnd', 'PostToolUse', 'PostToolUseF
 const TEMPLATES: readonly Template[] = [
   // Fail-open. failOpenExec is the main spelling and the planned C3-5b sub spelling (listed for sub already, so a
   // revert of C3-5b still classifies the files it wrote).
-  { kind: 'failOpenExec', scopes: ['main', 'sub'], text: `bash -c '[ -f "{P}" ] && exec {I} "{P}"{A}; exit 0'` },
-  { kind: 'failOpenExecUnquoted', scopes: ['sub'], text: `bash -c '[ -f {P} ] && exec {I} {P}{A}; exit 0'` },
-  { kind: 'bare', scopes: ['sub'], text: '{I} {P}{A}', events: NOT_BLOCKING },
-  { kind: 'bareQuoted', scopes: ['sub'], text: '{I} "{P}"{A}', events: NOT_BLOCKING },
+  { kind: 'failOpenExec', failMode: 'open', scopes: ['main', 'sub'], text: `bash -c '[ -f "{P}" ] && exec {I} "{P}"{A}; exit 0'` },
+  { kind: 'failOpenExecUnquoted', failMode: 'open', scopes: ['sub'], text: `bash -c '[ -f {U} ] && exec {I} {U}{A}; exit 0'` },
+  { kind: 'bare', failMode: 'open', scopes: ['sub'], text: '{I} {U}{A}', events: NOT_BLOCKING },
+  { kind: 'bareQuoted', failMode: 'open', scopes: ['sub'], text: '{I} "{P}"{A}', events: NOT_BLOCKING },
   {
-    kind: 'failOpenNodeProbe', scopes: ['main'],
+    kind: 'failOpenNodeProbe', failMode: 'open', scopes: ['main'],
     text: `bash -c '[ -f "{P}" ] && command -v {I} >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; `
       + `then timeout -k 1 {D} {I} "{P}"{A}; else {I} "{P}"{A}; fi; [ $? = 2 ] && exit 2; exit 0'`,
   },
   {
-    kind: 'failOpenExecClosedWhenFrozen', scopes: ['main'],
+    kind: 'failOpenExecClosedWhenFrozen', failMode: 'closedWhileFrozen', scopes: ['main'],
     text: `bash -c '[ -f "{P}" ] && exec {I} "{P}"{A}; [ -e "{R}/store/fleet-freeze.json" ] && { echo "fleet-freeze-gate `
       + '(fail-closed while frozen): the gate script is missing and store/fleet-freeze.json exists, so every tool call is '
       + `blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard." >&2; exit 2; }; exit 0'`,
   },
   // Fail-closed.
-  { kind: 'failClosedRun', scopes: ['main'], text: gateRun('{I} "{P}"{A}') },
+  { kind: 'failClosedRun', failMode: 'closed', scopes: ['main'], text: gateRun('{I} "{P}"{A}') },
   {
-    kind: 'failClosedRunNodeProbe', scopes: ['main'],
+    kind: 'failClosedRunNodeProbe', failMode: 'closed', scopes: ['main'],
     text: 'command -v node >/dev/null 2>&1 || { echo "governance-kapu: node interpreter hianyzik, a kapu BLOKKOL" >&2; exit 2; }; '
       + gateRun('{I} "{P}"{A}'),
   },
   {
-    kind: 'failClosedPythonProbe', scopes: ['main', 'sub'],
+    kind: 'failClosedPythonProbe', failMode: 'closed', scopes: ['main', 'sub'],
     text: 'command -v python3 >/dev/null 2>&1 || { echo "governance-kapu: a hook interpretere nem talalhato (python3 nincs a '
       + 'PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot." >&2; exit 2; }; '
       + gateRun('{I} "{P}"{A}'),
   },
   {
-    kind: 'failClosedNodeBin', scopes: ['sub'],
+    kind: 'failClosedNodeBin', failMode: 'closed', scopes: ['sub'],
     text: 'test -x "{N}" || { echo "governance-kapu: a hook interpretere nem talalhato ({N}). A kapu ezert BLOKKOL. Javitas: '
       + 'inditsd ujra a dashboardot, az ujrairja a hook-utakat." >&2; exit 2; }; ' + gateRun('"{N}" "{P}"{A}'),
   },
 ]
 
 const SLOT: Readonly<Record<string, string>> = {
-  P: String.raw`(?:\$CLAUDE_PROJECT_DIR)?\/[^\s"'$\x60\\;&|<>()]+\.(?:py|mjs|sh)`,
+  // Inside double quotes: no blank, quote, $, backtick, backslash, shell operator or control character. The
+  // $CLAUDE_PROJECT_DIR head is the main file's root; classifySpelling refuses it in a sub-agent file.
+  P: String.raw`(?:\$CLAUDE_PROJECT_DIR)?\/[^\s"'$\x60\\;&|<>()\x00-\x1f\x7f]+\.(?:py|mjs|sh)`,
+  // Unquoted: the manifest's PLAIN_ABS_PATH_RE characters only (the sub root is checked against it before an
+  // unquoted spelling is rendered), so no glob, brace or other shell-live character.
+  U: String.raw`(?:\/[A-Za-z0-9_.+-]+)*\/[A-Za-z0-9_.+-]+\.(?:py|mjs|sh)`,
   I: 'python3|node|bash',
   A: String.raw`(?: [A-Za-z0-9_=.:-]+)*`,
-  D: '[0-9]{1,5}',
+  // A positive number without a leading zero: `timeout -k 1 0` sets no limit, and 08 is not how the manifest writes 8.
+  D: '[1-9][0-9]{0,4}',
   L: '[A-Za-z0-9_.-]+',
   N: String.raw`\/[^"$\x60\\\x00-\x1f\x7f]+`,
-  R: String.raw`\$CLAUDE_PROJECT_DIR|\/[^\s"'$\x60\\;&|<>()]+`,
+  R: String.raw`\$CLAUDE_PROJECT_DIR|\/[^\s"'$\x60\\;&|<>()\x00-\x1f\x7f]+`,
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -115,14 +127,17 @@ function deadlineFor(timeout: unknown): number | undefined {
 /**
  * The known spelling `command` is, for a hook with `timeout` under `event`, in `scope`; null when it is none. Beyond
  * the template: the interpreter fits the script's extension (a node binary for .mjs only), a gate's label is the
- * script's file name, and its deadline is the one the manifest derives from the hook's own timeout.
+ * script's file name, its deadline is the one the manifest derives from the hook's own timeout, and the
+ * $CLAUDE_PROJECT_DIR root stands only in the main file (a sub-agent's hook would resolve it to its own directory).
+ * "Known" means template-shaped: the slots are character classes, not the manifest's own values (Ron 14109).
  */
 export function classifySpelling(command: string, timeout: unknown, event: string, scope: Scope = 'sub'): Spelling | null {
   for (const t of COMPILED) {
     if (!t.scopes.includes(scope) || (t.events && !t.events.includes(event))) continue
     const g = t.re.exec(command)?.groups
     if (!g) continue
-    const path = g.P
+    const path = g.P ?? g.U
+    if (scope !== 'main' && path.startsWith('$')) continue
     const ext = path.slice(path.lastIndexOf('.') + 1)
     const interpreter = g.N ?? g.I
     if (g.N !== undefined ? ext !== 'mjs' : INTERPRETER_OF[ext] !== interpreter) continue
@@ -136,7 +151,7 @@ export function classifySpelling(command: string, timeout: unknown, event: strin
       if (deadline !== deadlineFor(timeout)) continue
     }
     const args = g.A ? g.A.slice(1).split(' ') : []
-    return { kind: t.kind, interpreter, path, args, ...(deadline === undefined ? {} : { deadline }) }
+    return { kind: t.kind, failMode: t.failMode, interpreter, path, args, ...(deadline === undefined ? {} : { deadline }) }
   }
   return null
 }

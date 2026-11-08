@@ -26,6 +26,7 @@ import ts from 'typescript'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { HOOK_MANIFEST, nodeGateCommand, pythonGateCommand, renderHooks } from '../web/hooks/manifest.js'
 import { dryRun, formatDryRun, isRewrap, pairRewraps, runHookSettingsCli, type PlacedHook } from '../web/hooks/dry-run.js'
+import { classifySpelling } from '../web/hooks/spellings.js'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CLI_SRC = join(REPO, 'src', 'web', 'hooks', 'cli.ts')
@@ -658,6 +659,8 @@ describe('the report', () => {
       ['argument', (s) => { const h = hookOf(s, 'Stop', 'marveen-commands.py'); h.command = String(h.command).replaceAll(' --stop', ' --halt') }],
       ['root', (s) => { const h = hookOf(s, 'UserPromptSubmit', 'staleness-guard.py'); h.command = String(h.command).replaceAll(install, '/old/install') }],
       ['field', (s) => { hookOf(s, 'UserPromptSubmit', 'staleness-guard.py').async = true }],
+      // C3-5a-3 (Ron 14109): an open wrapper on a closed gate, same interpreter, path and arguments: a fail-mode flip.
+      ['open wrapper on a closed gate', (s) => { hookOf(s, 'PreToolUse', 'outgoing-copy-gate.py').command = quotedOpen('outgoing-copy-gate.py') }],
     ]
     for (const [what, edit] of edits) {
       withSettings('sub-03', edit, () => {
@@ -794,5 +797,61 @@ describe('isRewrap: each pairing rule (C3-5a)', () => {
     }
     expect(mutations.filter(([id]) => !applied.has(id)).map(([id]) => id)).toEqual([])
     expect(accepted).toEqual([])
+  })
+
+  // C3-5a-3 (Ron 14109, Kevin 14110): a rewrap keeps the fail mode, so exit 0 also means "no fail-mode change". The
+  // planned C3-5b pairs (plan-c3-5.md 3a/3b) all keep it: every open sub spelling -> the quoted failOpenExec, a
+  // gate's timeout with its deadline (closed -> closed); on the main file failOpenNodeProbe -> failOpenExec and
+  // failClosedRun -> the python probe spelling.
+  it('a fail-mode change is a drift on either side; every planned C3-5b pair keeps its fail mode and is a rewrap on either side', () => {
+    const ROOT = '/r'
+    const NODE_BIN = '/usr/bin/node'
+    const all = renderHooks(HOOK_MANIFEST, 'sub', {
+      root: ROOT, nodeBin: NODE_BIN, profile: { destructiveGate: true, credentialGate: true, secondReviewer: true },
+      agent: { heartbeat: true, threadReply: true, senderRolePolicy: 'strict', browser: true }, prompts: { precompact: 'x' },
+    })
+    const placed = Object.entries(all).flatMap(([event, groups]) => groups!.flatMap((g) => g.hooks.filter((h) => h.type === 'command')
+      .map((h): PlacedHook => ({ event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), hook: h as Record<string, unknown> }))))
+    const openExec = (interp: string, path: string, args: string[]) => `bash -c '[ -f "${path}" ] && exec ${interp} "${path}"${args.map((a) => ` ${a}`).join('')}; exit 0'`
+    const counts = { open: 0, closed: 0 }
+    const wrong: string[] = []
+    for (const orig of placed) {
+      const s = classifySpelling(String(orig.hook.command), orig.hook.timeout, orig.event, 'sub')!
+      const name = `${orig.event} ${s.path.slice(s.path.lastIndexOf('/') + 1)} ${s.kind}`
+      if (s.failMode === 'open') {
+        counts.open++
+        // The planned C3-5b spelling of an open sub hook.
+        const planned: PlacedHook = { ...orig, hook: { ...orig.hook, command: openExec(s.interpreter, s.path, s.args) } }
+        if (!isRewrap(orig, planned) || !isRewrap(planned, orig)) wrong.push(`planned pair not a rewrap: ${name}`)
+      } else {
+        counts.closed++
+        // The same interpreter, path and arguments under the open wrapper: a flip, in both directions.
+        const flipped: PlacedHook = { ...orig, hook: { ...orig.hook, command: openExec(s.interpreter, s.path, s.args) } }
+        if (isRewrap(orig, flipped) || isRewrap(flipped, orig)) wrong.push(`fail-mode flip is a rewrap: ${name}`)
+        // The planned gate shape: another timeout with its own deadline, closed on both sides.
+        const t = Number(orig.hook.timeout) + 5
+        const command = s.interpreter === 'python3' ? pythonGateCommand(s.path, s.args, t) : nodeGateCommand(s.interpreter, s.path, s.args, t)
+        const longer: PlacedHook = { ...orig, hook: { ...orig.hook, command, timeout: t } }
+        if (!isRewrap(orig, longer) || !isRewrap(longer, orig)) wrong.push(`gate timeout + deadline not a rewrap: ${name}`)
+      }
+    }
+    expect(wrong).toEqual([])
+    expect(counts.open).toBeGreaterThan(30)
+    expect(counts.closed).toBeGreaterThan(5)
+    // Main (the dry-run compares sub files only; the planned main pairs are checked on their spellings).
+    const main = renderHooks(HOOK_MANIFEST, 'main')
+    const mainPairs: string[] = []
+    for (const [event, groups] of Object.entries(main)) {
+      for (const h of groups!.flatMap((g) => g.hooks)) {
+        if (h.type !== 'command') continue
+        const s = classifySpelling(h.command, h.timeout, event, 'main')!
+        const planned = s.kind === 'failOpenNodeProbe' ? openExec(s.interpreter, s.path, s.args)
+          : s.kind === 'failClosedRun' && s.interpreter === 'python3' ? pythonGateCommand(s.path, s.args, h.timeout!) : null
+        if (planned === null) continue
+        const p = classifySpelling(planned, h.timeout, event, 'main')!
+        mainPairs.push(`${s.kind} ${s.failMode} -> ${p.kind} ${p.failMode}`)
+      }
+    }
+    expect([...new Set(mainPairs)].sort()).toEqual(['failClosedRun closed -> failClosedPythonProbe closed', 'failOpenNodeProbe open -> failOpenExec open'])
   })
 })
