@@ -6,7 +6,8 @@
 #
 #   repo/   -> extract under the project root (this repo)
 #     store/**                 (DB WAL-checkpointed first; minus models,
-#                               virtualenvs, browser profile and logs)
+#                               virtualenvs, browser profile, logs and the
+#                               fork-audit run scratch)
 #     .env                     (project root secrets)
 #     scheduled-tasks.json     (legacy, if present)
 #     assets/meetings/**       (meeting transcripts/memos)
@@ -108,10 +109,56 @@ add_if() {
 #   (measured 2026-09-16: these two were 788 MB of a 948 MB archive; excluding them
 #    leaves ~150 MB. STORE_SKIP does not delete anything -- the files stay on disk.)
 STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs "
+
+# store/fork-audit holds audit notes and the gate evidence of sealed test runs,
+# but also the runs' scratch: store/fork-audit/scratch-* work copies and, per
+# run under tom-runs/<run>/, the sealed suite copy (suite/, with its own
+# node_modules), and the run's home/, bin/, tmp/ and tmux/. Measured 2026-11-08:
+# tom-runs 1.1 GB (one live suite 758 MB), scratch-* 852 MB, while the result
+# files of all runs (steps/, vitest.json, report.md, *.rc, head/tree txt) are
+# 49.9 MB gzipped. Listing store/fork-audit as one entry made cp walk a LIVE
+# suite: a temp file the running suite deleted mid-copy ("cp: cannot stat
+# .../suite/tmp.provtest.*") failed the 2026-11-08 nightly backup with exit 6.
+# So the directory is expanded here and the scratch is never listed: it is
+# neither on the manifest (no false MISSING) nor handed to cp (no race).
+# phase-e/rollback-* is skipped the same way (Johnny 13877, 2026-11-08): the
+# cutover rollback copies (a full claudeclaw.db each, 506 MB for two) are a
+# backup inside the backup, like store/backups; they stay on disk, and the
+# rest of phase-e (the runbook) stays in the archive.
+# Every path is a quoted read -r line, never word-split or globbed, so spaces
+# and glob characters in run names are safe; a name with a newline still
+# breaks the line-based manifest and fails the run loudly, like any store/ name.
+list_fork_audit() {  # list_fork_audit <listfile>
+  local list="$1" top run e
+  while IFS= read -r top; do
+    case "${top##*/}" in scratch-*|node_modules) continue ;; esac
+    if [[ "${top##*/}" == phase-e && -d "${top}" && ! -L "${top}" ]]; then
+      while IFS= read -r e; do
+        case "${e##*/}" in rollback-*) continue ;; esac
+        echo "${e}" >> "${list}"
+      done < <(find "${top}" -mindepth 1 -maxdepth 1)
+      continue
+    fi
+    if [[ "${top##*/}" != tom-runs || ! -d "${top}" || -L "${top}" ]]; then
+      echo "${top}" >> "${list}"; continue
+    fi
+    while IFS= read -r run; do
+      if [[ ! -d "${run}" || -L "${run}" ]]; then echo "${run}" >> "${list}"; continue; fi
+      while IFS= read -r e; do
+        case "${e##*/}" in suite|home|bin|tmp|tmux|node_modules) continue ;; esac
+        echo "${e}" >> "${list}"
+      done < <(find "${run}" -mindepth 1 -maxdepth 1)
+    done < <(find "${top}" -mindepth 1 -maxdepth 1)
+  done < <(find store/fork-audit -mindepth 1 -maxdepth 1)
+}
+
 if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"
     case "${STORE_SKIP}" in *" ${_name} "*) continue ;; esac
+    if [[ "${_name}" == fork-audit && -d "${_entry}" && ! -L "${_entry}" ]]; then
+      list_fork_audit "${REPOLIST}"; continue
+    fi
     case "${_name}" in *.log|*.log.[0-9]*|*.out|*.pid) continue ;; esac
     # The temp file of an atomic write (<state>.tmp, <state>.tmp.<pid>,
     # <state>.tmp-<pid>-<ts>): its writer renames it over the real file a few
@@ -270,8 +317,8 @@ fi
 # gstack skill's node_modules and a sealed test copy under store/fork-audit
 # (node_modules with ~230 MB agent-SDK binaries) took the archive from
 # ~150 MB to 1.4 GB. Both reinstall with `npm ci`; no state lives in them.
+# (The fork-audit run scratch is not even listed: see list_fork_audit.)
 find "${STAGE}" -type d -name node_modules -prune -exec rm -rf {} + 2>/dev/null || true
-rm -rf "${STAGE}"/repo/store/fork-audit/scratch-* 2>/dev/null || true
 # Browser profiles: keep cookies/logins, drop caches and downloaded models.
 find "${STAGE}/repo/store/browser" -mindepth 2 -maxdepth 3 -type d \
   \( -name Cache -o -name 'Code Cache' -o -name GPUCache -o -name optimization_guide_model_store \
