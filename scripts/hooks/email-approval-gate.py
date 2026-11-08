@@ -1141,8 +1141,31 @@ def canonical_forms_text() -> str:
             "literal, vagy <<'EOF' heredoc, utana semmi mas parancs")
 
 
+# EGATEREASON1108: set when a fail-closed script verdict (script_run_sends could not read what runs) is what put
+# this Bash call in scope. deny() leads with it, whichever check refuses after that (ledger, level, own sender):
+# the level text alone read like a verdict on the script's content (Johnny 14000).
+_SCRIPT_NOTE = ""
+
+
+def script_reason_note(reasons) -> str:
+    """The deny lead for the first fail-closed (reason, script) of script_run_sends, or "" when there is none."""
+    if not reasons:
+        return ""
+    reason, script = reasons[0]
+    if reason == "not_literal":
+        why = (f"a futtatott szkript utja nem szo szerinti ({script!r}: valtozo, glob vagy kapcsos zarojel, "
+               "vagy relativ ut egy nem szo szerinti cd utan), igy a kapu nem tudja elolvasni, mi fut")
+    else:
+        why = (f"a futtatott szkript ({script!r}) a hivas pillanataban nem olvashato (nem letezik, vagy "
+               "ugyanez a parancs irja meg, pl. heredockal), igy a kapu nem tudja elolvasni, mi fut")
+    return ("Az ok: " + why + ", ezert KULDESNEK veszi (fail-closed). A tiltas NEM a szkript tartalmarol szol.\n"
+            "Megoldas: szo szerinti abszolut uttal futtass egy MAR LETEZO fajlt: elobb ird meg a Write "
+            "eszkozzel, es kulon hivasban futtasd (python3 -I /abszolut/ut/x.py).")
+
+
 def deny(msg: str):
-    sys.stderr.write(f"EMAIL JOVAHAGYASI KAPU: TILTVA.\n{msg}\n")
+    lead = f"{_SCRIPT_NOTE}\n" if _SCRIPT_NOTE else ""
+    sys.stderr.write(f"EMAIL JOVAHAGYASI KAPU: TILTVA.\n{lead}{msg}\n")
     sys.exit(2)
 
 
@@ -1232,9 +1255,12 @@ def main():
     cmd = ""
     if tool == "Bash":
         cmd = str(tool_input.get("command") or "")
+        reasons = []
         if not (_load_is_send_invocation()(cmd)
-                or _load_script_run_sends()(cmd, payload.get("cwd"))):
+                or _load_script_run_sends()(cmd, payload.get("cwd"), reasons=reasons)):
             sys.exit(0)
+        global _SCRIPT_NOTE
+        _SCRIPT_NOTE = script_reason_note(reasons)
         if ledger_enabled():
             ledger_gate("bash", tool_input, cmd)
     else:
