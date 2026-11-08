@@ -449,7 +449,8 @@ describe('the report', () => {
     ]), () => {
       for (const [mode, text] of everyMode('sub-03')) expect(text, mode).not.toContain(c.slice(0, 10))
       const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true }).agents[0]
-      for (const f of ['url', 'headers', 'prompt', 'statusMessage', 'timeout', 'type', 'note']) expect(r.diff, f).toMatch(new RegExp(`"${f}": "#[0-9a-f]{8}"`))
+      for (const f of ['url', 'headers', 'prompt', 'statusMessage', 'timeout', 'type']) expect(r.diff, f).toMatch(new RegExp(`"${f}": "#[0-9a-f]{8}"`))
+      expect(r.diff).toMatch(/"field #[0-9a-f]{8}": "#[0-9a-f]{8}"/)
       expect(r.diff).toMatch(/^[-+ ] {8}"#[0-9a-f]{8}",?$/m)
       expect(r.diff).toMatch(/^[-+ ] {4}"#[0-9a-f]{8}",?$/m)
       for (const plain of ['"type": "http"', '"timeout": 5', '"async": true', '"type": "agent"']) expect(r.diff).toContain(plain)
@@ -517,4 +518,87 @@ describe('the report', () => {
       if (other.startsWith(join(REPO, '.hook-settings-test-'))) rmSync(other, { recursive: true, force: true })
     }
   }, 60_000)
+
+  it('key names off Claude Code\'s hook schema are `field #tag` in every mode; known names print (Ron N8)', () => {
+    const c = 'CANARY-n8d4c3b2'
+    withSettings('sub-03', (s) => atTop(s, [
+      { matcher: 'Bash', [`${c}-group-name`]: 1, hooks: [
+        { type: 'command', command: '/opt/x/scripts/named.py', [`${c}-hook-name`]: true, statusMessage: 'x', once: true },
+        { type: 'command', command: '/opt/x/scripts/proto.py', constructor: `${c}-ctor`, toString: `${c}-tostr`, valueOf: `${c}-valueof` },
+      ] },
+    ]), () => {
+      for (const [mode, text] of everyMode('sub-03')) expect(text, mode).not.toContain(c.slice(0, 10))
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true }).agents[0]
+      expect(r.diff).toMatch(/^[-+ ] {6}"field #[0-9a-f]{8}": "#[0-9a-f]{8}",?$/m)
+      expect(r.diff!.match(/^[-+ ] {10}"field #[0-9a-f]{8}": "#[0-9a-f]{8}",?$/gm)!.length).toBeGreaterThanOrEqual(4)
+      for (const known of ['"matcher": "Bash"', '"statusMessage": "#', '"once": "#', '"hooks": [']) expect(r.diff).toContain(known)
+      for (const name of ['constructor', 'toString', 'valueOf']) expect(r.diff).not.toContain(`"${name}"`)
+    })
+  })
+
+  it('the extra-hooks file\'s errors are fixed texts in every mode: no parser fragment, key name or script path (Ron N9)', () => {
+    const c = 'CANARY-n9e8d7c6'
+    const file = join(install, 'store', 'extra-hooks.json')
+    const dir = 'local-hooks'
+    mkdirSync(dirname(file), { recursive: true })
+    const cases: Array<[string, string[]]> = [
+      [`${c} not json`, ['not valid JSON; every extra ignored']],
+      [JSON.stringify({ entries: [
+        { event: 'PreToolUse', script: `${dir}/${c}.py`, failClosed: false },
+        { event: 'PreToolUse', script: `${dir}/x.py`, failClosed: false, [`${c}-key`]: 1 },
+        `${c}-entry`,
+        { event: `${c}-event`, script: `${dir}/x.py`, failClosed: false },
+      ] }), ['entries[0]: invalid script; this entry is left out', 'entries[1]: unknown key(s); this entry is left out',
+        'entries[2]: not an object; this entry is left out', 'entries[3]: invalid event; this entry is left out']],
+      [JSON.stringify({ [`${c}-top`]: [] }), ['not an object with an "entries" array; every extra ignored']],
+    ]
+    try {
+      for (const [text, errors] of cases) {
+        writeFileSync(file, text)
+        expect(dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] }).extrasErrors).toEqual(errors)
+        for (const [mode, out] of everyMode('sub-03')) {
+          expect(out, mode).not.toContain(c.slice(0, 10))
+          expect(out.replaceAll('\\"', '"'), mode).toContain(errors[0])
+        }
+      }
+    } finally {
+      rmSync(file, { force: true })
+    }
+  })
+
+  it('an mcp_tool hook prints its type; its server, tool and input are tags (Ron N10)', () => {
+    const c = 'CANARY-n10a1b2c'
+    withSettings('sub-03', (s) => atTop(s, [{ matcher: 'Bash', hooks: [{ type: 'mcp_tool', server: `${c}-srv`, tool: `${c}-tool`, input: { q: `${c}-in` } }] }]), () => {
+      for (const [mode, text] of everyMode('sub-03')) expect(text, mode).not.toContain(c.slice(0, 10))
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true }).agents[0]
+      expect(r.kept).toContain('PreToolUse [Bash] mcp_tool timeout=-')
+      expect(r.diff).toContain('"type": "mcp_tool"')
+      for (const f of ['server', 'tool', 'input']) expect(r.diff, f).toMatch(new RegExp(`"${f}": "#[0-9a-f]{8}"`))
+    })
+  })
+
+  it('an unexpected throw prints only the error name: a __proto__ event key is exactly `unexpected error (TypeError)` (Ron N11)', () => {
+    const own = '[{"hooks":[{"type":"command","command":"/opt/x/scripts/own.py"}]}]'
+    withSettings('sub-03', (s) => JSON.stringify(s).replace('"hooks":{', `"hooks":{"__proto__":${own},`), () => {
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+      expect(r.exit).toBe(1)
+      expect(r.agents[0]).toMatchObject({ status: 'error', error: 'unexpected error (TypeError)' })
+    })
+  })
+
+  it('a string async, an object matcher in a printed hunk: tags; two non-script commands: two tags in one run (Ron N11)', () => {
+    const c = 'CANARY-n11f9e8d'
+    withSettings('sub-03', (s) => atTop(s, [
+      { matcher: { re: `${c}-matcher` }, hooks: [{ type: 'command', command: '/opt/x/scripts/m.py', async: `${c}-async` }] },
+      { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo one' }, { type: 'command', command: 'echo two' }] },
+    ]), () => {
+      for (const [mode, text] of everyMode('sub-03')) expect(text, mode).not.toContain(c.slice(0, 10))
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'], diff: true }).agents[0]
+      expect(r.diff).toMatch(/^[-+ ] {6}"matcher": "#[0-9a-f]{8}",$/m)
+      expect(r.diff).toMatch(/"async": "#[0-9a-f]{8}"/)
+      const tags = r.kept.map((k) => /^PreToolUse \[Bash\] command (#[0-9a-f]{8}) timeout=-$/.exec(k)?.[1]).filter(Boolean)
+      expect(tags).toHaveLength(2)
+      expect(tags[0]).not.toBe(tags[1])
+    })
+  })
 })

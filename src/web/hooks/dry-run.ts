@@ -73,19 +73,23 @@ const SEED_PROMPT = '(the template PreCompact prompt, seeded by the boot)'
 // This output is evidence that gets pasted into PRs and logs, so no value from an agent's settings file is printed
 // as it is, in any mode, unless it is on a short list: an operator's hook can carry a credential in its command, an
 // http hook's url or headers, an agent hook's prompt (Ron N1, N6). Printed as they are: the group's matcher (by
-// design: the labels name it), a known event name, and the hook fields below, each only with its expected type.
-// Everything else is a tag.
+// design: the labels name it), a known event name, the hook fields below, each only with its expected type, and the
+// key names of Claude Code's hook schema. Everything else is a tag.
 
 /** Event names printed as they are: the manifest's and the extra-hooks file's; any other key of a file is a tag (Ron N7). */
 const KNOWN_EVENTS: ReadonlySet<string> = new Set([...EXTRA_HOOK_EVENTS, ...HOOK_MANIFEST.entries.flatMap((e) => e.events)])
-/** Hook types printed as they are (the manifest renders command and agent hooks; prompt and http are Claude Code's others). */
-const HOOK_TYPES: ReadonlySet<string> = new Set(['command', 'agent', 'prompt', 'http'])
+/** Hook types printed as they are: the five of Claude Code's hook schema (Ron N10: mcp_tool was a tag). */
+const HOOK_TYPES: ReadonlySet<string> = new Set(['command', 'agent', 'prompt', 'http', 'mcp_tool'])
 /** The hook fields printed as they are, each with the one value type it may have; statusMessage is free text, so a tag. */
-const PLAIN_FIELDS: Readonly<Record<string, (v: unknown) => boolean>> = {
-  type: (v) => typeof v === 'string' && HOOK_TYPES.has(v),
-  timeout: (v) => typeof v === 'number' && Number.isFinite(v),
-  async: (v) => typeof v === 'boolean',
-}
+const PLAIN_FIELDS: ReadonlyMap<string, (v: unknown) => boolean> = new Map([
+  ['type', (v: unknown) => typeof v === 'string' && HOOK_TYPES.has(v)],
+  ['timeout', (v: unknown) => typeof v === 'number' && Number.isFinite(v)],
+  ['async', (v: unknown) => typeof v === 'boolean'],
+])
+/** Key NAMES printed as they are (Ron N8): Claude Code's hook fields and a group's two keys; any other name is `field #<tag>`. */
+const HOOK_FIELDS: ReadonlySet<string> = new Set(['type', 'command', 'args', 'async', 'asyncRewake', 'shell', 'onFailure', 'url',
+  'headers', 'allowedEnvVars', 'server', 'tool', 'input', 'prompt', 'model', 'if', 'timeout', 'statusMessage', 'once'])
+const GROUP_KEYS: ReadonlySet<string> = new Set(['matcher', 'hooks'])
 
 type Tagger = (value: unknown) => string
 
@@ -101,6 +105,7 @@ function newTagger(): Tagger {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const eventName = (event: string, tag: Tagger): string => (KNOWN_EVENTS.has(event) ? event : `event ${tag(event)}`)
+const keyName = (key: string, known: ReadonlySet<string>, tag: Tagger): string => (known.has(key) ? key : `field ${tag(key)}`)
 
 /** How a hook command is named in a label: the script file it runs, else `command #<tag>`. Never its text. */
 function commandTag(command: string, tag: Tagger): string {
@@ -109,16 +114,15 @@ function commandTag(command: string, tag: Tagger): string {
 
 function hookField(field: string, value: unknown, tag: Tagger): unknown {
   if (field === 'command' && typeof value === 'string') return `${scriptBasename(value) ?? 'command'} ${tag(value)}`
-  return PLAIN_FIELDS[field]?.(value) ? value : tag(value)
+  return PLAIN_FIELDS.get(field)?.(value) ? value : tag(value)
 }
 
 /** The hooks block as --diff shows it: the printable values as they are, every other value a tag. */
 function shownHooks(hooks: Record<string, unknown>, tag: Tagger): unknown {
-  const group = (g: unknown) => (!isRecord(g) ? tag(g) : Object.fromEntries(Object.entries(g).map(([k, v]) => [k,
-    k === 'matcher' && typeof v === 'string' ? v
-      : k === 'hooks' && Array.isArray(v)
-        ? v.map((h) => (isRecord(h) ? Object.fromEntries(Object.entries(h).map(([f, x]) => [f, hookField(f, x, tag)])) : tag(h)))
-        : tag(v)])))
+  const hook = (h: unknown) => (!isRecord(h) ? tag(h)
+    : Object.fromEntries(Object.entries(h).map(([f, x]) => [keyName(f, HOOK_FIELDS, tag), hookField(f, x, tag)])))
+  const group = (g: unknown) => (!isRecord(g) ? tag(g) : Object.fromEntries(Object.entries(g).map(([k, v]) => [keyName(k, GROUP_KEYS, tag),
+    k === 'matcher' && typeof v === 'string' ? v : k === 'hooks' && Array.isArray(v) ? v.map(hook) : tag(v)])))
   return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [eventName(event, tag),
     Array.isArray(groups) ? groups.map(group) : tag(groups)]))
 }
@@ -177,6 +181,19 @@ function normalised(before: Record<string, unknown>, after: Record<string, unkno
 }
 
 class SettingsReadError extends Error {}
+
+// The extra-hooks file's errors as fixed texts (Ron N9): its loader quotes the file (a parser fragment, unknown key
+// names, a script path). Only the entry's index and the problem's kind are printed; an unknown message is one fixed line.
+const EXTRAS_ENTRY: ReadonlyMap<string, string> = new Map([['must', 'not an object'], ['unknown', 'unknown key(s)'],
+  ...['event', 'scope', 'matcher', 'timeout', 'failClosed', 'script'].map((k): [string, string] => [k, `invalid ${k}`])])
+const EXTRAS_FILE: ReadonlyArray<[string, string]> = [['unreadable: ', 'not readable'], ['not valid JSON: ', 'not valid JSON'],
+  ['the file must be an object with an "entries" array', 'not an object with an "entries" array']]
+function extrasError(e: string): string {
+  const entry = /^entries\[(\d{1,6})\]: (\w+)/.exec(e)
+  if (entry) return `entries[${entry[1]}]: ${EXTRAS_ENTRY.get(entry[2]) ?? 'invalid'}; this entry is left out`
+  const file = EXTRAS_FILE.find(([prefix]) => e.startsWith(prefix))
+  return file ? `${file[1]}; every extra ignored` : 'an error whose text is not printed'
+}
 
 // The errors name the problem, never the file's text or path: a JSON parse error quotes the text around the fault,
 // and the path carries the agent's real name (--redact-names).
@@ -270,7 +287,7 @@ export function dryRun(opts: DryRunOptions): DryRunResult {
   }
   return {
     root: opts.redactNames ? '${ROOT}' : root, nodeBin: opts.redactNames ? '${NODE_BIN}' : nodeBin,
-    mainAgentId: opts.redactNames ? '${MAIN}' : mainAgentId, extrasErrors: extras.errors.map(show), agents, summary,
+    mainAgentId: opts.redactNames ? '${MAIN}' : mainAgentId, extrasErrors: extras.errors.map(extrasError), agents, summary,
     exit: drifted.length > 0 || errors.length > 0 ? 1 : 0,
   }
 }
