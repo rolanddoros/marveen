@@ -56,7 +56,7 @@ describe('the known spellings are the manifest\'s', () => {
       expect(n).toBeGreaterThan(40)
       expect([...seen].sort()).toEqual(scope === 'main'
         ? ['failClosedNodeProbe', 'failClosedPythonProbe', 'failOpenExec', 'failOpenExecClosedWhenFrozen']
-        : ['failClosedNodeBin', 'failClosedPythonProbe', 'failOpenExec'])
+        : ['failClosedNodeBin', 'failClosedPythonProbe', 'failOpenExec', 'failOpenExecClosedWhenFrozen'])
     })
   }
 
@@ -126,6 +126,14 @@ describe('classifySpelling: what is not a known spelling', () => {
     if (frozen.type !== 'command') throw new Error('unreachable')
     expect(classifySpelling(frozen.command, frozen.timeout, 'PreToolUse', 'main')?.kind).toBe('failOpenExecClosedWhenFrozen')
     expect(classifySpelling(frozen.command.replace('[ -e "$CLAUDE_PROJECT_DIR/store', '[ -e "/elsewhere/store'), frozen.timeout, 'PreToolUse', 'main')).toBeNull()
+    // Owner decision 3: the kill switch is closed while frozen on a sub-agent too, with its plain root burnt in;
+    // the main file's $CLAUDE_PROJECT_DIR form is still no sub spelling.
+    const subFrozen = renderHooks(HOOK_MANIFEST, 'sub', { root: '/srv/m', nodeBin: NODE_BIN, profile: {}, agent: {}, prompts: { precompact: 'x' } })
+      .PreToolUse!.flatMap((g) => g.hooks).find((h) => h.type === 'command' && h.command.includes('fleet-freeze.json'))!
+    if (subFrozen.type !== 'command') throw new Error('unreachable')
+    expect(classifySpelling(subFrozen.command, subFrozen.timeout, 'PreToolUse', 'sub')).toMatchObject({ kind: 'failOpenExecClosedWhenFrozen', failMode: 'closedWhileFrozen', path: '/srv/m/scripts/hooks/fleet-freeze-gate.sh' })
+    expect(classifySpelling(frozen.command, frozen.timeout, 'PreToolUse', 'sub')).toBeNull()
+    expect(classifySpelling(subFrozen.command.replace('[ -e "/srv/m/store', '[ -e "/elsewhere/store'), subFrozen.timeout, 'PreToolUse', 'sub')).toBeNull()
   })
 
   it('text around a known spelling, or no script at all', () => {

@@ -31,6 +31,8 @@ import { classifySpelling } from '../web/hooks/spellings.js'
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CLI_SRC = join(REPO, 'src', 'web', 'hooks', 'cli.ts')
 const FIXTURE = join(REPO, 'src', 'web', 'hooks', '__fixtures__', 'live-sub-hooks.12.json')
+// The one planned drift of owner decision 3 on every live block: the fleet-freeze-gate, open before, closed while frozen now.
+const FREEZE = 'PreToolUse [*] fleet-freeze-gate.sh timeout=5'
 
 // ---- 1 + 2: static ---------------------------------------------------------
 
@@ -258,11 +260,12 @@ describe('read-only: runtime under node --permission (read access only), guard p
     expect(r.stderr).toBe('unknown argument: "--bogus"\nusage: hook-settings --dry-run --root <install> [--agent <name>]... [--node-bin <path>] [--json] [--diff] [--redact-names]\n')
   })
 
-  it.each([[[]], [['--json']], [['--diff']], [['--redact-names', '--agent', 'sub-02']]])('the CLI %j on the 12 live blocks: EMPTY, nothing written, no network', (extra) => {
+  // Exit 1: every live block still carries the open fleet-freeze-gate, the one planned drift (owner decision 3).
+  it.each([[[]], [['--json']], [['--diff']], [['--redact-names', '--agent', 'sub-02']]])('the CLI %j on the 12 live blocks: the fleet-freeze drift (exit 1), nothing written, no network', (extra) => {
     const before = manifestOf(install)
     const r = sandboxed(CLI, ['--dry-run', '--root', install, '--node-bin', NODE, ...extra])
     expect(r.stderr).toBe('')
-    expect(r.code).toBe(0)
+    expect(r.code).toBe(1)
     expect(manifestOf(install)).toEqual(before)
     expect(readdirSync(childTmp)).toEqual([])
     expect(readdirSync(childHome)).toEqual([])
@@ -271,30 +274,33 @@ describe('read-only: runtime under node --permission (read access only), guard p
 
 describe('the report', () => {
   // The install is the pre-C3-5 live shape (the fixture), so this is the C3-5 window gate (plan-c3-5.md 3a): every
-  // agent rewrap only, 32 hooks each, 0 added, 0 dropped, exit 0.
-  it('the C3-5 window: 12/12 rewrap only (32 each), the playwright hook kept on 5, one agent without settings, normalised order named', () => {
+  // agent 31 rewraps. Owner decision 3 adds one drift per agent, the fleet-freeze-gate going from open to closed while
+  // frozen (a fail-mode change is never a rewrap): exactly that hook added and dropped, nothing else, exit 1.
+  it('the C3-5 window + owner decision 3: 12/12 31 rewraps and the one fleet-freeze drift, the playwright hook kept on 5, one agent without settings, normalised order named', () => {
     const r = dryRun({ root: install, nodeBin: NODE })
     const text = formatDryRun(r)
-    expect(r.exit).toBe(0)
-    expect(text).toContain('\nsummary: 13 agent(s), 0/12 multiset EMPTY, 12 rewrap only, 1 without settings, 0 error; exit 0\n')
+    expect(r.exit).toBe(1)
+    expect(text).toContain('\nsummary: 13 agent(s), 0/12 multiset EMPTY, 0 rewrap only, 1 without settings, 0 error; exit 1\n')
+    expect(r.summary).toEqual({ agents: 13, compared: 12, empty: 0, rewrapOnly: 0, drift: 12, noSettings: ['sub-13'], errors: [] })
     const compared = r.agents.filter((a) => a.name !== 'sub-13')
-    expect(compared.map((a) => [a.name, a.rewrapped.length, a.added.length, a.dropped.length])).toEqual(compared.map((a) => [a.name, 32, 0, 0]))
+    expect(compared.map((a) => [a.name, a.rewrapped.length, a.added, a.dropped])).toEqual(compared.map((a) => [a.name, 31, [FREEZE], [FREEZE]]))
     expect(text.match(/kept as is: PostToolUse \[mcp__playwright__browser_\.\*\] browser-content-notice\.py timeout=(-|10)/g)).toHaveLength(5)
-    // C3-5c: the 32 rewraps move nothing, so the only layout lines are the group merge and the one real reorder
+    // C3-5c: the 31 rewraps move nothing, so the only layout lines are the group merge and the one real reorder
     // (PreToolUse, the manifest's order); no "<event> order" for an event whose hooks were only rewrapped.
-    expect(text).toContain('sub-01: profile default, hooks 39 -> 39, multiset rewrap only ~32, normalised: UserPromptSubmit [9,1,1] -> [11]; PreToolUse order\n')
+    expect(text).toContain('sub-01: profile default, hooks 39 -> 39, multiset +1 -1 ~31, normalised: UserPromptSubmit [9,1,1] -> [11]; PreToolUse order\n')
+    expect(text).toContain(`\n  + ${FREEZE}\n  - ${FREEZE}\n`)
     expect(text).toContain('sub-05: profile applier')
     expect(text).toContain('sub-13: no-settings')
   })
 
   it('"<event> order" names a real move only: hooks rewrapped in place are not one, two swapped hooks are, the group merge line stays (C3-5c)', () => {
     const r0 = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
-    expect(r0.agents[0].rewrapped).toHaveLength(32)
+    expect(r0.agents[0].rewrapped).toHaveLength(31)
     // Stop, SessionStart, SessionEnd, PostToolUse(Failure): every hook rewrapped, none moved.
     expect(r0.agents[0].normalised).toEqual(['UserPromptSubmit [9,1,1] -> [11]', 'PreToolUse order'])
     withSettings('sub-03', (s) => { s.hooks.Stop[0].hooks.reverse() }, () => {
       const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
-      expect([r.exit, r.agents[0].rewrapped.length, r.agents[0].added, r.agents[0].dropped]).toEqual([0, 32, [], []])
+      expect([r.exit, r.agents[0].rewrapped.length, r.agents[0].added, r.agents[0].dropped]).toEqual([0, 31, [], []])
       expect(r.agents[0].normalised).toEqual(['UserPromptSubmit [9,1,1] -> [11]', 'PreToolUse order', 'Stop order'])
     })
   })
@@ -303,6 +309,7 @@ describe('the report', () => {
     const path = join(install, 'agents', 'sub-03', '.claude', 'settings.json')
     const original = readFileSync(path, 'utf-8')
     const s = JSON.parse(original)
+    closeFreeze(s)
     const group = s.hooks.PreToolUse.find((g: { hooks: Array<{ command?: string }> }) => JSON.stringify(g).includes('db-write-gate.mjs'))
     s.hooks.PreToolUse.push(JSON.parse(JSON.stringify(group)))
     writeFileSync(path, JSON.stringify(s))
@@ -320,6 +327,7 @@ describe('the report', () => {
     const path = join(install, 'agents', 'sub-03', '.claude', 'settings.json')
     const original = readFileSync(path, 'utf-8')
     const s = JSON.parse(original)
+    closeFreeze(s)
     s.hooks.PreToolUse = s.hooks.PreToolUse.filter((g: { hooks: Array<{ command?: string }> }) => !JSON.stringify(g).includes('db-write-gate.mjs'))
     writeFileSync(path, JSON.stringify(s))
     try {
@@ -335,9 +343,10 @@ describe('the report', () => {
   it('--redact-names, --json and --diff; usage errors exit 2', () => {
     const lines: string[] = []
     const errs: string[] = []
-    expect(runHookSettingsCli(['--dry-run', '--root', install, '--node-bin', NODE, '--json', '--redact-names', '--diff', '--agent', 'sub-02'], (s) => lines.push(s), (s) => errs.push(s))).toBe(0)
+    // Exit 1: sub-02 carries the open fleet-freeze-gate (owner decision 3).
+    expect(runHookSettingsCli(['--dry-run', '--root', install, '--node-bin', NODE, '--json', '--redact-names', '--diff', '--agent', 'sub-02'], (s) => lines.push(s), (s) => errs.push(s))).toBe(1)
     const data = JSON.parse(lines.join(''))
-    expect(data).toMatchObject({ root: '${ROOT}', nodeBin: '${NODE_BIN}', mainAgentId: '${MAIN}', exit: 0 })
+    expect(data).toMatchObject({ root: '${ROOT}', nodeBin: '${NODE_BIN}', mainAgentId: '${MAIN}', exit: 1 })
     expect(data.agents[0].diff).toContain('@@ ')
     expect(data.agents[0].diff).not.toContain(install)
     for (const argv of [['--root', install], ['--dry-run'], ['--dry-run', '--root', 'rel'], ['--dry-run', '--root', install, '--agent', 'nobody']]) {
@@ -346,21 +355,31 @@ describe('the report', () => {
     expect(errs.join('')).toContain('--dry-run is mandatory')
   })
 
-  // Rewrites one agent's settings for the duration of fn, then puts the file back byte for byte.
+  // Rewrites one agent's settings for the duration of fn, then puts the file back byte for byte. The fleet-freeze-gate
+  // is closed first (closeFreeze), so the edit's own lines are the only drift an edit test reads.
   function withSettings(agent: string, edit: (s: Record<string, any>) => unknown, fn: () => void): void {
     const path = join(install, 'agents', agent, '.claude', 'settings.json')
     const original = readFileSync(path, 'utf-8')
     const s = JSON.parse(original)
+    closeFreeze(s)
     const text = edit(s)
     writeFileSync(path, typeof text === 'string' ? text : JSON.stringify(s, null, 2))
     try { fn() } finally { writeFileSync(path, original) }
   }
-  // The install is the pre-C3-5 shape, so every agent already carries the window's 32 rewraps: an edit test reads
+  // The install is the pre-C3-5 shape, so every agent already carries the window's 31 rewraps: an edit test reads
   // only the lines of the hook it touched.
   const rewrapsOf = (r: { agents: Array<{ rewrapped: string[] }> }, script: string) => r.agents[0].rewrapped.filter((l) => l.includes(` ${script} `))
   const groupOf = (s: Record<string, any>, script: string) => s.hooks.PreToolUse.find((g: unknown) => JSON.stringify(g).includes(script))
   const hookOf = (s: Record<string, any>, event: string, script: string): Record<string, unknown> =>
     s.hooks[event].flatMap((g: { hooks: unknown[] }) => g.hooks).find((h: { command?: string }) => String(h.command).includes(`/${script}`))
+  // Owner decision 3: the install's fleet-freeze-gate is the open sub spelling, a fail-mode drift against the render
+  // (closed while frozen) on every agent. closeFreeze puts the rendered spelling in, as the boot writer will.
+  function closeFreeze(s: Record<string, any>): void {
+    const rendered = renderHooks(HOOK_MANIFEST, 'sub', { root: install, nodeBin: NODE, profile: {}, agent: {}, prompts: { precompact: 'x' } })
+    const gate = rendered.PreToolUse!.flatMap((g) => g.hooks)
+      .find((h): h is Extract<typeof h, { type: 'command' }> => h.type === 'command' && h.command.includes('/fleet-freeze-gate.sh'))!
+    hookOf(s, 'PreToolUse', 'fleet-freeze-gate.sh').command = gate.command
+  }
 
   it('a changed matcher is a drift, never EMPTY (Ron N3)', () => {
     withSettings('sub-03', (s) => { groupOf(s, 'egress-gate.mjs').matcher = 'WebFetch|Read' }, () => {
@@ -407,9 +426,15 @@ describe('the report', () => {
 
   it('an agent without settings.json: exit 0, but counted and listed apart (Kevin 13873)', () => {
     const r = dryRun({ root: install, nodeBin: NODE })
-    expect(r.exit).toBe(0)
-    expect(r.summary).toEqual({ agents: 13, compared: 12, empty: 0, rewrapOnly: 12, drift: 0, noSettings: ['sub-13'], errors: [] })
+    expect(r.summary.noSettings).toEqual(['sub-13'])
     expect(formatDryRun(r)).toContain('\n  without settings: sub-13\n')
+    // The no-settings agent adds nothing to the exit: next to a rewrap-only agent (sub-03, its fleet-freeze-gate closed)
+    // the run is exit 0.
+    withSettings('sub-03', () => {}, () => {
+      const two = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03', 'sub-13'] })
+      expect(two.exit).toBe(0)
+      expect(two.summary).toEqual({ agents: 2, compared: 1, empty: 0, rewrapOnly: 1, drift: 0, noSettings: ['sub-13'], errors: [] })
+    })
   })
 
   it('no hook command text and no other settings key in any mode, a canary secret included (Ron N1, N2)', () => {
@@ -540,7 +565,8 @@ describe('the report', () => {
       const plain = JSON.stringify(dryRun({ root: other, nodeBin: NODE, diff: true }))
       expect(plain).toContain('alpha-real')
       const outs: string[] = []
-      expect(runHookSettingsCli(['--dry-run', '--root', other, '--node-bin', NODE, '--redact-names', '--diff'], (x) => outs.push(x), () => {})).toBe(0)
+      // Exit 1: the fleet-freeze drift on every agent (owner decision 3).
+      expect(runHookSettingsCli(['--dry-run', '--root', other, '--node-bin', NODE, '--redact-names', '--diff'], (x) => outs.push(x), () => {})).toBe(1)
       const red = dryRun({ root: other, nodeBin: NODE, diff: true, redactNames: true })
       for (const text of [outs.join(''), JSON.stringify(red)]) {
         expect(text).not.toContain('alpha-real')
@@ -654,10 +680,10 @@ describe('the report', () => {
       expect(rewrapsOf(r, 'staleness-guard.py')).toEqual([])
       const line = 'SessionEnd [-] clear-capture.py wrapper failOpenExecUnquoted -> failOpenExec, deadline - -> -, timeout 15 -> 15'
       expect(rewrapsOf(r, 'clear-capture.py')).toEqual([line])
-      expect(r.agents[0].rewrapped).toHaveLength(31)
+      expect(r.agents[0].rewrapped).toHaveLength(30)
       expect(r.summary).toMatchObject({ agents: 1, compared: 1, empty: 0, rewrapOnly: 1, drift: 0 })
       const text = formatDryRun(r)
-      expect(text).toContain('sub-03: profile default, hooks 39 -> 39, multiset rewrap only ~31, ')
+      expect(text).toContain('sub-03: profile default, hooks 39 -> 39, multiset rewrap only ~30, ')
       expect(text).toContain(`\n  ~ ${line}\n`)
       expect(text).toContain('\nsummary: 1 agent(s), 0/1 multiset EMPTY, 1 rewrap only, 0 without settings, 0 error; exit 0\n')
     })
@@ -675,7 +701,7 @@ describe('the report', () => {
     }, () => {
       const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
       expect([...rewrapsOf(r, 'outgoing-copy-gate.py'), ...rewrapsOf(r, 'voice-reply-directive.py')]).toEqual([])
-      expect(r.agents[0].rewrapped).toHaveLength(30)
+      expect(r.agents[0].rewrapped).toHaveLength(29)
       const lines: string[] = []
       expect(runHookSettingsCli(['--dry-run', '--root', install, '--node-bin', NODE, '--json', '--agent', 'sub-03'], (x) => lines.push(x), () => {})).toBe(0)
       expect(JSON.parse(lines.join('')).summary).toMatchObject({ rewrapOnly: 1, drift: 0 })
@@ -850,7 +876,7 @@ describe('isRewrap: each pairing rule (C3-5a)', () => {
     const placed = Object.entries(all).flatMap(([event, groups]) => groups!.flatMap((g) => g.hooks.filter((h) => h.type === 'command')
       .map((h): PlacedHook => ({ event, ...(g.matcher === undefined ? {} : { matcher: g.matcher }), hook: h as Record<string, unknown> }))))
     const openExec = (interp: string, path: string, args: string[]) => `bash -c '[ -f "${path}" ] && exec ${interp} "${path}"${args.map((a) => ` ${a}`).join('')}; exit 0'`
-    const counts = { open: 0, closed: 0 }
+    const counts = { open: 0, closed: 0, closedWhileFrozen: 0 }
     const wrong: string[] = []
     for (const orig of placed) {
       const s = classifySpelling(String(orig.hook.command), orig.hook.timeout, orig.event, 'sub')!
@@ -863,6 +889,12 @@ describe('isRewrap: each pairing rule (C3-5a)', () => {
         const a = s.args.map((x) => ` ${x}`).join('')
         const retired: PlacedHook = { ...orig, hook: { ...orig.hook, command: `bash -c '[ -f ${s.path} ] && exec ${s.interpreter} ${s.path}${a}; exit 0'` } }
         if (!isRewrap(orig, retired) || !isRewrap(retired, orig)) wrong.push(`C3-5b pair not a rewrap: ${name}`)
+      } else if (s.failMode === 'closedWhileFrozen') {
+        counts.closedWhileFrozen++
+        // The kill switch (owner decision 3): its open form, the sub spelling before, is a fail-mode flip in both
+        // directions, the one drift the live dry-run names per agent. It has no deadline, so no gate-timeout pair.
+        const flipped: PlacedHook = { ...orig, hook: { ...orig.hook, command: openExec(s.interpreter, s.path, s.args) } }
+        if (isRewrap(orig, flipped) || isRewrap(flipped, orig)) wrong.push(`fail-mode flip is a rewrap: ${name}`)
       } else {
         counts.closed++
         // The same interpreter, path and arguments under the open wrapper: a flip, in both directions.
@@ -878,6 +910,7 @@ describe('isRewrap: each pairing rule (C3-5a)', () => {
     expect(wrong).toEqual([])
     expect(counts.open).toBeGreaterThan(30)
     expect(counts.closed).toBeGreaterThan(5)
+    expect(counts.closedWhileFrozen).toBe(1)
     // Main (the dry-run compares sub files only, so the main pairs are checked on their spellings): each hook C3-5b
     // re-spells, against the spelling it had before (rebuilt here from the retired templates), keeps its mode.
     const main = renderHooks(HOOK_MANIFEST, 'main')

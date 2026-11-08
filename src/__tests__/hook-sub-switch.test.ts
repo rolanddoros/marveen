@@ -120,7 +120,12 @@ function unpairedAfterRewrap(before: unknown, after: unknown): { pairs: number; 
   return { pairs: r.pairs.length, dropped: r.dropped.map(key), added: r.added.map(key) }
 }
 const parity = (old: unknown, fresh: unknown) => { const r = unpairedAfterRewrap(old, fresh); return { dropped: r.dropped, added: r.added } }
-const NO_DIFF = { dropped: [], added: [] }
+// Owner decision 3: the fleet-freeze-gate is closed while frozen on the sub-agents too. A block that still carries the
+// open spelling (the live fixture, the old chain) differs from the new render by that one hook, dropped and added: a
+// fail-mode change is no rewrap. Nothing else may differ.
+const FREEZE_OPEN = expect.stringMatching(/^(?!.*store\/fleet-freeze\.json).*\/scripts\/hooks\/fleet-freeze-gate\.sh/)
+const FREEZE_CLOSED = expect.stringMatching(/^(?=.*store\/fleet-freeze\.json).*\/scripts\/hooks\/fleet-freeze-gate\.sh/)
+const FREEZE_DIFF = { dropped: [FREEZE_OPEN], added: [FREEZE_CLOSED] }
 
 // The spawn's inject* sequence as agent-scaffold.ts:1215-1243 ran it on c7f124ff (extras path aside). Test-only: it
 // goes with the injectors in 3b-2.
@@ -188,8 +193,10 @@ describe('parity: the old chain and the generator give the same multiset', () =>
       const old = oldChain(`${PREFIX}${sub}`, settings, profile, cfg)
       const r = unpairedAfterRewrap(old, fresh)
       if (r.dropped.length || r.added.length) diffs.push(`${sub}: +${r.added.length} -${r.dropped.length}`)
+      // The one expected difference: the old chain keeps the open fleet-freeze-gate (owner decision 3).
+      expect({ dropped: r.dropped, added: r.added }).toEqual(FREEZE_DIFF)
     }
-    expect(diffs).toEqual([])
+    expect(diffs).toEqual(Object.keys(FIXTURE.agents).map((sub) => `${sub}: +1 -1`))
   }, 120_000)
 
   const cases: Array<{ id: string; name?: string; profile?: Partial<ProfileTemplate>; config?: Record<string, unknown>; gates?: unknown; script: string }> = [
@@ -222,11 +229,12 @@ function gateCase(c: { profile?: Partial<ProfileTemplate>; config?: Record<strin
   const newOn = newChain(name, base, on, cfgOn)
   const oldOn = oldChain(name, base, on, cfgOn)
   expect(JSON.stringify(newOn)).toContain(c.script)
-  expect(parity(oldOn, newOn)).toEqual(NO_DIFF)
+  // The old chain keeps the open fleet-freeze-gate of the live block (owner decision 3); nothing else differs.
+  expect(parity(oldOn, newOn)).toEqual(FREEZE_DIFF)
   // OFF again, from the ON block: offRemoves entries go, the others stay as kept copies; the same both ways.
   setGates(undefined)
   const offBase = { permissions: { allow: [] }, hooks: oldOn }
-  expect(parity(oldChain(name, offBase, DEFAULT), newChain(name, offBase, DEFAULT))).toEqual(NO_DIFF)
+  expect(parity(oldChain(name, offBase, DEFAULT), newChain(name, offBase, DEFAULT))).toEqual(FREEZE_DIFF)
 }
 
 describe('the boot writer (ensureSubHookBlock)', () => {
@@ -238,8 +246,8 @@ describe('the boot writer (ensureSubHookBlock)', () => {
     expect(S.ensureSubHookBlock(`${PREFIX}idem`, NO_EXTRAS)).toBe(false)
     expect(readFileSync(path, 'utf-8')).toBe(bytes)
     expect(statSync(path).mtimeMs).toBe(mtime)
-    // The live block is the pre-C3-5 shape: the window's 32 rewraps, nothing added or dropped.
-    expect(unpairedAfterRewrap(liveBlock('sub-02'), readJson(path).hooks)).toEqual({ pairs: 32, ...NO_DIFF })
+    // The live block is the pre-C3-5 shape: the window's 31 rewraps and the fleet-freeze-gate fail-mode change.
+    expect(unpairedAfterRewrap(liveBlock('sub-02'), readJson(path).hooks)).toEqual({ pairs: 31, ...FREEZE_DIFF })
     S.writeAgentSettingsFromProfile(`${PREFIX}idem`, DEFAULT, NO_EXTRAS)
     expect(S.ensureSubHookBlock(`${PREFIX}idem`, NO_EXTRAS)).toBe(false)
   })
@@ -254,8 +262,9 @@ describe('the boot writer (ensureSubHookBlock)', () => {
     expect(S.ensureSubHookBlock(`${PREFIX}rollback`, NO_EXTRAS)).toBe(true)
     const written = readJson(path).hooks
     oldBoot(`${PREFIX}rollback`, DEFAULT)
-    // The old ensure* may put back their pre-C3-5 spellings (a rewrap); no hook is added or dropped.
-    expect(parity(written, readJson(path).hooks)).toEqual(NO_DIFF)
+    // The old ensure* may put back their pre-C3-5 spellings (a rewrap); the one hook they change is the
+    // fleet-freeze-gate, back to its open spelling (owner decision 3 reversed, as a revert would).
+    expect(parity(written, readJson(path).hooks)).toEqual({ dropped: [FREEZE_CLOSED], added: [FREEZE_OPEN] })
   })
 
   it('runs the PreCompact prompt migrations before the generator (Ron N3): a foreign root is re-anchored', () => {
@@ -439,7 +448,7 @@ describe('C3-3b-1b: the boot writer, pinned', () => {
     g.hooks!.push({ type: 'http', url: 'https://ops.example.invalid/session' })
     const settings = { permissions: { allow: [] }, hooks }
     const fresh = newChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT) as Hooks
-    expect(parity(oldChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT), fresh)).toEqual(NO_DIFF)
+    expect(parity(oldChain(`${PREFIX}mig-cmd-matcher`, settings, DEFAULT), fresh)).toEqual(FREEZE_DIFF)
     expect(fresh.SessionStart.find((x) => x.hooks?.some((h) => h.type === 'http'))?.matcher).toBe(tplMatcher)
     expect(JSON.stringify(fresh)).not.toContain(legacy)
   })
@@ -452,6 +461,6 @@ describe('C3-3b-1b: the boot writer, pinned', () => {
     expect(promptOf(plan.hooks)).toBe('the real prompt')
     expect(plan.kept).toEqual([{ event: 'PreCompact', matcher: 'auto', hook: noPrompt, inManagedGroup: true }])
     const settings = { permissions: { allow: [] }, hooks: { ...liveBlock('sub-01'), PreCompact: [{ matcher: 'auto', hooks: [noPrompt, real] }] } }
-    expect(parity(oldChain(`${PREFIX}n-h`, settings, DEFAULT), newChain(`${PREFIX}n-h`, settings, DEFAULT))).toEqual(NO_DIFF)
+    expect(parity(oldChain(`${PREFIX}n-h`, settings, DEFAULT), newChain(`${PREFIX}n-h`, settings, DEFAULT))).toEqual(FREEZE_DIFF)
   })
 })

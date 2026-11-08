@@ -11,8 +11,8 @@ import { specFor, type FailMode, type HookKind, type HookManifest, type HookMani
 /** The fail mode each kind should have. The reasons are in docs/hook-fail-modes.md. */
 export const FAIL_MODE_POLICY: Readonly<Record<HookKind, FailMode>> = {
   'security-gate': 'closed',
-  // Closed while frozen (pending owner decision 3, C3 plan): a broken gate
-  // blocks only while store/fleet-freeze.json exists, see CLOSED_WHILE_FROZEN.
+  // Closed while frozen, in both scopes (owner decision 3, Roland TG 2967): a broken
+  // gate blocks only while store/fleet-freeze.json exists, see CLOSED_WHILE_FROZEN.
   'kill-switch': 'closed',
   guard: 'open',
   enforcer: 'open',
@@ -59,14 +59,6 @@ export interface FailModeException {
  * outlive the mismatch it names.
  */
 export const FAIL_MODE_EXCEPTIONS: readonly FailModeException[] = [
-  {
-    id: 'fleet-freeze-gate',
-    scope: 'sub',
-    failMode: 'open',
-    reason: 'The sub-agents get the plain fail-open wrapper (failOpenExec), so a missing script lets calls through '
-      + 'even while frozen. Whether the kill switch should fail closed on the sub-agents is owner decision 3 (C3 plan), '
-      + 'pending, separate from the wrapper normalisation (C3-5).',
-  },
   {
     id: 'child-claude-channel-guard',
     scope: 'sub',

@@ -59,7 +59,9 @@ const TEMPLATES: readonly Template[] = [
       + `then timeout -k 1 {D} {I} "{P}"{A}; else {I} "{P}"{A}; fi; [ $? = 2 ] && exit 2; exit 0'`,
   },
   {
-    kind: 'failOpenExecClosedWhenFrozen', failMode: 'closedWhileFrozen', scopes: ['main'],
+    // The kill switch, both scopes since owner decision 3 (a sub-agent's root is a plain path; spellings of an
+    // earlier sub file, the open failOpenExec, still classify, so a dry-run names the change as a fail-mode drift).
+    kind: 'failOpenExecClosedWhenFrozen', failMode: 'closedWhileFrozen', scopes: ['main', 'sub'],
     text: `bash -c '[ -f "{P}" ] && exec {I} "{P}"{A}; [ -e "{R}/store/fleet-freeze.json" ] && { echo "fleet-freeze-gate `
       + '(fail-closed while frozen): the gate script is missing and store/fleet-freeze.json exists, so every tool call is '
       + `blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard." >&2; exit 2; }; exit 0'`,
