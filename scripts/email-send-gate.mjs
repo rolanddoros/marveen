@@ -929,8 +929,8 @@ export function isSendInvocation(cmd, depth = 0) {
 // Not seen, on purpose (docs/security-hardening.md lists them): mail sent
 // without one of these libraries (Gmail API client, an HTTP mail API, raw
 // socket SMTP, perl/ruby), a script read from stdin or named through a
-// variable, a script reached after `cd dir &&` (resolved against the session
-// cwd), helpers past the first level, an import after the first 1 MiB, and
+// variable, a script reached after a cd whose target is not literal (resolved
+// against the session cwd only, JSCD1108), helpers past the first level, an import after the first 1 MiB, and
 // code assembled at runtime.
 const PY_MAIL_MODULE = String.raw`(?:(?:aio)?smtplib|yagmail)`
 const PY_MAIL_IMPORT = new RegExp(
@@ -973,12 +973,58 @@ function readScriptHead(path, limit = SCRIPT_READ_LIMIT) {
   }
 }
 
-function resolveScriptPath(script, cwd) {
-  if (!script || UNDECIDABLE_PATH.test(script)) return null
+// JSCD1108: a relative script is looked up under cwd (always, as before: every send stays a send) and under every
+// literal `cd DIR` target of the command, by the python twin's rules (_cd_bases, CDGATE1108): DIR from the cd's own
+// segment only, chained cds, `--` and the options, `~`; a bare `cd` goes to HOME unless the head the old flat reading
+// took as its target cannot be known. A target that cannot be known (a variable, a substitution, `-`, `~user`) is
+// not followed: unlike the fail-closed python twin, this accident gate then judges cwd only, as for `python3 $S/x.py`
+// (docs/security-hardening.md, "Reach"). Substitutions come in as flattenSubstitutions' `$` placeholder word.
+const CD_OPTIONS = new Set(['-P', '-L', '-e', '-@'])
+const CD_SEG = null
+const CD_NON_LITERAL = /[*?[{$`<>]/
+const cdDirUnknowable = (d) =>
+  !d || d === '-' || (d.startsWith('~') && !(d === '~' || d.startsWith('~/'))) || CD_NON_LITERAL.test(d)
+
+function cdScanWords(cmd, outer = []) {
+  const words = [...outer]
+  for (const toks of segmentsTokens(flattenSubstitutions(cmd))) words.push(CD_SEG, ...toks)
+  return words
+}
+
+function cdBases(cwd, words) {
+  const base = cwd ? resolve(cwd) : null
+  const bases = base ? [base] : []
+  let cur = base
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] !== 'cd') continue
+    i++
+    while (i < words.length && CD_OPTIONS.has(words[i])) i++
+    if (i < words.length && words[i] === '--') i++
+    let d = i < words.length ? words[i] : undefined
+    if (i < words.length && d === CD_SEG) {
+      const rest = words.slice(i + 1).filter((w) => w !== CD_SEG)
+      let k = 0
+      while (k < rest.length && CD_OPTIONS.has(rest[k])) k++
+      if (k < rest.length && rest[k] === '--') k++
+      d = cdDirUnknowable(rest[k]) ? undefined : '~'
+    }
+    if (cdDirUnknowable(d)) { cur = null; continue }
+    const tilde = d === '~' || d.startsWith('~/')
+    const next = tilde ? resolve(homedir(), '.' + d.slice(1)) : isAbsolute(d) ? resolve(d) : cur ? resolve(cur, d) : null
+    if (next === null) continue
+    bases.push(next)
+    if (!tilde && !isAbsolute(d) && base) bases.push(resolve(base, d))
+    cur = next
+  }
+  return [...new Set(bases)]
+}
+
+function resolveScriptPaths(script, cwd, words) {
+  if (!script || UNDECIDABLE_PATH.test(script)) return []
   let p = script
   if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1))
-  if (isAbsolute(p)) return p
-  return cwd ? resolve(cwd, p) : null
+  if (isAbsolute(p)) return [p]
+  return cdBases(cwd, words).map((b) => resolve(b, p))
 }
 
 // node/tsx/bun/deno: the first non-option word is the script; -e/--eval code
@@ -1138,20 +1184,21 @@ function pythonModule(rest) {
   }
   return null
 }
-function pythonModuleSends(module, cwd, readScript) {
+function pythonModuleSends(module, cwd, readScript, words) {
   if (!/^[\w.]+$/.test(module) || !cwd) return false
   const rel = module.split('.').join('/')
-  return [rel + '.py', join(rel, '__main__.py')].some((c) => scriptFileSends(resolve(cwd, c), 'py', readScript))
+  return cdBases(cwd, words).some((b) =>
+    [rel + '.py', join(rel, '__main__.py')].some((c) => scriptFileSends(resolve(b, c), 'py', readScript)))
 }
 
-function headRunsSenderScript(toks, cwd, readScript, depth) {
+function headRunsSenderScript(toks, cwd, readScript, depth, words = []) {
   if (!toks || !toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (WRAPPER_SHELL.test(prog)) {
     if (depth >= SHELL_C_DEPTH) return false
     for (let i = 0; i < rest.length - 1; i++) {
-      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1)) return true
+      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1, words)) return true
     }
     return false
   }
@@ -1160,7 +1207,7 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     const module = pythonModule(rest)
-    if (module) return pythonModuleSends(module, cwd, readScript)
+    if (module) return pythonModuleSends(module, cwd, readScript, words)
     script = pythonScriptOperand(rest).script
     kind = 'py'
   } else if (NODEISH.test(prog)) {
@@ -1171,30 +1218,29 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
     kind = 'node'
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
     // a directly executed file: its #! line picks the interpreter, else its extension
-    const path = resolveScriptPath(toks[0], cwd)
-    if (!path) return false
-    kind = shebangKind(readScript(path, SHEBANG_READ_LIMIT)) ??
-      (/\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null)
-    if (!kind) return false
-    if (addressFlagGiven(rest)) return true
-    return scriptFileSends(path, kind, readScript)
+    // JSCD1108: every candidate is judged on its own, with its own kind
+    const extKind = /\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null
+    return resolveScriptPaths(toks[0], cwd, words).some((path) => {
+      const k = shebangKind(readScript(path, SHEBANG_READ_LIMIT)) ?? extKind
+      return k !== null && (addressFlagGiven(rest) || scriptFileSends(path, k, readScript))
+    })
   } else {
     return false
   }
   if (script === null) return false
-  const path = resolveScriptPath(script, cwd)
-  if (!path) return false
-  return scriptFileSends(path, kind, readScript)
+  return resolveScriptPaths(script, cwd, words).some((path) => scriptFileSends(path, kind, readScript))
 }
 
-export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0) {
+export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0, outerWords = []) {
   let segments
+  let words
   try {
     segments = segmentsTokens(cmd)
+    words = cdScanWords(cmd, outerWords) // JSCD1108: the words the cd scan reads
   } catch {
     return false // unparseable: isSendInvocation's legacy fallback already judged it
   }
-  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth)))
+  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, words)))
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of

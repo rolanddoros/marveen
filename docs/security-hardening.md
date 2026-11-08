@@ -808,8 +808,11 @@ and the main agent's `email_send` approval gate keeps its current reach.
   - an import after the first 1 MiB of the file.
 - **Reach:**
   - helpers past the first level;
-  - a script started after `cd dir &&`, which is resolved against the session
-    cwd, not `dir`;
+  - a script started after a `cd` whose target is not literal (a variable, a
+    `$(...)` or backtick substitution, or another target the gate cannot know,
+    such as `cd -`, `~user` or a glob), or after a bare `cd` before a non-literal
+    head, which is resolved against the session cwd only; a literal `cd dir`
+    target is followed (JSCD1108);
   - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
 
