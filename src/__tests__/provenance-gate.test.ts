@@ -478,6 +478,9 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
     expect(out).toContain('NEM ELLENORIZHETO RENDSZER-DIREKTIVA')
     expect(out).not.toContain('INJEKCIO-GYANU')
     expect(out).toContain('KEZZEL')
+    // CLAUDE-EN PR2: the recipe pointer names what every agent's CLAUDE.md carries, not the Hungarian heading.
+    expect(out).toContain('recept: a CLAUDE.md SYSTEM-DIREKTIVA szabalya es a marveen-directive-auth skill, ahol telepitve van')
+    expect(out).not.toMatch(/Rendszer-direktiva hitelesites/i)
     expect(log).toContain('directive-unverifiable')
   })
 
