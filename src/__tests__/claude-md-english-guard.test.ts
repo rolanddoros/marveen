@@ -2,21 +2,24 @@
 // agent and on every sub-agent. The persona and owner zone are the owner's and are not checked here; the answer
 // language of an agent is set there.
 //
-// The guard covers what the v2 path produces or ships:
-// - the builder's source, src/web/claude-md/*.ts (its string literals end up in the region or the dry-run report);
-// - the region templates, templates/claude-md/*.md;
-// - the product skill templates, templates/skills/*.md (the v2 path installs them, the region points at them);
-// - the golden files of the region, src/__tests__/fixtures/claude-md/golden*/;
+// The guard covers what the v2 path produces or ships, every file at any depth (r1, Ron m8: a new subdirectory is in
+// scope the moment it exists):
+// - the builder's source, src/web/claude-md/ (its string literals end up in the region or the dry-run report);
+// - the region templates, templates/claude-md/;
+// - the product skill templates, templates/skills/ (the v2 path installs them, the region points at them);
+// - the golden files of the region, every src/__tests__/fixtures/claude-md/golden* directory;
 // - and, rendered, the region of every golden fixture and every product skill, so a source change shows here before
 //   anyone regenerates a golden.
-// In the .ts sources, \uXXXX, \u{X} and \xXX escapes are decoded first, so an escaped accent counts as one.
+// In script sources, \uXXXX, \u{X} and \xXX escapes are decoded first, so an escaped accent counts as one. Every text
+// (files, rendered output, allowlist literals) is compared in NFC, and a combining acute, diaeresis or double acute
+// left after NFC counts as an accent too, so a decomposed "e + U+0301" cannot pass (r1, Ron m7).
 //
 // Some Hungarian words are fixed literals, not prose: a prefix the dashboard writes, a message frame another agent
 // recognises word for word, or a detector that looks for the legacy Hungarian text. They are listed in ALLOWLIST, each
 // with the one file it may live in and why. Anything else with a Hungarian accent fails, naming file and line. An
 // allowlist entry that no longer occurs in its file fails too, so the list cannot go stale.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FIXTURES } from './fixtures/claude-md/contexts.js'
@@ -26,8 +29,11 @@ import { PRODUCT_SKILLS, renderProductSkill, type SkillContext } from '../web/cl
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..', '..')
 
-// The Hungarian accented letters, plus the tilde and circumflex look-alikes a wrong keyboard layout types for ő and ű.
-const HU_ACCENT = /[áéíóöőúüűÁÉÍÓÖŐÚÜŰõûÕÛ]/
+// The Hungarian accented letters, plus the tilde and circumflex look-alikes a wrong keyboard layout types for ő and ű,
+// plus the three combining marks of the Hungarian accents (acute U+0301, diaeresis U+0308, double acute U+030B) for a
+// mark NFC cannot compose onto its letter. Built from code points: an escape in this file must not turn into a raw mark.
+const HU_ACCENT = new RegExp(`[áéíóöőúüűÁÉÍÓÖŐÚÜŰõûÕÛ${String.fromCodePoint(0x301, 0x308, 0x30b)}]`)
+const nfc = (s: string) => s.normalize('NFC')
 
 interface Allowed {
   file: string
@@ -94,28 +100,41 @@ function decodeEscapes(src: string): string {
       String.fromCodePoint(parseInt(braced ?? four ?? two ?? '0', 16)))
 }
 
-const filesIn = (dir: string, ext: string) =>
-  readdirSync(join(REPO, dir)).filter((f) => f.endsWith(ext)).sort().map((f) => `${dir}/${f}`)
+// Every regular file under `dir` (repo-relative), at any depth, sorted.
+const filesUnder = (dir: string): string[] =>
+  readdirSync(join(REPO, dir), { recursive: true, encoding: 'utf-8' })
+    .map((rel) => `${dir}/${rel.split('\\').join('/')}`)
+    .filter((f) => statSync(join(REPO, f)).isFile())
+    .sort()
+
+const FIXTURES_DIR = 'src/__tests__/fixtures/claude-md'
+// The golden directories by prefix, not by a fixed list: a new golden* directory is in scope the moment it exists.
+const GOLDEN_DIRS = readdirSync(join(REPO, FIXTURES_DIR), { withFileTypes: true })
+  .filter((d) => d.isDirectory() && d.name.startsWith('golden'))
+  .map((d) => `${FIXTURES_DIR}/${d.name}`)
+  .sort()
 
 const SCOPE = {
-  source: filesIn('src/web/claude-md', '.ts'),
-  regionTemplates: filesIn('templates/claude-md', '.md'),
-  skillTemplates: filesIn('templates/skills', '.md'),
-  goldens: [...filesIn('src/__tests__/fixtures/claude-md/golden', '.md'), ...filesIn('src/__tests__/fixtures/claude-md/golden-file', '.md')],
+  source: filesUnder('src/web/claude-md'),
+  regionTemplates: filesUnder('templates/claude-md'),
+  skillTemplates: filesUnder('templates/skills'),
+  goldens: GOLDEN_DIRS.flatMap(filesUnder),
 }
 const ALL_FILES = Object.values(SCOPE).flat()
 
+const SCRIPT_EXT = /\.(?:[cm]?ts|[cm]?js)$/
 function readScoped(file: string): string {
   const raw = readFileSync(join(REPO, file), 'utf-8')
-  return file.endsWith('.ts') ? decodeEscapes(raw) : raw
+  return nfc(SCRIPT_EXT.test(file) ? decodeEscapes(raw) : raw)
 }
 
-// The text with every allowlisted literal of `file` cut out, longest first (one literal may contain another).
+// The text with every allowlisted literal of `file` cut out, longest first (one literal may contain another). Both
+// sides in NFC, so a literal matches however it was typed.
 function withoutAllowed(text: string, file: string): string {
   return ALLOWLIST.filter((a) => a.file === file)
-    .map((a) => a.literal)
+    .map((a) => nfc(a.literal))
     .sort((a, b) => b.length - a.length)
-    .reduce((t, lit) => t.split(lit).join(''), text)
+    .reduce((t, lit) => t.split(lit).join(''), nfc(text))
 }
 
 function accentLines(text: string): string[] {
@@ -126,6 +145,9 @@ describe('CLAUDE-EN: the v2 builder writes English', () => {
   it('every scope group has files (a moved directory cannot empty the guard)', () => {
     expect(SCOPE.source.length).toBeGreaterThan(0)
     expect(SCOPE.regionTemplates.length).toBeGreaterThan(0)
+    expect(SCOPE.skillTemplates.length).toBeGreaterThan(0)
+    expect(GOLDEN_DIRS).toContain(`${FIXTURES_DIR}/golden`)
+    expect(SCOPE.goldens.length).toBeGreaterThan(0)
     // Every product skill has its template in scope.
     for (const name of PRODUCT_SKILLS) expect(SCOPE.skillTemplates).toContain(`templates/skills/${name}.md`)
     // Every golden fixture has its golden file in scope.
@@ -140,7 +162,7 @@ describe('CLAUDE-EN: the v2 builder writes English', () => {
 
   for (const name of Object.keys(FIXTURES)) {
     it(`rendered region ${name}: no Hungarian accent`, () => {
-      expect({ name, lines: accentLines(renderRegion(FIXTURES[name])) }).toEqual({ name, lines: [] })
+      expect({ name, lines: accentLines(nfc(renderRegion(FIXTURES[name]))) }).toEqual({ name, lines: [] })
     })
   }
 
@@ -156,8 +178,8 @@ describe('CLAUDE-EN: the v2 builder writes English', () => {
     for (const a of ALLOWLIST) {
       it(`${a.file}: "${a.literal}" is in scope, still present, Hungarian and has a reason`, () => {
         expect(ALL_FILES).toContain(a.file)
-        expect(readScoped(a.file)).toContain(a.literal)
-        expect(a.literal).toMatch(HU_ACCENT)
+        expect(readScoped(a.file)).toContain(nfc(a.literal))
+        expect(nfc(a.literal)).toMatch(HU_ACCENT)
         expect(a.reason.length).toBeGreaterThan(20)
       })
     }
