@@ -27,6 +27,7 @@ import { notifyChannel } from '../notify.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY } from './hook-registration-guard.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { fleetFreezeGateHook } from './hooks/manifest.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -466,21 +467,22 @@ function lstatSyncSafe(p: string): ReturnType<typeof lstatSync> | null {
 
 interface WorkerSettings { enabledPlugins?: Record<string, boolean>; [k: string]: unknown }
 
-/** The fleet-freeze PreToolUse gate in the worker's own settings (KILLSWITCH1022). */
-export const WORKER_FREEZE_GATE_CMD = `bash "${join(PROJECT_ROOT, 'scripts', 'hooks', 'fleet-freeze-gate.sh')}"`
-
 /**
  * KILLSWITCH1022: the worker runs tools too (--dangerously-skip-permissions),
  * and its cwd is outside the project, so the project .claude/settings.json never
  * reaches it. The fleet-freeze gate goes into its OWN settings, first in
  * PreToolUse: every other entry (and every other hook event) Claude Code may have
  * written is kept, and the gate entry is replaced, never duplicated.
+ * The hook is the sub-agents' one, from the hook manifest (fleetFreezeGateHook):
+ * closed while frozen, so a missing gate script blocks while store/fleet-freeze.json
+ * exists and lets calls through otherwise. Rendered here, at settings-write time,
+ * so a root the render refuses throws in ensureWorkerCwd, never on import.
  */
-export function withFleetFreezeGate(settings: WorkerSettings): WorkerSettings {
+export function withFleetFreezeGate(settings: WorkerSettings, root: string = PROJECT_ROOT): WorkerSettings {
   const hooks = (settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks) ? settings.hooks : {}) as Record<string, unknown>
   const pre = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []) as unknown[]
   const preToolUse = [
-    { matcher: '*', hooks: [{ type: 'command', command: WORKER_FREEZE_GATE_CMD, timeout: 5 }] },
+    { matcher: '*', hooks: [fleetFreezeGateHook(root)] },
     ...pre.filter((e) => !JSON.stringify(e).includes('fleet-freeze-gate.sh')),
   ]
   return { ...settings, hooks: { ...hooks, PreToolUse: preToolUse } }

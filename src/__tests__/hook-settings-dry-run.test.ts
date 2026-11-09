@@ -708,6 +708,29 @@ describe('the report', () => {
     })
   })
 
+  // Johnny 14265, the window once FREEZE-FAILMODE is live: a sub-agent file with the missing-only frozen spelling
+  // (exec, 887e8ae7) against the no-exec one: the same fail mode, interpreter, script and arguments, so a rewrap in
+  // both directions (a revert reads it back the same way), exit 0.
+  it('the 14265 window: the missing-only frozen spelling is a rewrap of the current one, both ways, exit 0', () => {
+    const gate = join(install, 'scripts', 'hooks', 'fleet-freeze-gate.sh')
+    const missingOnly = `bash -c '[ -f "${gate}" ] && exec bash "${gate}"; [ -e "${install}/store/fleet-freeze.json" ] && { echo "fleet-freeze-gate `
+      + '(fail-closed while frozen): the gate script is missing and store/fleet-freeze.json exists, so every tool call is blocked. '
+      + `Fix: restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard." >&2; exit 2; }; exit 0'`
+    withSettings('sub-03', (s) => { hookOf(s, 'PreToolUse', 'fleet-freeze-gate.sh').command = missingOnly }, () => {
+      const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
+      expect([r.exit, r.agents[0].added, r.agents[0].dropped]).toEqual([0, [], []])
+      expect(rewrapsOf(r, 'fleet-freeze-gate.sh')).toEqual([
+        'PreToolUse [*] fleet-freeze-gate.sh wrapper failOpenExecClosedWhenFrozenMissingOnly -> failOpenExecClosedWhenFrozen, deadline - -> 3, timeout 5 -> 5',
+      ])
+    })
+    const at = (command: string): PlacedHook => ({ event: 'PreToolUse', matcher: '*', hook: { type: 'command', command, timeout: 5 } })
+    const s0: Record<string, any> = { hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: missingOnly, timeout: 5 }] }] } }
+    closeFreeze(s0)
+    const current = String(s0.hooks.PreToolUse[0].hooks[0].command)
+    expect(current).not.toBe(missingOnly)
+    expect([isRewrap(at(missingOnly), at(current)), isRewrap(at(current), at(missingOnly))]).toEqual([true, true])
+  })
+
   it('a hand-edited managed hook is a drift, not a rewrap (exit 1): unknown text, a bare spelling where a failure blocks, another argument, root or field (Ron 14094)', () => {
     const p = hookPath('staleness-guard.py')
     const edits: Array<[string, (s: Record<string, any>) => void]> = [

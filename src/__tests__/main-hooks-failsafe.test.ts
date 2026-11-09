@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { HOOK_MANIFEST, renderHooks } from '../web/hooks/manifest.js'
+import { HOOK_MANIFEST, fleetFreezeGateHook, renderHooks } from '../web/hooks/manifest.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SETTINGS_PATH = process.env.MAIN_SETTINGS_UNDER_TEST ?? join(ROOT, '.claude', 'settings.json')
@@ -214,7 +214,8 @@ describe('fleet-freeze-gate on a sub-agent: closed while frozen, like the main a
         const r = run(shell, subGate(proj), proj)
         expect(r.rc).toBe(2)
         expect(r.stderr).toContain('fail-closed while frozen')
-        expect(r.stderr).toContain('restore scripts/hooks/fleet-freeze-gate.sh or unfreeze from the dashboard')
+        expect(r.stderr).toContain('missing or failed (rc=missing)')
+        expect(r.stderr).toContain('or unfreeze from the dashboard')
       })
 
       it('not frozen, the gate script missing: rc 0 (a broken gate never stops the fleet)', () => {
@@ -249,5 +250,123 @@ describe('fleet-freeze-gate on a sub-agent: closed while frozen, like the main a
   it('the main agent\'s spelling is the same wrapper, only the root differs ($CLAUDE_PROJECT_DIR)', () => {
     const main = handlers.find(isFreezeGate)!.command
     expect(subGate('/srv/m').replaceAll('/srv/m', '$CLAUDE_PROJECT_DIR')).toBe(main)
+  })
+})
+
+// Johnny 14265 (Ron 14259): while frozen, ANY gate failure blocks, not only a missing script; unfrozen, every case
+// keeps today's outcome. One spelling, so the matrix runs on all three renders: the main agent's tracked file, a
+// sub-agent's render and the dashboard worker's hook (fleetFreezeGateHook, the worker's own settings).
+describe('the kill switch while frozen: any gate failure blocks, unfrozen as before (Johnny 14265)', () => {
+  type State = 'missing' | 'gate' | 'exit1' | 'garbage' | 'unreadable' | 'empty' | 'shebang' | 'hang'
+  // empty / shebang: a half-written gate exits 0, which while frozen means it did not deny (Ron 14290).
+  const STATES: State[] = ['missing', 'gate', 'exit1', 'garbage', 'unreadable', 'empty', 'shebang', 'hang']
+  const GATE = join(ROOT, 'scripts', 'hooks', 'fleet-freeze-gate.sh')
+  const isRoot = process.getuid?.() === 0
+  // The pre-14265 spelling (owner decision 3, exec, a missing script only): "today" for the unfrozen comparison.
+  const oldFrozen = (root: string) => `bash -c '[ -f "${root}/scripts/hooks/fleet-freeze-gate.sh" ] && exec bash "${root}/scripts/hooks/fleet-freeze-gate.sh"; `
+    + `[ -e "${root}/store/fleet-freeze.json" ] && { echo "old" >&2; exit 2; }; exit 0'`
+  const subRender = (root: string): string => {
+    const h = renderHooks(HOOK_MANIFEST, 'sub', { root, nodeBin: process.execPath, profile: {}, agent: {}, prompts: { precompact: 'x' } })
+      .PreToolUse!.flatMap((g) => g.hooks).find((x) => x.type === 'command' && x.command.includes('fleet-freeze-gate.sh'))
+    if (h?.type !== 'command') throw new Error('no sub fleet-freeze-gate')
+    return h.command
+  }
+  const workerHook = (root: string): string => { const h = fleetFreezeGateHook(root); if (h.type !== 'command') throw new Error('agent hook'); return h.command }
+  const RENDERS: Array<[string, (root: string) => string]> = [
+    ['main', () => handlers.find(isFreezeGate)!.command],
+    ['sub', subRender],
+    ['worker', workerHook],
+  ]
+  // As root a mode-000 file is still readable, so the hook runs as nobody there (setpriv); the project is opened up
+  // for that user, and the readable states are the positive control that it reaches the files.
+  const proj = (): string => {
+    const p = project()
+    if (isRoot) for (const d of [tmp, p, join(p, 'scripts'), join(p, 'scripts', 'hooks'), join(p, 'store')]) chmodSync(d, 0o755)
+    return p
+  }
+  const BODY: Record<Exclude<State, 'missing'>, string | (() => string)> = {
+    gate: () => readFileSync(GATE, 'utf-8'), exit1: '#!/bin/bash\necho broken >&2\nexit 1\n', garbage: '\x7fELF\x00\x00\x00\x01\x02',
+    unreadable: '#!/bin/bash\nexit 0\n', empty: '', shebang: '#!/bin/bash\n', hang: '#!/bin/bash\nsleep 10\n',
+  }
+  const setState = (p: string, st: State) => {
+    const f = join(p, 'scripts', 'hooks', 'fleet-freeze-gate.sh')
+    rmSync(f, { force: true })
+    if (st === 'missing') return
+    const b = BODY[st]
+    // The mode is set with chmod, not writeFileSync's mode option: that one is masked by the umask (077 -> 0700),
+    // and the setpriv user could then not run a gate meant to be runnable.
+    writeFileSync(f, typeof b === 'function' ? b() : b)
+    chmodSync(f, st === 'unreadable' ? 0o000 : 0o755)
+  }
+  const setFrozen = (p: string, on: boolean) => {
+    const f = join(p, 'store', 'fleet-freeze.json')
+    if (on) { writeFileSync(f, '{}'); chmodSync(f, 0o644) } else rmSync(f, { force: true })
+  }
+  const hookRun = (shell: string, command: string, p: string, path = process.env.PATH ?? '/usr/bin:/bin') => {
+    const env = { PATH: path, HOME: p, CLAUDE_PROJECT_DIR: p }
+    const [cmd, args]: [string, string[]] = isRoot
+      ? ['/usr/bin/setpriv', ['--reuid=65534', '--regid=65534', '--clear-groups', shell, '-c', command]]
+      : [shell, ['-c', command]]
+    const r = spawnSync(cmd, args, { input: '{"tool_name":"Bash"}', cwd: p, encoding: 'utf-8', timeout: 30_000, env })
+    return { rc: r.status, stderr: r.stderr }
+  }
+  // Unfrozen, today: missing 0, the gate 0, exit 1 -> 1, garbage 126, unreadable 126; a hang ran into Claude Code's
+  // own 5 s timeout (non-blocking); now the inner deadline ends it first with 124, non-blocking too.
+  const UNFROZEN: Record<State, number> = { missing: 0, gate: 0, exit1: 1, garbage: 126, unreadable: 126, empty: 0, shebang: 0, hang: 124 }
+
+  for (const [name, render] of RENDERS) {
+    for (const shell of SHELLS) {
+      it(`${name}, ${shell}: frozen, every state blocks (rc 2); unfrozen, today's outcome`, () => {
+        const p = proj()
+        const cmd = render(p)
+        const rows: string[] = []
+        for (const st of STATES) {
+          setState(p, st)
+          setFrozen(p, true)
+          const t0 = Date.now()
+          const f = hookRun(shell, cmd, p)
+          // The gate's own deny (2) passes through as it is: its message only, no wrapper reason next to it.
+          const reason = st === 'gate' ? f.stderr.includes('KILLSWITCH1022') && !f.stderr.includes('missing or failed') : f.stderr.includes(st === 'missing' ? 'missing or failed (rc=missing)' : 'missing or failed (rc=')
+          rows.push(`${st} frozen rc=${f.rc} reason=${reason}${st === 'hang' ? ` fast=${Date.now() - t0 < 6000}` : ''}`)
+          setFrozen(p, false)
+          const u = hookRun(shell, cmd, p)
+          rows.push(`${st} unfrozen rc=${u.rc}`)
+          if (st !== 'hang') expect(u.rc, `${st}: unfrozen equals the old spelling`).toBe(hookRun(shell, oldFrozen(p), p).rc)
+        }
+        expect(rows).toEqual(STATES.flatMap((st) => [`${st} frozen rc=2 reason=true${st === 'hang' ? ' fast=true' : ''}`, `${st} unfrozen rc=${UNFROZEN[st]}`]))
+      }, 60_000)
+    }
+  }
+
+  // No `timeout` on PATH: the fallback runs the gate without an inner deadline; every failure that ends still blocks
+  // while frozen (a hang then falls to Claude Code's own timeout, which does not block).
+  it('without timeout on PATH: frozen, every ending failure blocks; unfrozen, today\'s outcome', () => {
+    const bin = mkdtempSync(join(tmp, 'bin-'))
+    for (const tool of ['bash', 'dirname']) symlinkSync(spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf-8' }).stdout.trim(), join(bin, tool))
+    if (isRoot) chmodSync(bin, 0o755)
+    expect(spawnSync('/bin/sh', ['-c', 'command -v timeout'], { env: { PATH: bin } }).status).not.toBe(0)
+    const rows: string[] = []
+    for (const [name, render] of RENDERS) {
+      for (const shell of SHELLS) {
+        const p = proj()
+        const cmd = render(p)
+        for (const st of STATES.filter((x) => x !== 'hang')) {
+          setState(p, st)
+          setFrozen(p, true)
+          rows.push(`${name} ${shell} ${st} frozen rc=${hookRun(shell, cmd, p, bin).rc}`)
+          setFrozen(p, false)
+          rows.push(`${name} ${shell} ${st} unfrozen rc=${hookRun(shell, cmd, p, bin).rc}`)
+        }
+      }
+    }
+    expect(rows).toEqual(RENDERS.flatMap(([name]) => SHELLS.flatMap((shell) => STATES.filter((x) => x !== 'hang')
+      .flatMap((st) => [`${name} ${shell} ${st} frozen rc=2`, `${name} ${shell} ${st} unfrozen rc=${UNFROZEN[st]}`]))))
+  }, 60_000)
+
+  it('the reason names only the gate script and the flag file, no command text', () => {
+    const cmd = workerHook('/srv/m')
+    const reason = /echo "([^"]*)" >&2; exit 2/.exec(cmd)![1]
+    expect(reason).not.toContain('/srv/m')
+    expect(reason.match(/[\w.-]+\/[\w./-]+/g)).toEqual(['store/fleet-freeze.json', 'scripts/hooks/fleet-freeze-gate.sh'])
   })
 })

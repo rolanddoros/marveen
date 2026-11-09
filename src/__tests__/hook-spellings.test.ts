@@ -45,7 +45,7 @@ describe('the known spellings are the manifest\'s', () => {
             expect(e, `${event} ${s!.path}`).toBeDefined()
             const spec = specFor(e!, scope)
             const args = [...(spec.args ?? []), ...(scope === 'sub' ? e!.threadReplyArgs ?? [] : []), ...(scope === 'sub' && e!.agentFlag === 'senderRolePolicy' ? [POLICY] : [])]
-            expect([e!.id, s!.kind, s!.args, s!.deadline]).toEqual([e!.id, spellingKindOf(spec.wrapper, e!.script, scope), args, spec.wrapper === 'failClosed' ? gateDeadlineSec(spec.timeout!) : undefined])
+            expect([e!.id, s!.kind, s!.args, s!.deadline]).toEqual([e!.id, spellingKindOf(spec.wrapper, e!.script, scope), args, spec.wrapper === 'failClosed' || spec.wrapper === 'failOpenExecClosedWhenFrozen' ? gateDeadlineSec(spec.timeout!) : undefined])
             // The spelling's fail mode is the one the manifest records for the entry (C3-5a-3); the kill switch's
             // closed-while-frozen spelling is its own mode, recorded as closed.
             expect([e!.id, s!.failMode]).toEqual([e!.id, spec.wrapper === 'failOpenExecClosedWhenFrozen' ? 'closedWhileFrozen' : spec.failMode])
