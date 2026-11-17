@@ -109,6 +109,7 @@ import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { notifyChannel, alertIsRedirected } from '../notify.js'
+import { gateWiringBeforeStart, gateWiringSharedBeforeCopy } from './gate-wiring.js'
 
 // Lazy so a transient PATH gap at import time (e.g. the 04:00 auto-update
 // restart, where the finalizer omits the bin dir from PATH) cannot hard-crash
@@ -2705,6 +2706,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
     // per-agent API-key (authMode 'api') agents.
     if (!claudeConfigDir && (hasAnyChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
+      // Fork C settings-protect (plan v2 point 4): every branch below copies the shared ~/.claude/settings.json into
+      // the agent's isolated dir; the protected verifier checks it first (enforce + a finding: no copy, no start).
+      const sharedGate = await gateWiringSharedBeforeCopy(name)
+      if (!sharedGate.copy) return { ok: false, error: sharedGate.line ?? 'gate wiring: shared settings' }
       if (isOwnTeam) {
         // own_team isolates WITHOUT the fleet token: the isolated dir is where
         // the agent's own /login credential lives (macOS Keychain scopes the
@@ -2991,6 +2996,13 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
+    // Fork C settings-protect (plan v2 point 3): after the scaffold write and the isolated provisioning, right before
+    // tmux, the protected verifier decides (report mode: always start, with the finding logged and alerted once;
+    // enforce: no start on a finding). Sub-agents only: the main agent's hooks are the tracked root settings file.
+    if (name !== MAIN_AGENT_ID) {
+      const gate = await gateWiringBeforeStart(name, claudeConfigDir ?? null)
+      if (!gate.start) return { ok: false, error: gate.line ?? 'gate wiring: not started' }
+    }
     runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
