@@ -98,6 +98,9 @@ function isSystemFile(rel: string): boolean {
 //   - MAX_WATCHED_DIRS: a ceiling on watches for a big tree nobody listed yet;
 //     past it no further directory is watched, and one warning names the first
 //     one skipped.
+// The stall is Linux-specific: on macOS a recursive watch is native (FSEvents)
+// and cheap. The per-directory form and both limits still apply on every
+// platform, so there is one code path and one set of tests.
 const SHALLOW_DIRS = new Set(['browser', 'fork-audit', 'ci-runner'])
 const MAX_WATCHED_DIRS = 2000
 // A directory created after start (mkdir, mv, cp -r) is walked and its files
@@ -125,7 +128,10 @@ function absPath(rel: string): string {
 /**
  * Watches `relDir` and every watchable directory below it, and hands each file
  * found to `onFile`. The watch comes before the readdir, so a file created in
- * between is still seen (by the walk, or by its event).
+ * between is not missed: the walk hands it to `onFile` and its event comes too.
+ * What that means depends on `onFile`: at start a file only becomes known (no
+ * audit row, even one created during the boot walk); in a directory created
+ * later it is logged.
  */
 function addTree(relDir: string, onFile: (rel: string) => void): void {
   if (!isWatchable(relDir) || watchers.has(relDir)) return
@@ -236,6 +242,13 @@ function onEvent(relDir: string, eventType: string, filename: string | Buffer | 
 
   // Only rename events can indicate a new file. change = modification.
   if (eventType !== 'rename') return
+
+  // A path inside a machine-written tree is never watched and never an audit
+  // row, whichever watch reported it: a page load in an agent's Chrome under
+  // browser/<profile>/ creates and deletes cache files by the hundred
+  // (2026-11-17, each load stalled the dashboard 10-30 s).
+  const parent = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : ''
+  if (!isWatchable(parent)) return
 
   let fileSize: number | null = null
   try {
