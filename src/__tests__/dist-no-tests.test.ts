@@ -76,8 +76,8 @@ function staleTests(dir: string): void {
   writeFileSync(join(dir, 'setup', 'root.js'), 'stale\n')
 }
 
-function clean(root: string, cwd = root, env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = []): { status: number | null; stderr: string } {
-  const r = spawnSync(process.execPath, [...nodeArgs, join(root, 'scripts', 'clean-dist-tests.cjs')], { cwd, env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' })
+function clean(root: string, cwd = root, env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = [], scriptArgs: string[] = []): { status: number | null; stderr: string } {
+  const r = spawnSync(process.execPath, [...nodeArgs, join(root, 'scripts', 'clean-dist-tests.cjs'), ...scriptArgs], { cwd, env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' })
   return { status: r.status, stderr: r.stderr }
 }
 
@@ -167,5 +167,31 @@ describe('scripts/clean-dist-tests.cjs: a stale dist/__tests__ goes, nothing els
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/left alone, not a real directory/)
     expect(readFileSync(join(file, 'dist', '__tests__'), 'utf8')).toBe('not a dir\n')
+  })
+
+  it('the deploy helper\'s target: `dist.next` cleans <root>/dist.next/__tests__ only; dist is untouched', () => {
+    const root = makeRoot()
+    withBuiltDist(root)
+    staleTests(join(root, 'dist', '__tests__'))
+    staleTests(join(root, 'dist.next', '__tests__'))
+    expect(clean(root, root, {}, [], ['dist.next'])).toEqual({ status: 0, stderr: '' })
+    expect(existsSync(join(root, 'dist.next', '__tests__'))).toBe(false)
+    expect(existsSync(join(root, 'dist', '__tests__', 'a.test.js'))).toBe(true)
+    // An explicit `dist` is the default.
+    expect(clean(root, root, {}, [], ['dist'])).toEqual({ status: 0, stderr: '' })
+    expect(existsSync(join(root, 'dist', '__tests__'))).toBe(false)
+  })
+
+  it('any other output name is refused with exit 2 and nothing is touched (never a path)', () => {
+    const root = makeRoot()
+    withBuiltDist(root)
+    staleTests(join(root, 'dist', '__tests__'))
+    for (const bad of ['../dist', '/tmp/x', 'dist/', 'src', '', 'dist.next/..']) {
+      const r = clean(root, root, {}, [], [bad])
+      expect({ bad, status: r.status }).toEqual({ bad, status: 2 })
+      expect(r.stderr).toMatch(/output directory must be one of dist, dist\.next/)
+    }
+    expect(existsSync(join(root, 'dist', '__tests__', 'a.test.js'))).toBe(true)
+    expect(readFileSync(join(root, 'src', '__tests__', 'a.test.ts'), 'utf8')).toBe('src test\n')
   })
 })

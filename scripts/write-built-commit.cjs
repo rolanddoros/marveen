@@ -29,8 +29,17 @@ const { execFileSync } = require('node:child_process')
 const { existsSync, writeFileSync } = require('node:fs')
 const path = require('node:path')
 
+// Optional argument: the output directory NAME, exactly `dist` (the default) or
+// `dist.next` (the fork deploy helper stamps its fresh build there before the
+// swap, plan v3 point 6 step 11). Anything else: exit 2, nothing written.
+const OUT_DIRS = ['dist', 'dist.next']
+const outName = process.argv[2] === undefined ? 'dist' : process.argv[2]
+if (!OUT_DIRS.includes(outName)) {
+  process.stderr.write(`write-built-commit: output directory must be one of ${OUT_DIRS.join(', ')}, got ${JSON.stringify(outName)}\n`)
+  process.exit(2)
+}
 const root = path.resolve(__dirname, '..')
-const distDir = path.join(root, 'dist')
+const distDir = path.join(root, outName)
 const stampFile = path.join(distDir, '.built-commit')
 
 function headSha() {
@@ -46,7 +55,7 @@ function headSha() {
 
 function main() {
   if (!existsSync(distDir)) {
-    process.stderr.write('write-built-commit: no dist/ -- nothing stamped\n')
+    process.stderr.write(`write-built-commit: no ${outName}/ -- nothing stamped\n`)
     return
   }
   const sha = headSha()
