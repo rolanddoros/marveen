@@ -19,7 +19,7 @@ import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js
 import { reactionRoute, reactionsOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { mayActAsOwner, ownerCookieSession, OWNER_SESSION_REQUIRED } from './auth.js'
-import { CODE_DEPLOY_CATEGORY, CODE_DEPLOY_OWNER_CHANNEL_ONLY, SERVER_WRITTEN_RESOLVED_BY_RX } from '../../code-deploy-policy.js'
+import { CODE_DEPLOY_OWNER_CHANNEL_ONLY, MAIN_FILED_HASHED_CATEGORIES, SERVER_WRITTEN_RESOLVED_BY_RX } from '../../code-deploy-policy.js'
 import type { RouteContext } from './types.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -507,13 +507,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // plan-v3 3 (Ron 17165): a code_deploy row is filed by the main agent only and always carries the hash the
     // deploy helper recomputes (FROM, TO). Cheap, and NOT a closure of the shared-token gap (agent_id is
     // self-declared); what closes it is the owner-bound approve below (SEC-5).
-    if (category.trim() === CODE_DEPLOY_CATEGORY) {
+    // Fork C settings-protect (plan v2 point 6): agent_settings takes the same filing rule on the same code path
+    // (MAIN_FILED_HASHED_CATEGORIES), the K2 helper's batch hash being its content_hash.
+    const hashedCategory = category.trim()
+    if (MAIN_FILED_HASHED_CATEGORIES.includes(hashedCategory)) {
       if ((ctx.auth?.kind === 'token' && ctx.auth.tokenAgent) || agent_id.trim() !== MAIN_AGENT_ID) {
-        json(res, { error: 'code_deploy is filed by the main agent only' }, 403)
+        json(res, { error: `${hashedCategory} is filed by the main agent only` }, 403)
         return true
       }
       if (typeof content_hash !== 'string') {
-        json(res, { error: 'content_hash is required for code_deploy' }, 400)
+        json(res, { error: `content_hash is required for ${hashedCategory}` }, 400)
         return true
       }
     }
@@ -743,10 +746,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // resolved_by is then the server's own `owner_session:<user>`, never the body's. On every other approve and
     // resolve the body may not carry a server-written prefix, so none can be imitated.
     let resolvedBy = resolved_by.trim()
-    if (CODE_DEPLOY_OWNER_CHANNEL_ONLY && status === 'approved' && target?.category === CODE_DEPLOY_CATEGORY) {
+    // Fork C settings-protect (Kevin 17512): agent_settings rows take the same owner-bound approve under the same
+    // switch (CODE_DEPLOY_OWNER_CHANNEL_ONLY covers every MAIN_FILED_HASHED_CATEGORIES row).
+    if (CODE_DEPLOY_OWNER_CHANNEL_ONLY && status === 'approved' && target !== undefined && target !== null && MAIN_FILED_HASHED_CATEGORIES.includes(target.category)) {
       const owner = ctx.auth?.kind === 'token' && ctx.auth.tokenAgent ? null : ownerCookieSession(req)
       if (owner === null) {
-        logger.warn({ id: idMatch[1], auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'code_deploy approve refused: no owner session cookie')
+        logger.warn({ id: idMatch[1], auth: ctx.auth?.kind, agent: ctx.auth?.agent }, `${target.category} approve refused: no owner session cookie`)
         json(res, OWNER_SESSION_REQUIRED, 403)
         return true
       }

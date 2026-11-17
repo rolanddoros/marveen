@@ -15,7 +15,7 @@ import { initDatabase, getApproval, createDashboardUser } from '../db.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import { createSession, revokeSession } from '../web/auth-sessions.js'
 import { SESSION_COOKIE_NAME } from '../web/auth-gate.js'
-import { CODE_DEPLOY_OWNER_CHANNEL_ONLY } from '../code-deploy-policy.js'
+import { CODE_DEPLOY_OWNER_CHANNEL_ONLY, MAIN_FILED_HASHED_CATEGORIES } from '../code-deploy-policy.js'
 // @ts-expect-error -- plain .mjs script, no types
 import { CODE_DEPLOY_OWNER_CHANNEL_ONLY as HELPER_SWITCH, CATEGORY as HELPER_CATEGORY } from '../../scripts/deploy/fork-deploy.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
@@ -86,6 +86,35 @@ describe('filing a code_deploy row (plan-v3 3)', () => {
   })
   it('another category keeps its optional hash', async () => {
     expect((await post({ agent_id: 'stuart', category: 'email_send', action_description: 'x' })).status).toBe(201)
+  })
+})
+
+describe('filing an agent_settings row (Fork C settings-protect plan v2 point 6): the same rule, the same code path', () => {
+  const settingsRow = (extra: Record<string, unknown> = {}) => ({ agent_id: 'marveen', category: 'agent_settings', action_description: 'marveen-agent-settings/v1', content_hash: HASH, ...extra })
+  it('the category list is the shared one', () => {
+    expect([...MAIN_FILED_HASHED_CATEGORIES]).toEqual(['code_deploy', 'agent_settings'])
+  })
+  it('the main agent with a content_hash: 201; without one: 400', async () => {
+    expect((await post(settingsRow())).status).toBe(201)
+    const r = await post(settingsRow({ content_hash: undefined }))
+    expect(r.status).toBe(400)
+    expect(r.body.error).toBe('content_hash is required for agent_settings')
+  })
+  it('another agent_id, or a sub-agent token naming the main agent: 403', async () => {
+    expect((await post(settingsRow({ agent_id: 'stuart' }))).body).toEqual({ error: 'agent_settings is filed by the main agent only' })
+    expect((await post(settingsRow(), SUB)).status).toBe(403)
+  })
+  it('a padded category name takes the same rule', async () => {
+    expect((await post(settingsRow({ category: ' agent_settings ', agent_id: 'stuart' }))).status).toBe(403)
+  })
+  it('Kevin 17512 (SEC-5, same switch): approved only from the owner session; the shared bearer and a sub-agent token are refused', async () => {
+    const id = async () => { const r = await post(settingsRow()); expect(r.status).toBe(201); return r.body.id as string }
+    const a = await id()
+    expect((await patch(a, { status: 'approved', resolved_by: 'roland' }, TOKEN)).status).toBe(403)
+    expect((await patch(a, { status: 'approved', resolved_by: 'roland' }, SUB, cookie())).status).toBe(403)
+    const ok = await patch(a, { status: 'approved', resolved_by: 'roland' }, TOKEN, cookie())
+    expect(ok.status).toBe(200)
+    expect(getApproval(a)?.resolved_by).toBe('owner_session:owner')
   })
 })
 

@@ -10,5 +10,14 @@ export const CODE_DEPLOY_OWNER_CHANNEL_ONLY: boolean = true
 
 export const CODE_DEPLOY_CATEGORY = 'code_deploy'
 
+/** Fork C settings-protect (plan v2 point 6): the K2 helper's category for a settings batch / rebaseline. */
+export const AGENT_SETTINGS_CATEGORY = 'agent_settings'
+
+/**
+ * Categories a row of which is filed by the main agent only and always carries the content_hash its helper
+ * recomputes before acting (code_deploy: FROM/TO; agent_settings: the batch hash). One code path in approvals.ts.
+ */
+export const MAIN_FILED_HASHED_CATEGORIES: readonly string[] = Object.freeze([CODE_DEPLOY_CATEGORY, AGENT_SETTINGS_CATEGORY])
+
 /** The resolved_by prefixes only the server writes (the owner session here, the Slack route in approval-slack-route.ts). */
 export const SERVER_WRITTEN_RESOLVED_BY_RX = /^\s*(?:owner_session|slack_reaction):/i
