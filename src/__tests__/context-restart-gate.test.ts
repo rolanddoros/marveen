@@ -751,13 +751,17 @@ describe('decideWake', () => {
 })
 
 describe('gateWakePrompt', () => {
-  // The nudge exists to produce a turn AND a visible sign of life; a nudge that
-  // only said "you restarted" would leave the owner staring at silence again.
-  it('asks the agent to continue and to report on its channel', () => {
+  // The nudge exists to produce a turn. It must NOT ask for a "continuing with
+  // fresh context" notice on the agent's channel (owner request, TG 3714,
+  // 2026-11-17): that channel can be the owner's or a principal's Telegram.
+  // The transcript line is the trace instead.
+  it('asks the agent to continue, with a transcript line and no channel notice', () => {
     const p = gateWakePrompt()
     expect(p).toContain('[CONTEXT-RESTART-GATE]')
     expect(p.toLowerCase()).toContain('folytasd')
-    expect(p.toLowerCase()).toContain('csatorna')
+    expect(p).not.toContain('jelzest kuldj')
+    expect(p).not.toMatch(/jelez[a-z]* [^.]*csatorn/i)
+    expect(p).toContain('Zarasul egyetlen transzkript-sorban rogzitsd, hogy friss kontextussal folytatod -- a csatornadra session-meta NEM mehet ki.')
   })
 
   // Guard against the nudge itself becoming a source of invented work.
