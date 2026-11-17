@@ -167,6 +167,34 @@ with tempfile.TemporaryDirectory() as tmp:
         failed.append("end-to-end outbound rows")
     print(f"  [{'PASS' if ok else 'FAIL'}] end-to-end outbound rows: got={got_ids!r} want={want_ids!r}")
 
+# ---------------------------------------------------------------------------
+# One definition, two languages (fork deploy-gate plan v3, SEC-1): the rows of the
+# shared fixture that are NOT gate_only must give ledger_lib the same answer as the
+# gate's scripts/hooks/agent-identity.mjs (src/__tests__/agent-identity.test.ts). The
+# gate_only rows are where the gate is deliberately stricter; ledger_lib books, it may guess.
+with open(os.path.join(HERE, "fixtures", "agent-identity-cases.json")) as f:
+    FIXTURE = json.load(f)
+_flat = INSTALL.replace(os.sep, "-")
+_home = os.path.expanduser("~")
+
+
+def _fill(s):
+    return s.replace("{INSTALL}", INSTALL).replace("{FLAT}", _flat).replace("{HOME}", _home)
+
+
+_shared_rows = [c for c in FIXTURE["cases"] if not c.get("gate_only")]
+ok = len(_shared_rows) >= 8
+if not ok:
+    failed.append("shared fixture: too few rows checked")
+print(f"  [{'PASS' if ok else 'FAIL'}] shared fixture: {len(_shared_rows)} rows checked against ledger_lib")
+for c in _shared_rows:
+    got = ledger_lib._agent_id_from_config_path(_fill(c["path"]))
+    want = MAIN if c["expect"] == "@MAIN" else c["expect"]
+    ok = got == want
+    if not ok:
+        failed.append("shared fixture: " + c["name"])
+    print(f"  [{'PASS' if ok else 'FAIL'}] shared fixture: {c['name']}: got={got!r} want={want!r}")
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {failed}", file=sys.stderr)

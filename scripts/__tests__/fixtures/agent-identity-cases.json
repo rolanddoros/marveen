@@ -1,0 +1,27 @@
+{
+  "_doc": "Shared by src/__tests__/agent-identity.test.ts (scripts/hooks/agent-identity.mjs, the gate's caller rule) and scripts/__tests__/ledger-agent-id.test.py (ledger_lib's booking rule). {INSTALL} is the install, {FLAT} its flattened form, {HOME} the home dir. '@MAIN' is the main agent's id. gate_only rows are where the gate is deliberately stricter than ledger_lib (no prefix rule, no tree rule, no ~/.claude rule, the launcher record); every other row must give the same answer in both. record = the store/main-agent-config-root.json content, null = no record.",
+  "agents": ["iris", "geri"],
+  "cases": [
+    { "name": "main agent on its isolated root, exact segment", "path": "{INSTALL}/.channels-config/projects/{FLAT}/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": "@MAIN" },
+    { "name": "main agent, token mode, same root", "path": "{INSTALL}/.channels-config/projects/{FLAT}/s.jsonl", "record": { "mode": "token", "dir": "{INSTALL}/.channels-config" }, "expect": "@MAIN" },
+    { "name": "main agent on an explicit root", "path": "/srv/main-cfg/projects/{FLAT}/s.jsonl", "record": { "mode": "explicit", "dir": "/srv/main-cfg" }, "expect": "@MAIN", "gate_only": true },
+    { "name": "main agent on a rotated root", "path": "/srv/rot-cfg/projects/{FLAT}/s.jsonl", "record": { "mode": "rotated", "dir": "/srv/rot-cfg" }, "expect": "@MAIN", "gate_only": true },
+    { "name": "session started in <install>/docs is not MAIN", "path": "{INSTALL}/.channels-config/projects/{FLAT}-docs/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null, "gate_only": true },
+    { "name": "sibling worktree segment is not MAIN", "path": "{INSTALL}/.channels-config/projects/{FLAT}-c-stuart-wt/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null, "gate_only": true },
+    { "name": "a config dir under store/ is not MAIN", "path": "{INSTALL}/store/cfg/projects/{FLAT}/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null, "gate_only": true },
+    { "name": "exact segment one level deeper is not MAIN", "path": "{INSTALL}/.channels-config/projects/{FLAT}/sub/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null, "gate_only": true },
+    { "name": "~/.claude exact segment with an isolated record is not MAIN", "path": "{HOME}/.claude/projects/{FLAT}/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null, "gate_only": true },
+    { "name": "~/.claude exact segment with a shared record is MAIN (shared mode: only the segment discriminates)", "path": "{HOME}/.claude/projects/{FLAT}/s.jsonl", "record": { "mode": "shared", "dir": "{HOME}/.claude" }, "expect": "@MAIN" },
+    { "name": "the record names another root than the transcript", "path": "{INSTALL}/.channels-config/projects/{FLAT}/s.jsonl", "record": { "mode": "explicit", "dir": "/srv/main-cfg" }, "expect": null, "gate_only": true },
+    { "name": "no record", "path": "{INSTALL}/.channels-config/projects/{FLAT}/s.jsonl", "record": null, "expect": null, "gate_only": true },
+    { "name": "relative record dir is no record", "path": "{INSTALL}/.channels-config/projects/{FLAT}/s.jsonl", "record": { "mode": "isolated", "dir": "relative/cfg" }, "expect": null, "gate_only": true },
+    { "name": "unknown record mode is no record", "path": "{INSTALL}/.channels-config/projects/{FLAT}/s.jsonl", "record": { "mode": "whatever", "dir": "{INSTALL}/.channels-config" }, "expect": null, "gate_only": true },
+    { "name": "sub-agent's own config dir", "path": "{INSTALL}/agents/iris/.claude-config/projects/{FLAT}-agents-iris/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": "iris" },
+    { "name": "sub-agent's own config dir even with a main-looking segment", "path": "{INSTALL}/agents/iris/.claude-config/projects/{FLAT}/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": "iris" },
+    { "name": "sub-agent on the shared root", "path": "{HOME}/.claude/projects/{FLAT}-agents-iris/s.jsonl", "record": { "mode": "shared", "dir": "{HOME}/.claude" }, "expect": "iris" },
+    { "name": "sub-agent on the shared root, started in a subfolder", "path": "{HOME}/.claude/projects/{FLAT}-agents-geri-workspace-x/s.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": "geri" },
+    { "name": "outside every known root", "path": "/tmp/elsewhere/t.jsonl", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null },
+    { "name": "empty transcript_path", "path": "", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null },
+    { "name": "~/.claude without a known segment is not MAIN for the gate", "path": "{HOME}/.claude/todos/x.json", "record": { "mode": "isolated", "dir": "{INSTALL}/.channels-config" }, "expect": null, "gate_only": true }
+  ]
+}
