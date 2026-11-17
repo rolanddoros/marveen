@@ -246,6 +246,15 @@ describe('the pieces', () => {
     expect(mentionsDeployHelper('ls -la', { cwd: root, root })).toBe(false)
     expect(mentionsDeployHelper('git -C @ROOT@ status'.replace('@ROOT@', root), { cwd: base, root })).toBe(false)
   })
+  it('the docs carry the exception and the recovery the helper\'s STOP lines point to', () => {
+    const doc = readFileSync(join(REPO, 'docs', 'db-write-gate.md'), 'utf-8')
+    expect(doc).toMatch(/^## The code deploy \(`code_deploy`\)$/m)
+    expect(doc).toMatch(/^### When a deploy stops$/m)
+    expect(doc).toContain('not a security boundary')
+    expect(doc).toContain('CODE_DEPLOY_OWNER_CHANNEL_ONLY')
+    expect(doc).toContain('`scripts/deploy/`, `scripts/write-main-config-root.sh`,')
+    expect(readFileSync(join(REPO, 'scripts', 'deploy', 'fork-deploy.mjs'), 'utf-8')).toContain('recovery: docs/db-write-gate.md')
+  })
   it('the hook entry hands the transcript_path to the decision worker (pinned in source)', () => {
     expect(readFileSync(HOOK, 'utf-8')).toContain('{ cwd: payload?.cwd, transcriptPath: payload?.transcript_path }')
   })
