@@ -210,12 +210,12 @@ describe('the owner text', () => {
       changed: [{ name: 'c1', from: '1', to: '2' }],
       removed: [{ name: 'r1', version: '1' }],
     }
-    const smallRows = ownerDescription(small, OPTS).split('\n\n').find((b) => b.startsWith('Csomagok:'))!.split('\n').slice(1)
+    const smallRows = ownerDescription(small, OPTS).split('\n\n').find((b: string) => b.startsWith('Csomagok:'))!.split('\n').slice(1)
     expect(smallRows).toEqual(['+ n1 1', '+ n2 1', '~ c1 1 -> 2', '- r1 1'])
 
     const c = worst(200, 300, 25)
-    const rows = ownerDescription(c, OPTS).split('\n\n').find((b) => b.startsWith('Csomagok:'))!.split('\n').slice(1)
-    const shown = rows.filter((l) => !l.startsWith('... és még'))
+    const rows = ownerDescription(c, OPTS).split('\n\n').find((b: string) => b.startsWith('Csomagok:'))!.split('\n').slice(1)
+    const shown = rows.filter((l: string) => !l.startsWith('... és még'))
     expect(shown.length).toBeGreaterThan(0)
     expect(shown).toEqual(packageRows(c.packages).slice(0, shown.length))
     expect(rows[rows.length - 1]).toBe(`... és még ${300 - shown.length} csomag`)
