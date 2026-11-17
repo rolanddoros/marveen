@@ -291,8 +291,18 @@ AGENT_ID_ENV="export MARVEEN_AGENT_ID=$(sh_single_quote "$MAIN_AGENT_ID") && "
 # session -- a respawn must not hand it a different python3 (#1626 review).
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
+# DEPLOYGATE A1-1 (fork deploy-gate plan v3, Ron 17165 C2): the root this pane exports, recorded for the
+# deploy helper's caller check by scripts/write-main-config-root.sh from INSIDE the pane, right before claude,
+# so only a pane that really starts changes it (a failed spawn leaves the old record). `|| true`: the record
+# never stops the agent from starting. No CFG_ENV means nothing was exported: the shared ~/.claude.
+RECORD_ENV=""
+if [ -n "$CFG_ENV" ]; then
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_cfg_mode") $(sh_single_quote "$_cfg_dir") 'channel-watchdog.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
+else
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") 'shared' \"\$HOME/.claude\" 'channel-watchdog.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
+fi
 # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${AGENT_ID_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${RECORD_ENV}${STATE_DIR_ENV}${AGENT_ID_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

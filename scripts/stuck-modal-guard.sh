@@ -417,7 +417,17 @@ run_guard() {
   [ -n "$_agent_id" ] || _agent_id="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
   _agent_id="${_agent_id//[^a-zA-Z0-9_-]/}"
   [ -z "$_agent_id" ] || AGENT_ID_ENV="export MARVEEN_AGENT_ID=$(sh_single_quote "$_agent_id") && "
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${AGENT_ID_ENV}${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  # DEPLOYGATE A1-1 (fork deploy-gate plan v3, Ron 17165 C2): the root this pane exports, recorded for the
+  # deploy helper's caller check by scripts/write-main-config-root.sh from INSIDE the pane, right before claude,
+  # so only a pane that really starts changes it (a failed spawn leaves the old record). `|| true`: the record
+  # never stops the agent from starting. No CFG_ENV means nothing was exported: the shared ~/.claude.
+  local RECORD_ENV=""
+  if [ -n "$CFG_ENV" ]; then
+    RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_cfg_mode") $(sh_single_quote "$_cfg_dir") 'stuck-modal-guard.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
+  else
+    RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") 'shared' \"\$HOME/.claude\" 'stuck-modal-guard.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
+  fi
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${RECORD_ENV}${AGENT_ID_ENV}${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

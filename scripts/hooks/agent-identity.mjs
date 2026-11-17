@@ -23,11 +23,15 @@
 // helper without any hook (docs/db-write-gate.md). On a shared root ('shared' mode) the root is common
 // to every agent on it, so only the exact segment tells them apart: a shared-root session started with
 // its cwd exactly at the install reads as MAIN there.
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
-import { isAbsolute, join, resolve, sep } from 'node:path'
+import { closeSync, constants as FS, existsSync, fsyncSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const RECORD_REL = join('store', 'main-agent-config-root.json')
 export const RECORD_MODES = Object.freeze(['explicit', 'rotated', 'isolated', 'token', 'shared'])
+/** The launchers of the main agent's pane; each writes the record from inside the pane it starts. */
+export const RECORD_WRITERS = Object.freeze(['channels.sh', 'channel-watchdog.sh', 'stuck-modal-guard.sh'])
 // What the record writer refuses in a directory: control characters, a quote, a backslash (C3).
 const BAD_DIR_CHAR_RX = /[\u0000-\u001f\u007f"'\\]/
 
@@ -159,4 +163,51 @@ export function identifyTranscript(transcriptPath, ctx) {
 export function callerIsMain(payload, installRoot, ctx = loadIdentityContext(installRoot)) {
   const r = identifyTranscript(payload?.transcript_path, ctx)
   return { main: r.id !== null && r.id === ctx.mainAgentId, id: r.id, why: r.why }
+}
+
+/**
+ * Write the record (Ron 17165, C2 and C3). The OLD record goes first, whatever happens next: a refused
+ * argument or a failed write leaves NO record (the gate then has no MAIN), never a stale one. Arguments are
+ * validated with the same rule the reader applies; the JSON is built by JSON.stringify, never by string
+ * concatenation; the write is a random-named O_EXCL|O_NOFOLLOW temp file renamed over the target.
+ */
+export function writeConfigRootRecord(installRoot, mode, dir, writer, now = Date.now()) {
+  const target = join(installRoot, RECORD_REL)
+  rmSync(target, { force: true })
+  if (!RECORD_MODES.includes(mode)) throw new Error(`refused mode ${JSON.stringify(String(mode).slice(0, 40))}`)
+  if (!isRecordDir(dir)) throw new Error(`refused dir ${JSON.stringify(String(dir).slice(0, 200))}`)
+  if (!RECORD_WRITERS.includes(writer)) throw new Error(`refused writer ${JSON.stringify(String(writer).slice(0, 40))}`)
+  const body = JSON.stringify({ mode, dir: dir.replace(/\/+$/, '') || '/', writer, ts: new Date(now).toISOString() }) + '\n'
+  const tmp = join(dirname(target), `.main-agent-config-root.${randomBytes(8).toString('hex')}.tmp`)
+  const fd = openSync(tmp, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | FS.O_NOFOLLOW, 0o600)
+  try {
+    writeSync(fd, body)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  try {
+    renameSync(tmp, target)
+  } catch (err) {
+    rmSync(tmp, { force: true })
+    throw err
+  }
+}
+
+// CLI, for scripts/write-main-config-root.sh only:  node agent-identity.mjs --write-record <mode> <dir> <writer>
+function invokedDirectly() {
+  try {
+    return realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+if (invokedDirectly() && process.argv[2] === '--write-record') {
+  const installRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  try {
+    writeConfigRootRecord(installRoot, process.argv[3], process.argv[4], process.argv[5])
+  } catch (err) {
+    process.stderr.write(`${new Date().toISOString()} write-main-config-root: NO record (${err?.message ?? err})\n`)
+    process.exit(1)
+  }
 }
