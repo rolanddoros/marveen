@@ -251,6 +251,8 @@ describe('the launcher\'s own configuration section feeds the record (REL-1)', (
           expect(r.started).toBe(true)
           expect(r.cfgEnv).toContain('export CLAUDE_CONFIG_DIR=')
           expect(readConfigRootRecord(inst)).toEqual({ mode, dir, writer: file })
+          // Ron's deploy-gate delta note M4: the writer gets the launcher's node binary, not an empty argument.
+          expect(r.paneCmd).toContain(`'${file}' '${join(base, 'stub-bin', 'node')}' || true; }`)
         })
       }
       it('no contract line: the shared ~/.claude of the pane', () => {
@@ -258,6 +260,7 @@ describe('the launcher\'s own configuration section feeds the record (REL-1)', (
         const r = launchThroughSection(file, '')
         expect(r.started).toBe(true)
         expect(readConfigRootRecord(inst)).toEqual({ mode: 'shared', dir: join(home, '.claude'), writer: file })
+        expect(r.paneCmd).toContain(`'${file}' '${join(base, 'stub-bin', 'node')}' || true; }`)
       })
     })
   }
