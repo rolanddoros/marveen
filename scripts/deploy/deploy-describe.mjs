@@ -66,29 +66,48 @@ export function scriptsChanged(pkgFromText, pkgToText) {
   return canonical(a) !== canonical(b)
 }
 
-/** name -> version from package-lock.json's `packages` key; the root entry ("") is not a package. */
+/** The source fields of a lock entry compared at the same version (Ron's code review SEC-1). */
+const SOURCE_FIELDS = ['resolved', 'integrity']
+
+/**
+ * name -> { version, resolved, integrity } from package-lock.json's `packages` key; the root entry ("") is not a
+ * package. A missing or non-string field is null, so "absent" and "absent" compare equal.
+ */
 function lockPackages(text, what) {
   const packages = parseJson(text, what)?.packages ?? {}
   const out = new Map()
   for (const [key, entry] of Object.entries(packages)) {
     if (key === '') continue
     const name = key.replace(/^node_modules\//, '')
-    out.set(name, typeof entry?.version === 'string' ? entry.version : '?')
+    const field = (f) => (typeof entry?.[f] === 'string' ? entry[f] : null)
+    out.set(name, { version: field('version') ?? '?', resolved: field('resolved'), integrity: field('integrity') })
   }
   return out
 }
 
-/** Added, changed, removed, each by name. Nested copies keep their path (a/node_modules/b), so they stay distinct. */
+/**
+ * Added, changed, removed, each by name. Nested copies keep their path (a/node_modules/b), so they stay distinct.
+ * An entry at the same version whose `resolved` or `integrity` moved is changed too, with `source` naming the moved
+ * fields (SEC-1: `npm ci` would fetch the other tarball, so the owner text must show it).
+ */
 export function packageChanges(lockFromText, lockToText) {
   const a = lockPackages(lockFromText, 'package-lock.json at FROM')
   const b = lockPackages(lockToText, 'package-lock.json at TO')
   const byName = (x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0)
-  const added = [...b].filter(([n]) => !a.has(n)).map(([name, version]) => ({ name, version })).sort(byName)
-  const removed = [...a].filter(([n]) => !b.has(n)).map(([name, version]) => ({ name, version })).sort(byName)
-  const changed = [...b]
-    .filter(([n, v]) => a.has(n) && a.get(n) !== v)
-    .map(([name, to]) => ({ name, from: a.get(name), to }))
-    .sort(byName)
+  const added = [...b].filter(([n]) => !a.has(n)).map(([name, e]) => ({ name, version: e.version })).sort(byName)
+  const removed = [...a].filter(([n]) => !b.has(n)).map(([name, e]) => ({ name, version: e.version })).sort(byName)
+  const changed = []
+  for (const [name, to] of b) {
+    const from = a.get(name)
+    if (!from) continue
+    if (from.version !== to.version) {
+      changed.push({ name, from: from.version, to: to.version })
+      continue
+    }
+    const source = SOURCE_FIELDS.filter((f) => from[f] !== to[f])
+    if (source.length > 0) changed.push({ name, from: from.version, to: to.version, source })
+  }
+  changed.sort(byName)
   return { added, changed, removed }
 }
 
@@ -96,7 +115,7 @@ export function packageChanges(lockFromText, lockToText) {
 export function packageRows({ added, changed, removed }) {
   return [
     ...added.map((p) => `+ ${p.name} ${p.version}`),
-    ...changed.map((p) => `~ ${p.name} ${p.from} -> ${p.to}`),
+    ...changed.map((p) => (p.source ? `~ ${p.name} ${p.to} (azonos verzió, más ${p.source.join(' és ')})` : `~ ${p.name} ${p.from} -> ${p.to}`)),
     ...removed.map((p) => `- ${p.name} ${p.version}`),
   ]
 }

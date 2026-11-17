@@ -108,6 +108,47 @@ describe('package.json scripts and the lockfile', () => {
     expect(packageChanges(null, lock({ 'node_modules/a': '1.0.0' })).added).toEqual([{ name: 'a', version: '1.0.0' }])
     expect(packageChanges(lock({ 'node_modules/a': '1.0.0' }), null).removed).toEqual([{ name: 'a', version: '1.0.0' }])
   })
+
+  // Ron's code review SEC-1: npm ci fetches what `resolved`/`integrity` name, so a move at the same version is a change.
+  it('same version, moved resolved or integrity: a "~" row naming the moved fields; an unchanged entry is no row', () => {
+    const entry = (resolved: string | undefined, integrity: string | undefined) => ({ version: '1.0.0', resolved, integrity })
+    const rawLock = (pkgs: Record<string, unknown>) => JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'marveen' }, ...pkgs } })
+    const R = 'https://registry.npmjs.org/p/-/p-1.0.0.tgz'
+    const from = rawLock({
+      'node_modules/same': entry(R, 'sha512-A'),
+      'node_modules/res': entry(R, 'sha512-A'),
+      'node_modules/int': entry(R, 'sha512-A'),
+      'node_modules/both': entry(R, 'sha512-A'),
+      'node_modules/gained': entry(undefined, undefined),
+      'node_modules/bumped': entry(R, 'sha512-A'),
+    })
+    const to = rawLock({
+      'node_modules/same': entry(R, 'sha512-A'),
+      'node_modules/res': entry('https://evil.example/p-1.0.0.tgz', 'sha512-A'),
+      'node_modules/int': entry(R, 'sha512-B'),
+      'node_modules/both': entry('https://evil.example/p-1.0.0.tgz', 'sha512-B'),
+      'node_modules/gained': entry(R, undefined),
+      'node_modules/bumped': { version: '1.0.1', resolved: 'https://evil.example/p-1.0.1.tgz', integrity: 'sha512-C' },
+    })
+    const ch = packageChanges(from, to)
+    expect(ch.added).toEqual([])
+    expect(ch.removed).toEqual([])
+    expect(ch.changed).toEqual([
+      { name: 'both', from: '1.0.0', to: '1.0.0', source: ['resolved', 'integrity'] },
+      { name: 'bumped', from: '1.0.0', to: '1.0.1' },
+      { name: 'gained', from: '1.0.0', to: '1.0.0', source: ['resolved'] },
+      { name: 'int', from: '1.0.0', to: '1.0.0', source: ['integrity'] },
+      { name: 'res', from: '1.0.0', to: '1.0.0', source: ['resolved'] },
+    ])
+    expect(packageRows(ch)).toEqual([
+      '~ both 1.0.0 (azonos verzió, más resolved és integrity)',
+      '~ bumped 1.0.0 -> 1.0.1',
+      '~ gained 1.0.0 (azonos verzió, más resolved)',
+      '~ int 1.0.0 (azonos verzió, más integrity)',
+      '~ res 1.0.0 (azonos verzió, más resolved)',
+    ])
+    expect(packageChanges(from, from)).toEqual({ added: [], changed: [], removed: [] })
+  })
 })
 
 describe('collect + renders on a real repository', () => {
@@ -219,6 +260,17 @@ describe('the owner text', () => {
     expect(shown.length).toBeGreaterThan(0)
     expect(shown).toEqual(packageRows(c.packages).slice(0, shown.length))
     expect(rows[rows.length - 1]).toBe(`... és még ${300 - shown.length} csomag`)
+  })
+
+  it('SEC-1: a lock entry moved at the same version is counted in the never-cut head and changes the lists hash', () => {
+    const none = worst(1, 0, 0)
+    const moved = worst(1, 0, 0)
+    moved.packages = { added: [], changed: [{ name: 'p', from: '1.0.0', to: '1.0.0', source: ['integrity'] }], removed: [] }
+    const head = (c: Collected) => ownerDescription(c, OPTS).split('\n\n')[0].split('\n')
+    expect(head(none)).toContain('Commitok: 1, csomagváltozás: 0')
+    expect(head(moved)).toContain('Commitok: 1, csomagváltozás: 1')
+    expect(sha256(fullRender(moved))).not.toBe(sha256(fullRender(none)))
+    expect(fullRender(moved).split('\n')).toContain('~ p 1.0.0 (azonos verzió, más integrity)')
   })
 
   it('the gate line with 0, 3 and 25 paths: at most 10 names and "még 15"', () => {
