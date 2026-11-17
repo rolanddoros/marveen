@@ -10,7 +10,7 @@ import { hookErrorSummary } from '../hooks/sub-generator.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
-import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS } from '../../config.js'
+import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS, STORE_DIR } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
@@ -19,6 +19,7 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { backupAgentDir } from '../agent-backup.js'
 import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { launchableInstallDefault } from '../default-model-guard.js'
@@ -2953,14 +2954,29 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // provider) for its orphan reap, so it must run while the dir still exists.
     if (isAgentRunning(name)) await stopAgentProcess(name)
     // An assign may be copying a skill into this directory: the removal waits on the skills directory queue.
+    // Fork C settings-protect (plan v2 point 5): the backup the agens-torles skill took with tar is taken here,
+    // right before the removal; a failed backup removes nothing.
+    let backup: string | null = null
+    let backupError: string | null = null
     await serializeSkillsDir(async () => {
       // Started again while the removal waited (by hand: the reconciler no longer wants it): stop it first,
       // for the same reason as above.
       if (isAgentRunning(name)) await stopAgentProcess(name)
+      try {
+        backup = await backupAgentDir(dir, STORE_DIR)
+      } catch (err) {
+        backupError = err instanceof Error ? err.message : 'agent backup: failed'
+        return
+      }
       rmSync(dir, { recursive: true, force: true })
     })
+    if (backup === null) {
+      logger.error({ agent: name, error: backupError }, 'agent delete refused: the backup could not be taken, nothing removed')
+      json(res, { error: `${backupError ?? 'agent backup: failed'}; the agent directory was NOT removed` }, 500)
+      return true
+    }
     cleanupTeamReferences(name)
-    json(res, { ok: true })
+    json(res, { ok: true, backup })
     return true
   }
 
