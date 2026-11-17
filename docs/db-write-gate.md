@@ -154,7 +154,9 @@ and the baseline unchanged, so those agents do not pass the verifier until `resu
 new approval and trusts nothing in the state file: it reads the consumed approval back from the dashboard (consumed by
 this helper, at most 24 hours ago, `consumed_ref` equal to the hash, and this helper's NEWEST `agent_settings` consume:
 no other approval it consumed at the same second or later), re-derives the batch, and seals the baseline only
-when every target file on disk is byte-equal to the approved content. Anything else: `rebaseline`, with an approval.
+when every target file on disk is byte-equal to the approved content. Anything else: `rebaseline`, with an approval. With
+500 or more `agent_settings` rows in the dashboard the newest consume cannot be proven and `resume` stops; the way
+out is `rebaseline`.
 
 **The isolation rows (K4).** The baseline names the isolated agents. Every other agent's file denies each isolated
 agent's directory (`Read/Edit/Write(//<install>/agents/<s>/**)`, `Bash(*agents/<s>*)`); an isolated agent's file
@@ -204,8 +206,8 @@ Also open (Ron 17563, suggestions 4 and 5):
   `notify.sh`. The protection boundary is the launchers, what they source, and the files listed above.
 
 **Not a residual any more (Ron 17563):** a key whose value is a command the CLI runs itself (`apiKeyHelper`,
-`awsAuthRefresh`, `awsCredentialExport`, `otelHeadersHelper`; the last three per Ron, not verified against CLI docs
-in this repo) is an error in the isolated copy and in the shared file; an unexpected exception inside the verifier's
+`awsAuthRefresh`, `awsCredentialExport`, `otelHeadersHelper`; all four names occur in the installed CLI 2.1.318
+binary, `grep -a -c` 58 / 17 / 9 / 17, the semantics of the last three per Ron) is an error in the isolated copy and in the shared file; an unexpected exception inside the verifier's
 checks is a finding, so report starts the agent with the line and enforce does not (a load failure, crash, timeout or
 exit 127 stays no start).
 

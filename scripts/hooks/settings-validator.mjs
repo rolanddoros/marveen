@@ -34,9 +34,10 @@ export const HOOK_SWITCH_KEYS = Object.freeze(['hooks', 'disableAllHooks', 'allo
 
 /**
  * Keys whose value is a command the CLI runs itself, outside the PreToolUse gate chain (Ron 17563, blocker 2).
- * An error in both user kinds, never only an alert. apiKeyHelper: the CLI's documented key-helper command. The other
- * three are the same class per Ron's CLI knowledge, NOT verified against CLI docs in this repo. Live, measured
- * 2026-11-17 (key names only): none of them in the 13 isolated copies or the shared file.
+ * An error in both user kinds, never only an alert. apiKeyHelper: the CLI's documented key-helper command. All four
+ * names occur in the installed CLI binary (2.1.318, `grep -a -c`: 58 / 17 / 9 / 17, Ron 17591 and re-measured); that
+ * the other three are commands the CLI runs is per Ron, not verified here. Live, measured 2026-11-17 (key names only):
+ * none of them in the 13 isolated copies or the shared file.
  */
 export const HELPER_COMMAND_KEYS = Object.freeze(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport', 'otelHeadersHelper'])
 

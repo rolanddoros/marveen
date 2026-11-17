@@ -8,7 +8,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 // @ts-expect-error -- plain .mjs script, no types
-import { apply, request, resume, status, parseArgs, collect, contentHash, ownerDescription, fullRender, writeAtomicNoFollow, EXIT, CATEGORY, CONSUMER, MAX_AGE_SECONDS, BATCH_FORMAT, STATE_REL, RESUME_MAX_AGE_SECONDS, CODE_DEPLOY_OWNER_CHANNEL_ONLY } from '../../scripts/agent-settings/apply-local.mjs'
+import { apply, request, resume, status, parseArgs, collect, contentHash, ownerDescription, fullRender, writeAtomicNoFollow, EXIT, CATEGORY, CONSUMER, MAX_AGE_SECONDS, BATCH_FORMAT, STATE_REL, RESUME_MAX_AGE_SECONDS, RESUME_LIST_LIMIT, CODE_DEPLOY_OWNER_CHANNEL_ONLY } from '../../scripts/agent-settings/apply-local.mjs'
 // @ts-expect-error -- plain .mjs hook module, no types
 import { CODE_DEPLOY_OWNER_CHANNEL_ONLY as DEPLOY_SWITCH } from '../../scripts/deploy/fork-deploy.mjs'
 // @ts-expect-error -- plain .mjs hook module, no types
@@ -487,6 +487,25 @@ describe('a partial apply, status and resume (V2-A1-REL-2)', () => {
     opts.listStatus = 500
     expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
     expect(lines.pop()).toContain('did not list')
+  })
+  it('resume stops when the list reaches RESUME_LIST_LIMIT rows: the newest consume cannot be proven (Ron 17591 N1)', async () => {
+    const opts = { consumeStatus: 200 }
+    const d = dashboard(opts)
+    const { id } = await partial(d)
+    clock += 600_000
+    opts.consumeStatus = 409
+    expect(await apply(ctxOf(d), { approvalId: id })).toBe(EXIT.STOP)
+    const row = d.rows.get(id)!
+    Object.assign(row, { consumed_at: Math.floor(clock / 1000), consumed_by: CONSUMER, consumed_ref: row.content_hash })
+    // older, unconsumed agent_settings requests fill the list to exactly the cap; none of them is a newer consume
+    for (let i = d.rows.size; i < RESUME_LIST_LIMIT; i++) d.rows.set(`old-${i}`, { id: `old-${i}`, category: CATEGORY, status: 'expired', consumed_by: null, consumed_at: null })
+    expect(d.rows.size).toBe(RESUME_LIST_LIMIT)
+    expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
+    expect(lines.pop()).toContain(`${RESUME_LIST_LIMIT} or more ${CATEGORY} approvals: the newest consume cannot be proven`)
+    // one row below the cap: the check passes and the next one speaks (the disk was never written: 409)
+    d.rows.delete(`old-${RESUME_LIST_LIMIT - 1}`)
+    expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
+    expect(lines.pop()).toContain('is not the approved content')
   })
 })
 
