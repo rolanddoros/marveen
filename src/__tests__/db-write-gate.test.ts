@@ -224,7 +224,10 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     'store/.owner-slack-target']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
-      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
+      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs',
+      // the code deploy (plan-v3 7, Ron 17165): the helper, the main-config-root record and its writer
+      'scripts/deploy', 'store/main-agent-config-root.json', 'scripts/write-main-config-root.sh',
+      'store/extra-hooks.json', 'store/autonomy-config.json',
       'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config'])
   })
   for (const rel of REL) {

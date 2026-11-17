@@ -69,6 +69,7 @@ import {
   splitSegments,
   underKey,
 } from '../self-pace-gate.mjs'
+import { callerIsMain, loadIdentityContext } from './agent-identity.mjs'
 
 // The install this gate guards: scripts/hooks/ -> scripts/ -> root.
 export const INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -79,6 +80,11 @@ export const PROTECTED_INSTALL_PATHS = [
   { rel: '.claude/settings.local.json' },
   { rel: 'scripts/hooks', dir: true },
   { rel: 'scripts/self-pace-gate.mjs' },
+  // The code deploy (plan-v3 7): the helper and its modules, the record that names the main agent's config root, and
+  // the one script the launchers call to write that record. Only the launchers write the record; no tool call does.
+  { rel: 'scripts/deploy', dir: true },
+  { rel: 'store/main-agent-config-root.json' },
+  { rel: 'scripts/write-main-config-root.sh' },
   { rel: 'store/extra-hooks.json' },
   { rel: 'store/autonomy-config.json' },
   // The sub-agents' sender-role gates (GROMZOGATECONF1030 (c), Samu 59516): only the dashboard writes them, so no
@@ -128,7 +134,8 @@ export function installTargets(root = INSTALL_ROOT) {
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
 const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
-  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~'])
+  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~',
+  'deploy', 'main-agent-config-root.json', 'write-main-config-root.sh'])
 const GLOB_CHAR_RX = /[*?[{]/
 const UNRESOLVED_RX = /\$\{[^}]*\}|\$\(|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]|[`\u0000\u0003]/
 
@@ -159,8 +166,10 @@ function isCandidate(word, ctx) {
 // or below the install root that contains a protected path), or null.
 // 'unresolved': an expansion this gate cannot resolve, followed by a protected
 // path's tail (`$WT/.claude/settings.json`): read as that path (fail closed).
-export function classifyWord(word, ctx) {
-  const { list, rootKey } = installTargets(ctx.root)
+// `only`: a sub-list of installTargets(ctx.root).list to measure against (the deploy helper's rule).
+export function classifyWord(word, ctx, only = null) {
+  const { list: all, rootKey } = installTargets(ctx.root)
+  const list = only ?? all
   let w = String(word)
   if (w === '~' || w.startsWith('~/')) w = expandHome(w === '~' ? '~/' : w)
   if (UNRESOLVED_RX.test(w)) {
@@ -677,6 +686,84 @@ export function fileToolDeny(toolInput, opts = {}) {
   return c === 'exact' || c === 'under' || c === 'unresolved' ? 'install-file' : null
 }
 
+// The code-deploy helper's exception (plan-v3 7, Ron 17165). Exactly one spelling runs it, as the WHOLE command:
+//   node <install>/scripts/deploy/fork-deploy.mjs request | status | apply --approval <id> --sha <40 hex>
+// with no assignment or env before it, no other segment, cd, substitution, redirect, glob or quoting, and only from
+// the main agent (scripts/hooks/agent-identity.mjs, from the payload's transcript_path). Any other command that
+// names the helper is denied, the main agent's included. Like the rest of this gate it is an accident and
+// injection brake, not a security boundary (docs/db-write-gate.md).
+export const DEPLOY_HELPER_REL = 'scripts/deploy/fork-deploy.mjs'
+const DEPLOY_HELPER_ARGS_RX = /^(?:request|status|apply --approval [A-Za-z0-9-]{1,64} --sha [0-9a-f]{40})$/
+// An install root that a shell would read as one plain word; any other root has no allowed spelling.
+const PLAIN_ROOT_RX = /^\/[A-Za-z0-9._/-]*$/
+
+export function deployHelperForm(command, root = INSTALL_ROOT) {
+  const r = resolve(String(root))
+  if (!PLAIN_ROOT_RX.test(r)) return false
+  const prefix = `node ${join(r, DEPLOY_HELPER_REL)} `
+  return typeof command === 'string' && command.startsWith(prefix) && DEPLOY_HELPER_ARGS_RX.test(command.slice(prefix.length))
+}
+
+// The directories a command's relative words could be read from: the payload cwd, home, /, every absolute word, and
+// every EXISTING directory a word of the command leads to from one of those, followed a few steps (a chain of cd's;
+// a cd goes only into a directory that exists). Past the cap: null (the caller reads that as "could be anywhere").
+const REACH_STEPS = 6
+const REACH_CAP = 512
+function reachableDirs(words, ctx) {
+  const plain = words.filter((w) => !UNRESOLVED_RX.test(w) && !GLOB_CHAR_RX.test(w)).map((w) => (w === '~' ? homedir() : expandHome(w)))
+  const dirs = new Set([ctx.cwd, homedir(), '/', ...plain.filter((w) => w.startsWith('/')).map((w) => resolve(w))].filter(Boolean))
+  if (dirs.size > REACH_CAP) return null
+  for (let i = 0; i < REACH_STEPS; i++) {
+    const before = dirs.size
+    for (const d of [...dirs]) {
+      for (const w of plain) {
+        const next = resolve(d, w)
+        if (dirs.has(next) || !isDirectory(next)) continue
+        dirs.add(next)
+        if (dirs.size > REACH_CAP) return null
+      }
+    }
+    if (dirs.size === before) break
+  }
+  return [...dirs]
+}
+
+// Does the command name the install's helper (or anything under scripts/deploy)? Three readings, any one is enough:
+// a word that lands under the install's scripts/deploy (lexically, through a symlink, as a glob, or as an unresolved
+// expansion followed by that tail); a word carrying the helper's file name that is not a literal absolute path outside
+// the install; for such a relative word, a reading from any directory the command can reach that lands in the install.
+export function mentionsDeployHelper(command, opts = {}) {
+  const ctx = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null }
+  const { list, rootKey } = installTargets(ctx.root)
+  const deployDir = list.filter((t) => t.rel === 'scripts/deploy')
+  const words = pathWords(command)
+  let dirs
+  for (const w of words) {
+    const c = classifyWord(w, { ...ctx, cwdInsideDir: false }, deployDir)
+    if (c === 'exact' || c === 'under' || c === 'unresolved') return true
+    if (!nameForms(w).some((f) => f.includes('fork-deploy'))) continue
+    if (UNRESOLVED_RX.test(w) || GLOB_CHAR_RX.test(w)) return true
+    const lit = w === '~' ? homedir() : expandHome(w)
+    if (lit.startsWith('/')) {
+      if (underKey(pathKey(resolve(lit)), rootKey)) return true
+      continue
+    }
+    dirs ??= reachableDirs(words, ctx)
+    if (dirs === null) return true
+    if (dirs.some((d) => underKey(pathKey(resolve(d, lit)), rootKey))) return true
+  }
+  return false
+}
+
+function deployHelperDecision(command, opts) {
+  const root = opts.root ?? INSTALL_ROOT
+  if (deployHelperForm(command, root)) {
+    const who = callerIsMain({ transcript_path: opts.transcriptPath }, root, opts.identity ?? loadIdentityContext(root))
+    return who.main ? { deny: false, deployHelper: true } : { deny: true, reason: 'deploy-helper', why: who.why }
+  }
+  return mentionsDeployHelper(command, opts) ? { deny: true, reason: 'deploy-helper', why: 'not the exact form' } : null
+}
+
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
@@ -686,6 +773,8 @@ function decide(toolName, toolInput, opts = {}) {
   if (name === 'Bash') {
     const command = String(toolInput?.command ?? '')
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
+    const helper = deployHelperDecision(command, opts)
+    if (helper) return helper
     const file = installFileDeny(command, opts)
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
   }
@@ -722,6 +811,7 @@ export const DB_GATE_MSG =
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
+  'scripts/deploy/, scripts/write-main-config-root.sh, store/main-agent-config-root.json, ' +
   'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json es store/.owner-slack-target fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
@@ -749,6 +839,23 @@ export const GIT_GATE_MSG =
   ';-vel lancolt cd utan, ha a mappa most nem letezik (bukott cd utan a git a telepitesben futna; APPROVALDBGATE1030, Dani 60251). ' +
   'Elrontott prod fa helyreallitasa: ' + RESCUE_DOC + ', "Vesz-helyreallitas" szakasz ' +
   '(a gazda sajat terminaljaban, vagy jovahagyas-keressel a pontos paranccsal).' + LIMIT_MSG
+
+export const DEPLOY_HELPER_GATE_MSG =
+  'A kod-deploy helper hivasa ebben az alakban TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). ' +
+  `Egyetlen alak fut, a TELJES parancskent, es csak a fo ugynoktol: "node ${join(INSTALL_ROOT, DEPLOY_HELPER_REL)} ` +
+  'request", "... status" vagy "... apply --approval <id> --sha <40 hex>". Elotte nincs ertekadas vagy env, nincs ' +
+  'masik parancs (; && || |), cd, behelyettesites, atiranyitas, glob vagy idezojel. A scripts/deploy/ fajljait ' +
+  'olvasni is csak egy worktree sajat masolataban lehet, arra ABSZOLUT uttal hivatkozva (egy relativ fork-deploy nev ' +
+  'a telepitesbe is vezethet).A hivo kileteet a hook payload transcript_path-jabol ' +
+  'olvasom: ez baleset- es injekcio-fek, NEM biztonsagi hatar (docs/db-write-gate.md). A deploy a gazda ' +
+  'jovahagyasaval megy, a fo ugynokon at.' + LIMIT_MSG
+
+function gateMessage(reason) {
+  if (reason === 'git') return GIT_GATE_MSG
+  if (reason === 'install-file') return INSTALL_FILE_GATE_MSG
+  if (reason === 'deploy-helper') return DEPLOY_HELPER_GATE_MSG
+  return DB_GATE_MSG
+}
 
 function allow() { process.exit(0) }
 
@@ -819,9 +926,10 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
     allow()
   }
   try {
-    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
+    // transcript_path: who is calling, for the deploy helper's rule (the harness writes it, not the agent).
+    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, transcriptPath: payload?.transcript_path })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
-    if (verdict.deny) deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG : DB_GATE_MSG)
+    if (verdict.deny) deny(gateMessage(verdict.reason))
     allow()
   } catch (err) {
     deny(FAIL_CLOSED_MSG(err?.message ?? err))
