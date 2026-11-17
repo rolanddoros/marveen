@@ -50,10 +50,12 @@ afterEach(() => {
 })
 
 describe('store-watcher: a watch error does not take the process down', () => {
-  it('starts exactly one recursive watcher on STORE_DIR', () => {
+  it('starts one non-recursive watcher on STORE_DIR (the per-directory watcher)', () => {
+    // A recursive watch walked all of store/ on Linux and stalled the event loop
+    // (2026-11-17); store-watcher-tree.test.ts holds the per-directory watches.
     expect(h.watchCalls.length).toBe(1)
     expect(h.watchCalls[0][0]).toBe('/nonexistent/marveen-store-watcher-test')
-    expect((h.watchCalls[0][1] as { recursive?: boolean }).recursive).toBe(true)
+    expect((h.watchCalls[0][1] as { recursive?: boolean }).recursive).toBe(false)
   })
 
   it('listens for the error event instead of throwing it', () => {

@@ -18,8 +18,10 @@ const h = vi.hoisted(() => ({
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
   const { EventEmitter } = await import('node:events')
-  const watch = ((_dir: unknown, _opts: unknown, cb: (e: string, f: string | null) => void) => {
-    h.cb = cb
+  const watch = ((dir: unknown, _opts: unknown, cb: (e: string, f: string | null) => void) => {
+    // One watch per directory since the per-directory watcher: keep store/'s own
+    // callback, which takes a store-relative name as the recursive one did.
+    if (dir === h.dir) h.cb = cb
     const w = new EventEmitter() as any
     w.close = () => {}
     return w
