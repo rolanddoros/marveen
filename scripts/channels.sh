@@ -1226,6 +1226,11 @@ MODEL_FLAG=""
 # strict no-op for existing installs (no setting, no fleet token, no dist build).
 CFG_ENV=""
 CUSTOM_PROVIDER_ENV=""
+# DEPLOYGATE-REC (Ron's code review REL-1): the mode, root and node binary this pane exports, kept for the
+# RECORD_ENV block below. The _cfg_* working variables are unset at the end of this section, before that block runs.
+_rec_mode=""
+_rec_dir=""
+_rec_node=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
@@ -1395,8 +1400,13 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     unset _cp_env _cp_rc _cp_cfg_dir
   fi
 
+  if [ -n "$CFG_ENV" ]; then
+    _rec_mode="$_cfg_mode"
+    _rec_dir="$_cfg_dir"
+  fi
   unset _cfg_raw _cfg_line _cfg_mode _cfg_dir
 fi
+_rec_node="${_node_bin:-}"
 unset _node_bin
 
 # Re-seed hasCompletedOnboarding in the SHARED ~/.claude.json BEFORE launching
@@ -1751,9 +1761,9 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # never stops the agent from starting. No CFG_ENV means nothing was exported: the shared ~/.claude.
 RECORD_ENV=""
 if [ -n "$CFG_ENV" ]; then
-  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_cfg_mode") $(sh_single_quote "$_cfg_dir") 'channels.sh' $(sh_single_quote "${_node_bin:-}") || true; } && "
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_rec_mode") $(sh_single_quote "$_rec_dir") 'channels.sh' $(sh_single_quote "$_rec_node") || true; } && "
 else
-  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") 'shared' \"\$HOME/.claude\" 'channels.sh' $(sh_single_quote "${_node_bin:-}") || true; } && "
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") 'shared' \"\$HOME/.claude\" 'channels.sh' $(sh_single_quote "$_rec_node") || true; } && "
 fi
 # TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
 # the tmux client's environment. The export above is meant for THIS session's

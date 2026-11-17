@@ -14,10 +14,12 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+// The variables each launcher's RECORD_ENV block reads (channels.sh and channel-watchdog.sh keep their own _rec_*
+// copies, because the _cfg_* working variables are unset before the block runs: Ron's code review REL-1).
 const LAUNCHERS = [
-  { file: 'channels.sh', nodeVar: '_node_bin' },
-  { file: 'channel-watchdog.sh', nodeVar: 'NODE_BIN' },
-  { file: 'stuck-modal-guard.sh', nodeVar: 'NODE_BIN' },
+  { file: 'channels.sh', nodeVar: '_rec_node', modeVar: '_rec_mode', dirVar: '_rec_dir' },
+  { file: 'channel-watchdog.sh', nodeVar: 'NODE_BIN', modeVar: '_rec_mode', dirVar: '_rec_dir' },
+  { file: 'stuck-modal-guard.sh', nodeVar: 'NODE_BIN', modeVar: '_cfg_mode', dirVar: '_cfg_dir' },
 ] as const
 
 let base: string
@@ -119,8 +121,8 @@ function spawnWithBlock(l: (typeof LAUNCHERS)[number], vars: { cfgEnv: string; m
     `INSTALL_DIR=${JSON.stringify(inst)}`,
     `${l.nodeVar}=${JSON.stringify(process.execPath)}`,
     `CFG_ENV=${JSON.stringify(vars.cfgEnv)}`,
-    `_cfg_mode=${JSON.stringify(vars.mode ?? '')}`,
-    `_cfg_dir=${JSON.stringify(vars.dir ?? '')}`,
+    `${l.modeVar}=${JSON.stringify(vars.mode ?? '')}`,
+    `${l.dirVar}=${JSON.stringify(vars.dir ?? '')}`,
     l.file === 'stuck-modal-guard.sh' ? `f() {\n${recordBlock(l.file)}\nprintf '%s' "$RECORD_ENV"\n}; f` : `${recordBlock(l.file)}\nprintf '%s' "$RECORD_ENV"`,
   ].join('\n')
   const built = spawnSync('bash', ['-c', script], { encoding: 'utf8' })
@@ -178,6 +180,106 @@ describe('each launcher writes the record from inside the pane it starts (C2)', 
           expect(line.indexOf('${RECORD_ENV}')).toBeLessThan(line.indexOf('$CLAUDE'))
         }
       })
+    })
+  }
+})
+
+// Ron's code review REL-1: the block above is fed by the test, so it could not see that the launcher itself had
+// unset the mode and dir before the block ran. Here each launcher's REAL configuration section runs first (from its
+// `CFG_ENV=""` to the end of the section, unsets included) with a stubbed main-agent-isolated-config.mjs, then the
+// real block, then the pane command: the record must name the mode and dir that section exported.
+const SECTION_END: Record<string, string> = {
+  'channels.sh': '\nunset _node_bin\n',
+  'channel-watchdog.sh': '\n  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret\nfi\n',
+}
+function configSection(file: string): string {
+  const src = readFileSync(join(REPO, 'scripts', file), 'utf8')
+  const start = src.indexOf('\nCFG_ENV=""\n')
+  const endMark = SECTION_END[file]
+  const end = src.indexOf(endMark, start)
+  expect(start).toBeGreaterThan(0)
+  expect(end).toBeGreaterThan(start)
+  return src.slice(start, end + endMark.length)
+}
+function launchThroughSection(file: string, cfgLine: string) {
+  const stubDir = join(base, 'stub-bin')
+  mkdirSync(stubDir, { recursive: true })
+  // node: answers the config helper on fd 3 (the launchers read its contract line there), stays silent for the
+  // custom-provider helper, and runs the real node for everything else (the record writer).
+  writeFileSync(join(stubDir, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  *main-agent-isolated-config.mjs) printf \'%s\\n\' "$STUB_CFG_LINE" >&3; exit 0 ;;',
+    '  *main-agent-custom-provider.mjs) exit 0 ;;',
+    'esac',
+    `exec ${JSON.stringify(process.execPath)} "$@"`,
+  ].join('\n') + '\n')
+  chmodSync(join(stubDir, 'node'), 0o755)
+  writeFileSync(join(stubDir, 'curl'), '#!/bin/sh\nexit 1\n')
+  chmodSync(join(stubDir, 'curl'), 0o755)
+  mkdirSync(join(inst, 'dist', 'web'), { recursive: true })
+  writeFileSync(join(inst, 'dist', 'web', 'agent-process.js'), '')
+  const script = [
+    SH_SINGLE_QUOTE,
+    'log() { :; }',
+    `INSTALL_DIR=${JSON.stringify(inst)}`,
+    `STORE=${JSON.stringify(join(inst, 'store'))}`,
+    'CHANNEL_PROVIDER=telegram',
+    `NODE_BIN=${JSON.stringify(join(stubDir, 'node'))}`,
+    configSection(file),
+    recordBlock(file),
+    'printf \'%s\' "$CFG_ENV" >&2',
+    'printf \'%s\' "$RECORD_ENV"',
+  ].join('\n')
+  const env = { PATH: `${stubDir}:/usr/bin:/bin`, HOME: home, STUB_CFG_LINE: cfgLine }
+  const built = spawnSync('bash', ['-c', script], { encoding: 'utf8', env })
+  expect(built.status, built.stderr).toBe(0)
+  const run = spawnSync('sh', ['-c', `${built.stdout}echo started`], { encoding: 'utf8', env })
+  return { started: run.stdout.trim() === 'started', paneCmd: built.stdout, cfgEnv: built.stderr }
+}
+
+describe('the launcher\'s own configuration section feeds the record (REL-1)', () => {
+  for (const file of Object.keys(SECTION_END)) {
+    describe(file, () => {
+      for (const mode of ['explicit', 'rotated', 'isolated', 'token'] as const) {
+        it(`${mode}: the record names the mode and dir the section exported`, () => {
+          plantOld()
+          const dir = join(base, `cfg ${mode}`)
+          mkdirSync(dir, { recursive: true })
+          const line = mode === 'token' ? `token\t${dir}\tfleet-secret-name` : `${mode}\t${dir}`
+          const r = launchThroughSection(file, line)
+          expect(r.started).toBe(true)
+          expect(r.cfgEnv).toContain('export CLAUDE_CONFIG_DIR=')
+          expect(readConfigRootRecord(inst)).toEqual({ mode, dir, writer: file })
+        })
+      }
+      it('no contract line: the shared ~/.claude of the pane', () => {
+        plantOld()
+        const r = launchThroughSection(file, '')
+        expect(r.started).toBe(true)
+        expect(readConfigRootRecord(inst)).toEqual({ mode: 'shared', dir: join(home, '.claude'), writer: file })
+      })
+    })
+  }
+})
+
+// Ron's code review REL-1, static side: nothing before a launcher's RECORD_ENV block may unset a variable the block
+// reads, and the block must read exactly the variables named in LAUNCHERS (so the guard checks the right names).
+describe('no launcher unsets what its RECORD_ENV block reads (REL-1 guard)', () => {
+  for (const l of LAUNCHERS) {
+    it(l.file, () => {
+      const src = readFileSync(join(REPO, 'scripts', l.file), 'utf8')
+      const block = recordBlock(l.file)
+      for (const v of [l.modeVar, l.dirVar]) expect(block).toContain(`$(sh_single_quote "$${v}")`)
+      expect(block).toMatch(new RegExp(`\\$\\(sh_single_quote "\\$\\{?${l.nodeVar}[:}"]`))
+      const before = src.slice(0, src.indexOf(block))
+      const unsets = before
+        .split('\n')
+        .map((line) => line.replace(/#.*$/, ''))
+        .filter((line) => /(^|[;&|{(\s])unset\s/.test(line))
+      const reads = [l.modeVar, l.dirVar, l.nodeVar]
+      const offending = unsets.filter((line) => reads.some((v) => new RegExp(`\\s${v}(\\s|;|$)`).test(line)))
+      expect(offending).toEqual([])
     })
   }
 })

@@ -231,6 +231,10 @@ MODEL_FLAG=""
 # never lands in the RESPAWN_CMD string passed to tmux respawn-pane (visible
 # via ps/pane history otherwise).
 CFG_ENV=""
+# DEPLOYGATE-REC (Ron's code review REL-1): the mode and root this pane exports, kept for the RECORD_ENV
+# block below; the _cfg_* working variables are unset at the end of this section, before that block runs.
+_rec_mode=""
+_rec_dir=""
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # Contract on fd 3, never stdout -- see scripts/main-agent-isolated-config.mjs
   # and channels.sh: the helper imports a pino-logging module that writes to fd 1
@@ -265,6 +269,10 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
+  if [ -n "$CFG_ENV" ]; then
+    _rec_mode="$_cfg_mode"
+    _rec_dir="$_cfg_dir"
+  fi
   unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
 fi
 
@@ -297,7 +305,7 @@ FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.
 # never stops the agent from starting. No CFG_ENV means nothing was exported: the shared ~/.claude.
 RECORD_ENV=""
 if [ -n "$CFG_ENV" ]; then
-  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_cfg_mode") $(sh_single_quote "$_cfg_dir") 'channel-watchdog.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_rec_mode") $(sh_single_quote "$_rec_dir") 'channel-watchdog.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
 else
   RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") 'shared' \"\$HOME/.claude\" 'channel-watchdog.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
 fi
