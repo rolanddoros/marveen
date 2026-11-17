@@ -231,6 +231,10 @@ MODEL_FLAG=""
 # never lands in the RESPAWN_CMD string passed to tmux respawn-pane (visible
 # via ps/pane history otherwise).
 CFG_ENV=""
+# DEPLOYGATE-REC (Ron's code review REL-1): the mode and root this pane exports, kept for the RECORD_ENV
+# block below; the _cfg_* working variables are unset at the end of this section, before that block runs.
+_rec_mode=""
+_rec_dir=""
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # Contract on fd 3, never stdout -- see scripts/main-agent-isolated-config.mjs
   # and channels.sh: the helper imports a pino-logging module that writes to fd 1
@@ -265,6 +269,10 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
+  if [ -n "$CFG_ENV" ]; then
+    _rec_mode="$_cfg_mode"
+    _rec_dir="$_cfg_dir"
+  fi
   unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
 fi
 
@@ -291,8 +299,18 @@ AGENT_ID_ENV="export MARVEEN_AGENT_ID=$(sh_single_quote "$MAIN_AGENT_ID") && "
 # session -- a respawn must not hand it a different python3 (#1626 review).
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
+# DEPLOYGATE A1-1 (fork deploy-gate plan v3, Ron 17165 C2): the root this pane exports, recorded for the
+# deploy helper's caller check by scripts/write-main-config-root.sh from INSIDE the pane, right before claude,
+# so only a pane that really starts changes it (a failed spawn leaves the old record). `|| true`: the record
+# never stops the agent from starting. No CFG_ENV means nothing was exported: the shared ~/.claude.
+RECORD_ENV=""
+if [ -n "$CFG_ENV" ]; then
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_rec_mode") $(sh_single_quote "$_rec_dir") 'channel-watchdog.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
+else
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") 'shared' \"\$HOME/.claude\" 'channel-watchdog.sh' $(sh_single_quote "${NODE_BIN:-}") || true; } && "
+fi
 # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${AGENT_ID_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${RECORD_ENV}${STATE_DIR_ENV}${AGENT_ID_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

@@ -4,7 +4,7 @@
 // the stamp, so every manual build left it lying -- and a hand-written stamp
 // is the one thing that can blind update.sh's "git=NEW + dist=OLD" self-heal.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, cpSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, cpSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -30,9 +30,9 @@ function makeRoot(opts: { git: boolean; dist: boolean }): string {
   return root
 }
 
-function run(root: string): { status: number; out: string } {
+function run(root: string, args: string[] = []): { status: number; out: string } {
   try {
-    const out = execFileSync('node', [join(root, 'scripts', 'write-built-commit.cjs')], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    const out = execFileSync('node', [join(root, 'scripts', 'write-built-commit.cjs'), ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     return { status: 0, out }
   } catch (e) {
     const err = e as { status?: number; stdout?: string }
@@ -84,5 +84,27 @@ describe('build stamps dist/.built-commit (BUILTSTAMPKEZI920)', () => {
     const r = run(root)
     expect(r.status).toBe(0)
     expect(existsSync(join(root, 'dist'))).toBe(false)
+  })
+
+  it('the deploy helper\'s target: `dist.next` stamps dist.next/.built-commit and leaves dist alone', () => {
+    const root = makeRoot({ git: true, dist: true })
+    mkdirSync(join(root, 'dist.next'))
+    writeFileSync(join(root, 'dist', '.built-commit'), 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n')
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+    expect(run(root, ['dist.next']).status).toBe(0)
+    expect(readFileSync(join(root, 'dist.next', '.built-commit'), 'utf8')).toBe(head + '\n')
+    expect(readFileSync(join(root, 'dist', '.built-commit'), 'utf8')).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n')
+    // No dist.next: nothing created.
+    rmSync(join(root, 'dist.next'), { recursive: true })
+    expect(run(root, ['dist.next']).status).toBe(0)
+    expect(existsSync(join(root, 'dist.next'))).toBe(false)
+  })
+
+  it('any other output name is refused with exit 2 and nothing is written (never a path)', () => {
+    const root = makeRoot({ git: true, dist: true })
+    for (const bad of ['../dist', '/tmp/x', 'dist/', 'src', '', 'dist.next/..']) {
+      expect({ bad, status: run(root, [bad]).status }).toEqual({ bad, status: 2 })
+    }
+    expect(existsSync(join(root, 'dist', '.built-commit'))).toBe(false)
   })
 })

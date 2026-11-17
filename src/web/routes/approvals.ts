@@ -18,7 +18,8 @@ import { getEffectiveSettingValue } from '../../settings-store.js'
 import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js'
 import { reactionRoute, reactionsOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { sendTelegramMessage } from '../telegram.js'
-import { mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { mayActAsOwner, ownerCookieSession, OWNER_SESSION_REQUIRED } from './auth.js'
+import { CODE_DEPLOY_CATEGORY, CODE_DEPLOY_OWNER_CHANNEL_ONLY, SERVER_WRITTEN_RESOLVED_BY_RX } from '../../code-deploy-policy.js'
 import type { RouteContext } from './types.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -503,6 +504,20 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // plan-v3 3 (Ron 17165): a code_deploy row is filed by the main agent only and always carries the hash the
+    // deploy helper recomputes (FROM, TO). Cheap, and NOT a closure of the shared-token gap (agent_id is
+    // self-declared); what closes it is the owner-bound approve below (SEC-5).
+    if (category.trim() === CODE_DEPLOY_CATEGORY) {
+      if ((ctx.auth?.kind === 'token' && ctx.auth.tokenAgent) || agent_id.trim() !== MAIN_AGENT_ID) {
+        json(res, { error: 'code_deploy is filed by the main agent only' }, 403)
+        return true
+      }
+      if (typeof content_hash !== 'string') {
+        json(res, { error: 'content_hash is required for code_deploy' }, 400)
+        return true
+      }
+    }
+
     // for_agent grants the row to ONE sub-agent, whose own token (AGENT_TOKENS)
     // may then consume it (auth-gate.ts binding on POST /api/approvals/:id/consume).
     // Granting is the main agent's lane: the gate already refuses the field from
@@ -721,18 +736,37 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    const target = getApproval(idMatch[1])
+    // SEC-5 (plan-v3 5): with the switch on, a code_deploy approve also needs the owner's own session cookie, beside
+    // mayActAsOwner above, not instead of it: the cookie is the proof, so the owner's browser sending the bearer too
+    // passes, the bare shared token does not (not even before the first login), and a sub-agent token never does.
+    // resolved_by is then the server's own `owner_session:<user>`, never the body's. On every other approve and
+    // resolve the body may not carry a server-written prefix, so none can be imitated.
+    let resolvedBy = resolved_by.trim()
+    if (CODE_DEPLOY_OWNER_CHANNEL_ONLY && status === 'approved' && target?.category === CODE_DEPLOY_CATEGORY) {
+      const owner = ctx.auth?.kind === 'token' && ctx.auth.tokenAgent ? null : ownerCookieSession(req)
+      if (owner === null) {
+        logger.warn({ id: idMatch[1], auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'code_deploy approve refused: no owner session cookie')
+        json(res, OWNER_SESSION_REQUIRED, 403)
+        return true
+      }
+      resolvedBy = `owner_session:${owner}`
+    } else if (CODE_DEPLOY_OWNER_CHANNEL_ONLY && SERVER_WRITTEN_RESOLVED_BY_RX.test(resolvedBy)) {
+      json(res, { error: 'resolved_by may not start with owner_session: or slack_reaction:; only the server writes those' }, 400)
+      return true
+    }
+
     // Self-approval guard: the requesting agent cannot approve its own request.
     // This is a best-effort check on the self-declared resolved_by value (all fleet
     // agents share the same bearer token, so server-side identity is not enforceable).
     // It catches naive/accidental self-approvals; the real control lives on the
     // main-agent side (approval-request-handling skill).
-    const target = getApproval(idMatch[1])
-    if (target && resolved_by.trim() === target.agent_id) {
+    if (target && resolvedBy === target.agent_id) {
       json(res, { error: 'The requesting agent cannot approve its own request' }, 403)
       return true
     }
 
-    const updated = resolveApproval(idMatch[1], status, resolved_by.trim(), msgId)
+    const updated = resolveApproval(idMatch[1], status, resolvedBy, msgId)
     if (!updated) {
       // Either not found or already resolved
       const existing = getApproval(idMatch[1])
@@ -745,7 +779,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const approval = getApproval(idMatch[1])
-    logger.info({ id: idMatch[1], status, resolved_by }, 'Approval resolved')
+    logger.info({ id: idMatch[1], status, resolved_by: resolvedBy }, 'Approval resolved')
     json(res, approval)
     return true
   }

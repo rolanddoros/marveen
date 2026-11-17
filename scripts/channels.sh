@@ -1226,6 +1226,11 @@ MODEL_FLAG=""
 # strict no-op for existing installs (no setting, no fleet token, no dist build).
 CFG_ENV=""
 CUSTOM_PROVIDER_ENV=""
+# DEPLOYGATE-REC (Ron's code review REL-1): the mode, root and node binary this pane exports, kept for the
+# RECORD_ENV block below. The _cfg_* working variables are unset at the end of this section, before that block runs.
+_rec_mode=""
+_rec_dir=""
+_rec_node=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
@@ -1395,8 +1400,13 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     unset _cp_env _cp_rc _cp_cfg_dir
   fi
 
+  if [ -n "$CFG_ENV" ]; then
+    _rec_mode="$_cfg_mode"
+    _rec_dir="$_cfg_dir"
+  fi
   unset _cfg_raw _cfg_line _cfg_mode _cfg_dir
 fi
+_rec_node="${_node_bin:-}"
 unset _node_bin
 
 # Re-seed hasCompletedOnboarding in the SHARED ~/.claude.json BEFORE launching
@@ -1745,6 +1755,16 @@ esac
 # shellcheck disable=SC2046,SC2086
 wait_for_channel_hosts $(channel_wait_hosts "$CHANNEL_PROVIDER" $CHANNEL_PLUGINS_EXTRA) || true
 $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
+# DEPLOYGATE A1-1 (fork deploy-gate plan v3, Ron 17165 C2): the root this pane exports, recorded for the
+# deploy helper's caller check by scripts/write-main-config-root.sh from INSIDE the pane, right before claude,
+# so only a pane that really starts changes it (a failed spawn leaves the old record). `|| true`: the record
+# never stops the agent from starting. No CFG_ENV means nothing was exported: the shared ~/.claude.
+RECORD_ENV=""
+if [ -n "$CFG_ENV" ]; then
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") $(sh_single_quote "$_rec_mode") $(sh_single_quote "$_rec_dir") 'channels.sh' $(sh_single_quote "$_rec_node") || true; } && "
+else
+  RECORD_ENV="{ sh $(sh_single_quote "$INSTALL_DIR/scripts/write-main-config-root.sh") 'shared' \"\$HOME/.claude\" 'channels.sh' $(sh_single_quote "$_rec_node") || true; } && "
+fi
 # TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
 # the tmux client's environment. The export above is meant for THIS session's
 # claude/poller, and the command below re-exports it for the pane anyway. But
@@ -1758,7 +1778,7 @@ $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
 env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${AGENT_ID_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${AGENT_ID_ENV}${MCP_BATCH_ENV}${CFG_ENV}${RECORD_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1860,7 +1880,7 @@ while [ "$i" -lt "$_boot_guard_s" ]; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${AGENT_ID_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${AGENT_ID_ENV}${MCP_BATCH_ENV}${CFG_ENV}${RECORD_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.

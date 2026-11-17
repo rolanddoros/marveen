@@ -18,12 +18,22 @@
 //   - Nothing else is touched. Missing dist or dist/__tests__: nothing to do.
 //   - Never fails the build: any error is reported on stderr and exit is 0
 //     (the leftovers are harmless; a build must not stop over them).
+//   - Optional argument: the output directory NAME, exactly `dist` (the default)
+//     or `dist.next` (the fork deploy helper builds there and swaps it in, plan
+//     v3 point 6 step 11). Any other value is refused with exit 2 and nothing is
+//     touched: the directory is still always <root>/<name>, never a path.
 'use strict'
 const { lstatSync, rmSync } = require('node:fs')
 const path = require('node:path')
 
+const OUT_DIRS = ['dist', 'dist.next']
+const outName = process.argv[2] === undefined ? 'dist' : process.argv[2]
+if (!OUT_DIRS.includes(outName)) {
+  process.stderr.write(`clean-dist-tests: output directory must be one of ${OUT_DIRS.join(', ')}, got ${JSON.stringify(outName)}\n`)
+  process.exit(2)
+}
 const root = path.resolve(__dirname, '..')
-const distDir = path.join(root, 'dist')
+const distDir = path.join(root, outName)
 const target = path.join(distDir, '__tests__')
 
 function kind(p) {

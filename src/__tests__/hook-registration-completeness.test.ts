@@ -56,6 +56,10 @@ const REGISTRATION_SURFACES = [...SEEDING_SURFACES, ...CHECKOUT_SURFACES]
 // name -> why it is allowed to be unregistered. Keep every reason concrete;
 // "misc" entries defeat the lint.
 const EXEMPT: Record<string, string> = {
+  'agent-identity.mjs':
+    'shared library (code deploy, plan-v3 2): the caller identity from a hook payload, imported by db-write-gate.mjs; its CLI (--write-record) is run only by scripts/write-main-config-root.sh from the launchers; not itself a hook',
+  'owner-approval.mjs':
+    'shared library (code deploy, plan-v3 7): the approval field checks, owner prefixes and bounded render, imported by scripts/deploy/fork-deploy.mjs and deploy-describe.mjs; kept under scripts/hooks/ because that path is protected; not itself a hook',
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
   'ledger_redact.py':

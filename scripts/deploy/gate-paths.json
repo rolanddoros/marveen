@@ -1,0 +1,34 @@
+{
+  "_doc": [
+    "Paths whose change in FROM..TO decides the gates, the hook wiring, the deploy or the restart.",
+    "fork-deploy.mjs prints them on the never-cut 'Kapu/deploy utak' line of the owner text (plan v3 addendum A1-3).",
+    "This file lives under scripts/deploy/, a protected path, so adding or removing a pattern is a reviewed change (Ron 17165, suggestion).",
+    "Pattern forms: 'dir/**' = everything under dir; '*' = any characters inside one path segment; anything else = exact path.",
+    "package.json counts only when its 'scripts' key changed (packageJsonScripts); package-lock.json is the package list, not a gate path."
+  ],
+  "patterns": [
+    "scripts/hooks/**",
+    "scripts/deploy/**",
+    "scripts/channels.sh",
+    "scripts/channel-watchdog.sh",
+    "scripts/stuck-modal-guard.sh",
+    "scripts/write-main-config-root.sh",
+    "scripts/main-agent-isolated-config.mjs",
+    "scripts/start.sh",
+    "scripts/stop.sh",
+    "scripts/clean-dist-tests.cjs",
+    "scripts/write-built-commit.cjs",
+    ".github/**",
+    "src/web/routes/approvals.ts",
+    "src/web/routes/auth.ts",
+    "src/web/routes/gromzo.ts",
+    "src/web/routes/updates.ts",
+    "src/web/hooks/**",
+    "src/web/agent-scaffold.ts",
+    "src/web/agent-process.ts",
+    "src/web/agent-tokens.ts",
+    "src/web/approval-slack-route.ts",
+    "tsconfig*.json"
+  ],
+  "packageJsonScripts": true
+}
