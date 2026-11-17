@@ -9,6 +9,7 @@
   "patterns": [
     "scripts/hooks/**",
     "scripts/deploy/**",
+    "scripts/agent-settings/**",
     "scripts/channels.sh",
     "scripts/channel-watchdog.sh",
     "scripts/stuck-modal-guard.sh",
