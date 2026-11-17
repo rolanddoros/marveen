@@ -762,6 +762,10 @@ describe('gateWakePrompt', () => {
     expect(p).not.toContain('jelzest kuldj')
     expect(p).not.toMatch(/jelez[a-z]* [^.]*csatorn/i)
     expect(p).toContain('Zarasul egyetlen transzkript-sorban rogzitsd, hogy friss kontextussal folytatod -- a csatornadra session-meta NEM mehet ki.')
+    // The channel is mentioned EXACTLY once, inside the rule: a notice in any
+    // other wording ("Kuldj uzenetet a csatornadra ...") adds a second mention
+    // and fails here, where the "jelez..." pattern would miss it.
+    expect(p.match(/csatorn/gi) ?? []).toHaveLength(1)
   })
 
   // Guard against the nudge itself becoming a source of invented work.

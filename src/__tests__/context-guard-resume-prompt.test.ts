@@ -105,6 +105,10 @@ describe('resumePrompt closing line: transcript line, no channel notice, for eve
       expect(p).not.toMatch(/jelez[a-zé]* [^.]*csatorn/i)
       expect(p).toContain(RULE)
       expect(p).toContain(CONSTRAINT)
+      // The channel is mentioned EXACTLY once, inside the rule: a notice in
+      // any other wording ("Küldj üzenetet a csatornádra ...") adds a second
+      // mention and fails here, where the "jelez..." pattern would miss it.
+      expect(p.match(/csatorn/gi) ?? []).toHaveLength(1)
     })
   }
   it('the closing line does not assume the channel is the owner\'s Telegram', () => {
