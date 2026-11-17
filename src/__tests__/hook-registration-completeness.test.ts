@@ -60,6 +60,14 @@ const EXEMPT: Record<string, string> = {
     'shared library (code deploy, plan-v3 2): the caller identity from a hook payload, imported by db-write-gate.mjs; its CLI (--write-record) is run only by scripts/write-main-config-root.sh from the launchers; not itself a hook',
   'owner-approval.mjs':
     'shared library (code deploy, plan-v3 7): the approval field checks, owner prefixes and bounded render, imported by scripts/deploy/fork-deploy.mjs and deploy-describe.mjs; kept under scripts/hooks/ because that path is protected; not itself a hook',
+  'settings-validator.mjs':
+    'shared library (Fork C settings-protect plan v2 point 1): the one settings-file validator, imported by verify-gate-wiring.mjs; kept under scripts/hooks/ because that path is protected; not itself a hook',
+  'sub-hooks-lock.mjs':
+    'shared library (Fork C settings-protect addendum 1 D2-SEC-1 (b), Ron K1): parses the protected sub-hooks.lock.json and assembles the expected hooks block, imported by verify-gate-wiring.mjs and scripts/generate-sub-hooks-lock.ts; not itself a hook',
+  'agent-settings-baseline.mjs':
+    'shared library (Fork C settings-protect, Ron 17451 N1/N2): the protected baseline tuple checks, imported by verify-gate-wiring.mjs; not itself a hook',
+  'verify-gate-wiring.mjs':
+    'the standalone gate-wiring verifier (Fork C settings-protect plan v2 point 3): run before a sub-agent start by scripts/watchdog.sh (CLI) and src/web/gate-wiring.ts (dynamic import of the protected install copy), not from a settings.json hook block; kept under scripts/hooks/ because that path is protected',
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
   'ledger_redact.py':

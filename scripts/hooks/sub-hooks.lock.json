@@ -1,0 +1,606 @@
+{
+  "format": "marveen-sub-hooks-lock/v1",
+  "layout": [
+    [
+      "PreCompact",
+      [
+        [
+          "precompact"
+        ]
+      ]
+    ],
+    [
+      "SessionStart",
+      [
+        [
+          "taskstate-replay"
+        ],
+        [
+          "clear-replay"
+        ]
+      ]
+    ],
+    [
+      "SessionEnd",
+      [
+        [
+          "clear-capture"
+        ]
+      ]
+    ],
+    [
+      "PostToolUse",
+      [
+        [
+          "skill-usage-capture"
+        ],
+        [
+          "tool-log-capture"
+        ],
+        [
+          "telegram_progress_reply_clear"
+        ],
+        [
+          "slack_progress_reply_clear"
+        ],
+        [
+          "memory-frontmatter-bash-gate"
+        ],
+        [
+          "browser-content-notice"
+        ],
+        [
+          "browser-content-notice-playwright"
+        ]
+      ]
+    ],
+    [
+      "PostToolUseFailure",
+      [
+        [
+          "tool-log-capture"
+        ],
+        [
+          "memory-frontmatter-bash-gate"
+        ]
+      ]
+    ],
+    [
+      "UserPromptSubmit",
+      [
+        [
+          "staleness-guard",
+          "taskstate-stub",
+          "provenance-gate",
+          "memory-lookup-nudge",
+          "channel-inbox-drain",
+          "voice-reply-directive",
+          "telegram-reply-directive",
+          "marveen-commands",
+          "telegram_progress",
+          "slack_progress",
+          "directive-verify"
+        ]
+      ]
+    ],
+    [
+      "PreToolUse",
+      [
+        [
+          "fleet-freeze-gate"
+        ],
+        [
+          "channel-image-resize"
+        ],
+        [
+          "memory-frontmatter-gate"
+        ],
+        [
+          "memory-frontmatter-bash-gate"
+        ],
+        [
+          "shell-rescan-guard"
+        ],
+        [
+          "token-argv-guard"
+        ],
+        [
+          "email-send-gate"
+        ],
+        [
+          "self-pace-gate"
+        ],
+        [
+          "db-write-gate"
+        ],
+        [
+          "kanban-write-gate"
+        ],
+        [
+          "digest-provenance-gate"
+        ],
+        [
+          "outgoing-copy-gate"
+        ],
+        [
+          "sender-role-gate"
+        ],
+        [
+          "child-claude-channel-guard"
+        ],
+        [
+          "destructive-gate"
+        ],
+        [
+          "credential-gate"
+        ],
+        [
+          "second-reviewer-gate"
+        ],
+        [
+          "egress-gate"
+        ],
+        [
+          "bash-egress-parser"
+        ]
+      ]
+    ],
+    [
+      "Stop",
+      [
+        [
+          "telegram_progress_clear",
+          "slack_progress_clear"
+        ],
+        [
+          "marveen-commands-stop"
+        ]
+      ]
+    ]
+  ],
+  "entries": {
+    "precompact": {
+      "matchers": [
+        "auto"
+      ],
+      "hook": {
+        "type": "agent",
+        "prompt": "${PRECOMPACT_PROMPT}",
+        "timeout": 180
+      }
+    },
+    "taskstate-replay": {
+      "matchers": [
+        "compact|resume|clear"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/taskstate-replay.py\" ] && exec python3 \"${ROOT}/scripts/hooks/taskstate-replay.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "clear-replay": {
+      "matchers": [
+        "clear"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/clear-replay.py\" ] && exec python3 \"${ROOT}/scripts/hooks/clear-replay.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "clear-capture": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/clear-capture.py\" ] && exec python3 \"${ROOT}/scripts/hooks/clear-capture.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "skill-usage-capture": {
+      "matchers": [
+        "Skill|Read"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/skill-usage-capture.py\" ] && exec python3 \"${ROOT}/scripts/hooks/skill-usage-capture.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "tool-log-capture": {
+      "matchers": [
+        "*"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/tool-log-capture.py\" ] && exec python3 \"${ROOT}/scripts/hooks/tool-log-capture.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "telegram_progress_reply_clear": {
+      "matchers": [
+        "telegram.*reply"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/telegram_progress_reply_clear.py\" ] && exec python3 \"${ROOT}/scripts/hooks/telegram_progress_reply_clear.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "slack_progress_reply_clear": {
+      "matchers": [
+        "slack.*reply"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/slack_progress_reply_clear.py\" ] && exec python3 \"${ROOT}/scripts/hooks/slack_progress_reply_clear.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "memory-frontmatter-bash-gate": {
+      "matchers": [
+        "Bash"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/memory-frontmatter-bash-gate.py\" ] && exec python3 \"${ROOT}/scripts/hooks/memory-frontmatter-bash-gate.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "browser-content-notice": {
+      "matchers": [
+        "WebSearch|WebFetch"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/browser-content-notice.py\" ] && exec python3 \"${ROOT}/scripts/hooks/browser-content-notice.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "browser-content-notice-playwright": {
+      "agentFlag": "browser",
+      "matchers": [
+        "mcp__playwright__browser_.*"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/browser-content-notice.py\" ] && exec python3 \"${ROOT}/scripts/hooks/browser-content-notice.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "staleness-guard": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/staleness-guard.py\" ] && exec python3 \"${ROOT}/scripts/hooks/staleness-guard.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "taskstate-stub": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/taskstate-stub.py\" ] && exec python3 \"${ROOT}/scripts/hooks/taskstate-stub.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "provenance-gate": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/provenance-gate.py\" ] && exec python3 \"${ROOT}/scripts/hooks/provenance-gate.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "memory-lookup-nudge": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/memory-lookup-nudge.py\" ] && exec python3 \"${ROOT}/scripts/hooks/memory-lookup-nudge.py\"; exit 0'",
+        "timeout": 3
+      }
+    },
+    "channel-inbox-drain": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/channel-inbox-drain.py\" ] && exec python3 \"${ROOT}/scripts/hooks/channel-inbox-drain.py\"; exit 0'",
+        "timeout": 5
+      }
+    },
+    "voice-reply-directive": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/voice-reply-directive.py\" ] && exec python3 \"${ROOT}/scripts/hooks/voice-reply-directive.py\"; exit 0'",
+        "timeout": 180
+      }
+    },
+    "telegram-reply-directive": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/telegram-reply-directive.py\" ] && exec python3 \"${ROOT}/scripts/hooks/telegram-reply-directive.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "marveen-commands": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/marveen-commands.py\" ] && exec python3 \"${ROOT}/scripts/hooks/marveen-commands.py\"; exit 0'",
+        "timeout": 45
+      }
+    },
+    "telegram_progress": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/telegram_progress.py\" ] && exec python3 \"${ROOT}/scripts/hooks/telegram_progress.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "slack_progress": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/slack_progress.py\" ] && exec python3 \"${ROOT}/scripts/hooks/slack_progress.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "directive-verify": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/directive-verify.py\" ] && exec python3 \"${ROOT}/scripts/hooks/directive-verify.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "fleet-freeze-gate": {
+      "matchers": [
+        "*"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c 'if [ -f \"${ROOT}/scripts/hooks/fleet-freeze-gate.sh\" ]; then if command -v timeout >/dev/null 2>&1; then timeout -k 1 3 bash \"${ROOT}/scripts/hooks/fleet-freeze-gate.sh\"; else bash \"${ROOT}/scripts/hooks/fleet-freeze-gate.sh\"; fi; rc=$?; else rc=missing; fi; [ \"$rc\" = 2 ] && exit 2; [ -e \"${ROOT}/store/fleet-freeze.json\" ] && { echo \"fleet-freeze-gate (fail-closed while frozen): the gate script is missing or failed (rc=$rc) and store/fleet-freeze.json exists, so every tool call is blocked. Fix: restore scripts/hooks/fleet-freeze-gate.sh (it must run and exit 0 or 2) or unfreeze from the dashboard.\" >&2; exit 2; }; [ \"$rc\" = missing ] && exit 0; exit \"$rc\"'",
+        "timeout": 5
+      }
+    },
+    "channel-image-resize": {
+      "matchers": [
+        "Read"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/channel-image-resize.sh\" ] && exec bash \"${ROOT}/scripts/hooks/channel-image-resize.sh\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "memory-frontmatter-gate": {
+      "matchers": [
+        "Write|Edit|MultiEdit"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/memory-frontmatter-gate.py\" ] && exec python3 \"${ROOT}/scripts/hooks/memory-frontmatter-gate.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "shell-rescan-guard": {
+      "matchers": [
+        "Bash"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/shell-rescan-guard.py\" ] && exec python3 \"${ROOT}/scripts/hooks/shell-rescan-guard.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "token-argv-guard": {
+      "matchers": [
+        "Bash"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/token-argv-guard.py\" ] && exec python3 \"${ROOT}/scripts/hooks/token-argv-guard.py\"; exit 0'",
+        "timeout": 10
+      }
+    },
+    "email-send-gate": {
+      "matchers": [
+        "Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/email-send-gate.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/email-send-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-send-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      },
+      "hookThreadReply": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/email-send-gate.mjs\" --allow-thread-reply; else \"${NODE_BIN}\" \"${ROOT}/scripts/email-send-gate.mjs\" --allow-thread-reply; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): email-send-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "self-pace-gate": {
+      "matchers": [
+        "ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/self-pace-gate.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/self-pace-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): self-pace-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "db-write-gate": {
+      "matchers": [
+        "Bash|Write|Edit|MultiEdit|NotebookEdit"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/db-write-gate.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/db-write-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): db-write-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "kanban-write-gate": {
+      "agentFlag": "heartbeat",
+      "matchers": [
+        "Bash"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/kanban-write-gate.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/kanban-write-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): kanban-write-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "digest-provenance-gate": {
+      "agentFlag": "heartbeat",
+      "matchers": [
+        "Bash"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/digest-provenance-gate.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/digest-provenance-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): digest-provenance-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "outgoing-copy-gate": {
+      "matchers": [
+        "mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 \"${ROOT}/scripts/hooks/outgoing-copy-gate.py\"; else python3 \"${ROOT}/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 15
+      }
+    },
+    "sender-role-gate": {
+      "agentFlag": "senderRolePolicy",
+      "matchers": [
+        "*"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"${ROOT}/scripts/hooks/sender-role-gate.py\" --policy ${SENDER_ROLE_POLICY}; else python3 \"${ROOT}/scripts/hooks/sender-role-gate.py\" --policy ${SENDER_ROLE_POLICY}; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): sender-role-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "child-claude-channel-guard": {
+      "matchers": [
+        "Bash"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/child-claude-channel-guard.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/child-claude-channel-guard.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): child-claude-channel-guard.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "destructive-gate": {
+      "profileFlag": "destructiveGate",
+      "matchers": [
+        "Bash|Read|Edit|Write|NotebookEdit"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"${ROOT}/scripts/hooks/destructive-gate.py\"; else python3 \"${ROOT}/scripts/hooks/destructive-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): destructive-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "credential-gate": {
+      "profileFlag": "credentialGate",
+      "matchers": [
+        "Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 \"${ROOT}/scripts/hooks/credential-gate.py\"; else python3 \"${ROOT}/scripts/hooks/credential-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): credential-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "second-reviewer-gate": {
+      "profileFlag": "secondReviewer",
+      "matchers": [
+        "Bash|mcp__.*"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "command -v python3 >/dev/null 2>&1 || { echo \"governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 178 python3 \"${ROOT}/scripts/hooks/second-reviewer-gate.py\"; else python3 \"${ROOT}/scripts/hooks/second-reviewer-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): second-reviewer-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 180
+      }
+    },
+    "egress-gate": {
+      "matchers": [
+        "WebFetch"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/egress-gate.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/egress-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): egress-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "bash-egress-parser": {
+      "matchers": [
+        "Bash"
+      ],
+      "hook": {
+        "type": "command",
+        "command": "test -x \"${NODE_BIN}\" || { echo \"governance-kapu: a hook interpretere nem talalhato (${NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/bash-egress-parser.mjs\"; else \"${NODE_BIN}\" \"${ROOT}/scripts/hooks/bash-egress-parser.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): bash-egress-parser.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
+        "timeout": 10
+      }
+    },
+    "telegram_progress_clear": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/telegram_progress_clear.py\" ] && exec python3 \"${ROOT}/scripts/hooks/telegram_progress_clear.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "slack_progress_clear": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/slack_progress_clear.py\" ] && exec python3 \"${ROOT}/scripts/hooks/slack_progress_clear.py\"; exit 0'",
+        "timeout": 15
+      }
+    },
+    "marveen-commands-stop": {
+      "matchers": [
+        null
+      ],
+      "hook": {
+        "type": "command",
+        "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/marveen-commands.py\" ] && exec python3 \"${ROOT}/scripts/hooks/marveen-commands.py\" --stop; exit 0'",
+        "timeout": 10
+      }
+    }
+  },
+  "sha256": "642f942af3468e4249d043c5ab27ee4d7bc7ab9ac1da0b69c9b8409ca72253be"
+}
