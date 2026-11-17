@@ -69,7 +69,10 @@ export function gateWakePrompt(): string {
     'Olvasd be oket, ellenorizd a kanban tabladat es a hot memoriaidat, es FOLYTASD onnan ahol abbamaradt. ' +
     'Ne kezdd elolrol ami mar kesz, es ne delegald ujra amit mar atadtal. ' +
     'Ha nem volt futo munkad, az is teljes erteku allapot -- olyankor ne talalj ki magadnak feladatot. ' +
-    'Rovid jelzest kuldj a sajat csatornadon, hogy friss kontextussal folytatod.'
+    // No channel notice (owner request, TG 3714, 2026-11-17): the channel can
+    // be the owner's or a principal's Telegram, and session meta must not go
+    // there. The transcript line is the trace instead.
+    'Zarasul egyetlen transzkript-sorban rogzitsd, hogy friss kontextussal folytatod -- a csatornadra session-meta NEM mehet ki.'
   )
 }
 

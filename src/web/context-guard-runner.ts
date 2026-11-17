@@ -631,14 +631,16 @@ export function resumePrompt(
     // the resume prompt itself -- it is the ONLY context the fresh session has.
     `KORLÁT: a futó prod fán (a repo fő checkoutján) NE válts ágat, NE commitolj és NE nyiss belőle PR-t ` +
     `-- ha repo-munka kell, használj worktree-t (git worktree add). ` +
-    // The main agent's channel is the OWNER's channel (Telegram), and session
-    // meta must never go there (standing owner preference; a 3am status
-    // notice measured on 2026-08-05, review msg 14197). Sub-agents' channel
-    // is the inter-agent queue, where the notice belongs. This prompt is the
-    // fresh session's ONLY rule set, so the split must live here.
-    (name === MAIN_AGENT_ID
-      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki.`
-      : `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`)
+    // Session meta must never go out on an agent's channel (standing owner
+    // preference; a 3am status notice measured on 2026-08-05, review msg
+    // 14197). This used to hold for the main agent only, on the assumption
+    // that a sub-agent's channel is the inter-agent queue -- but a sub-agent
+    // with its own Telegram bot talks to the owner's or its principal's
+    // Telegram, and the owner asked for no "continuing with fresh context"
+    // messages there either (TG 3714, 2026-11-17). So every agent gets the
+    // same closing line. This prompt is the fresh session's ONLY rule set,
+    // so the rule must live here.
+    `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra session-meta NEM mehet ki.`
   )
 }
 

@@ -90,19 +90,28 @@ describe('resumePrompt carries the restart-window re-read on every variant', () 
   }
 })
 
-// Review msg 14197: the main agent's channel is the OWNER's Telegram, and
-// session meta must never go there (standing owner preference; a 3am status
-// notice went out exactly this way on 2026-08-05). The closing line is
-// therefore agent-dependent, and this pins BOTH directions so a rewording
-// cannot re-point the main agent at the owner's channel.
-describe('resumePrompt closing line is agent-dependent', () => {
-  it('main agent (mocked MAIN_AGENT_ID=marveen): no channel notice, transcript line instead', () => {
-    const p = resumePrompt('marveen', '/x/HANDOFF.md', true)
-    expect(p).not.toContain('jelezz a csatornádon')
-    expect(p).toContain('transzkript')
-    expect(p).toContain(CONSTRAINT)
-  })
-  it('sub-agent: channel notice stays (their channel is the inter-agent queue)', () => {
-    expect(resumePrompt('samu', '/x/HANDOFF.md', true)).toContain('jelezz a csatornádon')
+// Review msg 14197 + owner request TG 3714 (2026-11-17): session meta must
+// never go out on an agent's channel. For the main agent that is the owner's
+// Telegram; for a sub-agent with its own bot it is the owner's or its
+// principal's Telegram, so the "continuing with fresh context" notice is gone
+// for EVERY agent and the transcript line replaces it. This pins both agent
+// kinds so a rewording cannot re-point anyone at a channel notice.
+describe('resumePrompt closing line: transcript line, no channel notice, for every agent', () => {
+  const RULE = 'Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra session-meta NEM mehet ki.'
+  for (const [label, name] of [['main agent (mocked MAIN_AGENT_ID=marveen)', 'marveen'], ['sub-agent', 'samu']] as const) {
+    it(`${label}: no channel notice, transcript line instead`, () => {
+      const p = resumePrompt(name, '/x/HANDOFF.md', true)
+      expect(p).not.toContain('jelezz a csatornádon')
+      expect(p).not.toMatch(/jelez[a-zé]* [^.]*csatorn/i)
+      expect(p).toContain(RULE)
+      expect(p).toContain(CONSTRAINT)
+      // The channel is mentioned EXACTLY once, inside the rule: a notice in
+      // any other wording ("Küldj üzenetet a csatornádra ...") adds a second
+      // mention and fails here, where the "jelez..." pattern would miss it.
+      expect(p.match(/csatorn/gi) ?? []).toHaveLength(1)
+    })
+  }
+  it('the closing line does not assume the channel is the owner\'s Telegram', () => {
+    expect(resumePrompt('samu', '/x/HANDOFF.md', true)).not.toContain('gazda Telegramjára')
   })
 })
