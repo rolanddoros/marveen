@@ -101,7 +101,11 @@ export function precompactPromptOf(hooks) {
 export function checkHooksBlock(actual, lock, sw) {
   const errors = []
   if (actual === null || typeof actual !== 'object' || Array.isArray(actual)) return ['hooks: missing or not an object']
-  if (JSON.stringify(actual).includes(EXTRA_HOOK_MARK)) errors.push('hooks: a group marked as an extra hook (this verifier accepts none)')
+  // Only a hook's command can carry the mark: a PreCompact prompt quoting it is not an extra hook (Ron 17563, suggestion 8).
+  // A shape this walk skips is still compared with the lock below.
+  const marked = Object.values(actual).some((groups) => Array.isArray(groups) && groups.some((g) => Array.isArray(g?.hooks)
+    && g.hooks.some((h) => typeof h?.command === 'string' && h.command.includes(EXTRA_HOOK_MARK))))
+  if (marked) errors.push('hooks: a group marked as an extra hook (this verifier accepts none)')
   const prompt = precompactPromptOf(actual)
   if (prompt === null) errors.push(`hooks.PreCompact: not exactly one agent hook with a prompt of 1 to ${PRECOMPACT_PROMPT_MAX} characters`)
   let expected
@@ -491,7 +495,16 @@ export function checkBeforeStart(agent, opts = {}) {
   const installDir = opts.installDir ?? INSTALL_ROOT
   const now = opts.now ?? new Date()
   const mode = gateWiringMode(readEnforceEnv(installDir), now)
-  const result = verifyGateWiring(agent, { ...opts, installDir })
+  let result
+  try {
+    result = verifyGateWiring(agent, { ...opts, installDir })
+  } catch (e) {
+    // An unexpected exception inside the checks is a finding, so the mode decides (Ron 17563, suggestion 6): report
+    // starts the agent with the line, enforce does not. A load failure, a crash, a timeout or exit 127 stays no start
+    // (D2-REL-2, the callers' side). Only the error class is named: a message could quote what was being read.
+    const kind = e instanceof Error && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : 'error'
+    result = { ok: false, errors: [`verifier: an internal error (${kind})`], alerts: [], hashes: { project: null, local: null, user: null, shared: null, sharedLocal: null } }
+  }
   let changed = true
   if (AGENT_NAME_RX.test(String(agent))) {
     try {

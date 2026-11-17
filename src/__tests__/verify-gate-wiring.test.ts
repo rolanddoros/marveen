@@ -77,6 +77,13 @@ describe('checkHooksBlock', () => {
     const b = written()
     b.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: `${EXTRA_HOOK_MARK} true` }] })
     expect(checkHooksBlock(b, loadLock(), sw)).toContain('hooks: a group marked as an extra hook (this verifier accepts none)')
+    const mid = written()
+    mid.Stop = [...(mid.Stop ?? []), { hooks: [{ type: 'command', command: `true ${EXTRA_HOOK_MARK} x` }] }]
+    expect(checkHooksBlock(mid, loadLock(), sw)).toContain('hooks: a group marked as an extra hook (this verifier accepts none)')
+  })
+  it('a PreCompact prompt that quotes the extra-hook mark is not an extra hook (Ron 17563, suggestion 8)', () => {
+    const b = written(HOOK_MANIFEST, { prompts: { precompact: `the docs say ${EXTRA_HOOK_MARK} marks an extra hook` } })
+    expect(checkHooksBlock(b, loadLock(), sw)).toEqual([])
   })
   it('the PreCompact prompt is the agent\'s own text; key order inside a hook does not matter', () => {
     const b = written(HOOK_MANIFEST, { prompts: { precompact: 'another prompt' } })

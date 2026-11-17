@@ -88,6 +88,8 @@ wiring (Fork C settings-protect, plan v2 + addendum 1, Ron 17402 / 17451 / 17505
   `send-telegram.sh`, `channel-net-wait.sh`), `templates/profiles/`, the settings writers in `src/web` and `dist/web`
   (`agent-process`, `agent-scaffold`, `hooks/`), the shared `~/.claude/settings(.local).json`;
 - `store/agent-settings-baseline.json`, `store/gate-wiring-state.json`, `scripts/agent-settings/`;
+- `scripts/statusline-ratelimit.sh`, the one command an isolated copy's `statusLine` may run (the CLI runs it outside
+  the PreToolUse gate chain);
 - the install root's `.env` (it holds `GATE_WIRING_ENFORCE`). An agent's own channel `.env` stays writable. Earlier
   text said the `.env` was protected by `destructive-gate.py`: that gate is not wired on this install; the protection
   is this gate's, from this change on.
@@ -150,7 +152,8 @@ node <install>/scripts/agent-settings/apply-local.mjs status
 **When an apply stops.** A stop before the consume changed nothing. A stop after it (exit 4) leaves some files written
 and the baseline unchanged, so those agents do not pass the verifier until `resume` or `rebaseline`. `resume` needs no
 new approval and trusts nothing in the state file: it reads the consumed approval back from the dashboard (consumed by
-this helper, at most 24 hours ago, `consumed_ref` equal to the hash), re-derives the batch, and seals the baseline only
+this helper, at most 24 hours ago, `consumed_ref` equal to the hash, and this helper's NEWEST `agent_settings` consume:
+no other approval it consumed at the same second or later), re-derives the batch, and seals the baseline only
 when every target file on disk is byte-equal to the approved content. Anything else: `rebaseline`, with an approval.
 
 **The isolation rows (K4).** The baseline names the isolated agents. Every other agent's file denies each isolated
@@ -191,6 +194,20 @@ compared for presence and size only, so the agent still steers its compaction pr
 copy is checked for shape only unless the dashboard passes the exact map; ENFORCE needs the plugin-id set in the
 baseline or the owner's acceptance of the residual. Whether a PreCompact agent hook's tool calls pass the PreToolUse
 gates was not measured (no `claude -p` session on this install).
+
+Also open (Ron 17563, suggestions 4 and 5):
+
+- an agent's `.claude/settings.json` `permissions.allow` / `permissions.deny` are checked for shape only, not compared
+  with the profile (the scaffold writes them every start; the watchdog path starts without the scaffold);
+- the helpers the launchers EXECUTE (not source) are not protected paths: `main-agent-isolated-config.mjs`,
+  `resolve-plan-token-env.mjs`, `main-agent-custom-provider.mjs`, and on the watchdog path `watchdog-replay.py` and
+  `notify.sh`. The protection boundary is the launchers, what they source, and the files listed above.
+
+**Not a residual any more (Ron 17563):** a key whose value is a command the CLI runs itself (`apiKeyHelper`,
+`awsAuthRefresh`, `awsCredentialExport`, `otelHeadersHelper`; the last three per Ron, not verified against CLI docs
+in this repo) is an error in the isolated copy and in the shared file; an unexpected exception inside the verifier's
+checks is a finding, so report starts the agent with the line and enforce does not (a load failure, crash, timeout or
+exit 127 stays no start).
 
 ## Vész-helyreállítás
 

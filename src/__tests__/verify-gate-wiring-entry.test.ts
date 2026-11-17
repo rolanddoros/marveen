@@ -294,6 +294,18 @@ describe('runCli: exit 0 starts, anything else does not', () => {
     expect(runCli(['--agent', 'stuart'], { installDir: inst, home, now, stderr: d.stderr })).toBe(1)
     expect(d.out.join('')).toContain('GATE_WIRING_ENFORCE=0 needs GATE_WIRING_ENFORCE_UNTIL')
   })
+  it('an internal exception in the checks is a finding: report starts with the line, enforce does not (Ron 17563, suggestion 6)', () => {
+    const throwingFs = { realpathSync: (p: string) => p, lstatSync: () => null }
+    expect(() => verify({ fs: throwingFs })).toThrow(TypeError)
+    const a = capture()
+    expect(runCli(['--agent', 'stuart'], { installDir: inst, home, now, stderr: a.stderr, fs: throwingFs })).toBe(0)
+    expect(a.out.join('')).toBe('[GATE-WIRING] stuart report NEW: verifier: an internal error (TypeError)\n')
+    writeFileSync(join(inst, '.env'), 'GATE_WIRING_ENFORCE=1\n')
+    const b = capture()
+    expect(runCli(['--agent', 'stuart'], { installDir: inst, home, now, stderr: b.stderr, fs: throwingFs })).toBe(1)
+    expect(b.out.join('')).toBe('[GATE-WIRING] stuart enforce NOT STARTED: verifier: an internal error (TypeError)\n')
+    expect(existsSync(join(inst, STATE_REL))).toBe(true)
+  })
   it('enforce with nothing wrong: exit 0, no output, the verified hashes recorded', () => {
     // the CLI expands the lock with the install as root (no root option on the watchdog path)
     writeJson(join(ad, '.claude', 'settings.json'), {

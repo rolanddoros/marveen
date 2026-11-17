@@ -35,13 +35,19 @@ let tuples: Record<string, Record<string, unknown>>
 let clock: number
 
 type Row = Record<string, unknown> & { id: string; status: string }
-function dashboard(opts: { consumeStatus?: number; onConsume?: () => void } = {}) {
+function dashboard(opts: { consumeStatus?: number; onConsume?: () => void; listStatus?: number } = {}) {
   const rows = new Map<string, Row>()
   const consumes: { id: string; body: Record<string, unknown> }[] = []
   const posts: Record<string, unknown>[] = []
   let n = 0
   const client = {
     get: async (path: string) => {
+      // GET /api/approvals?category=...&limit=...: a bare array, newest request first (routes/approvals.ts, db.ts listApprovals)
+      if (path.startsWith('/api/approvals?')) {
+        const q = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+        if ((opts.listStatus ?? 200) !== 200) return { status: opts.listStatus!, data: { error: 'x' } }
+        return { status: 200, data: [...rows.values()].filter((r) => !q.get('category') || r.category === q.get('category')).reverse().slice(0, Number(q.get('limit') ?? 100)).map((r) => ({ ...r })) }
+      }
       const row = rows.get(decodeURIComponent(path.split('/').pop() ?? ''))
       return row ? { status: 200, data: { ...row } } : { status: 404, data: null }
     },
@@ -101,6 +107,8 @@ async function enrolAll(d: Dash) {
   const id = [...d.rows.keys()].pop()!
   approve(d, id)
   expect(await apply(ctxOf(d), { approvalId: id })).toBe(EXIT.OK)
+  // the next consume lands a second later: resume tells consumes apart by consumed_at (seconds)
+  clock += 1000
   return id
 }
 
@@ -451,6 +459,34 @@ describe('a partial apply, status and resume (V2-A1-REL-2)', () => {
     Object.assign(row, { consumed_at: Math.floor(clock / 1000), consumed_ref: 'x' })
     expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
     expect(lines.pop()).toContain('consume ref')
+  })
+  it('resume seals only this helper\'s NEWEST consume (Ron 17563, suggestion 7)', async () => {
+    const opts: { consumeStatus: number; listStatus?: number } = { consumeStatus: 200 }
+    const d = dashboard(opts)
+    const { id } = await partial(d)
+    opts.consumeStatus = 409
+    clock += 600_000 // the enrolment's own consume is ten minutes older than everything below
+    expect(await apply(ctxOf(d), { approvalId: id })).toBe(EXIT.STOP)
+    const row = d.rows.get(id)!
+    const t = Math.floor(clock / 1000)
+    Object.assign(row, { consumed_at: t - 60, consumed_by: CONSUMER, consumed_ref: row.content_hash })
+    // the older approval the state file names: a newer consume of this helper exists -> no seal
+    d.rows.set('appr-newer', { id: 'appr-newer', category: CATEGORY, status: 'approved', consumed_by: CONSUMER, consumed_at: t - 30, consumed_ref: 'h' })
+    expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
+    expect(lines.pop()).toContain('newer (or equally new) approval')
+    // equally new is ambiguous: no seal either
+    Object.assign(d.rows.get('appr-newer')!, { consumed_at: t - 60 })
+    expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
+    expect(lines.pop()).toContain('newer (or equally new) approval')
+    // a newer consume by ANOTHER consumer, or an older one of this helper, does not block: the next check speaks
+    Object.assign(d.rows.get('appr-newer')!, { consumed_by: 'fork-deploy', consumed_at: t })
+    d.rows.set('appr-older', { id: 'appr-older', category: CATEGORY, status: 'approved', consumed_by: CONSUMER, consumed_at: t - 600, consumed_ref: 'h' })
+    expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
+    expect(lines.pop()).toContain('is not the approved content')
+    // the list cannot be read: no seal
+    opts.listStatus = 500
+    expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
+    expect(lines.pop()).toContain('did not list')
   })
 })
 

@@ -124,6 +124,9 @@ export const PROTECTED_INSTALL_PATHS = [
   { rel: 'scripts/lib/channel-net-wait.sh' },
   { rel: 'store/agent-settings-baseline.json' },
   { rel: 'store/gate-wiring-state.json' },
+  // The one command an isolated copy's statusLine may run (verify-gate-wiring.mjs statusLineCommandsFor): the CLI runs
+  // it outside the PreToolUse gate chain, so its text is protected like a hook script (Ron 17563, suggestion 3).
+  { rel: 'scripts/statusline-ratelimit.sh' },
   // personas/ (Ron 17451's optional add-on) is NOT listed: a one-segment protected directory makes every bare `*` word
   // an exact hit (`sqlite3 "SELECT * ..."`, `count(*)` refused), and the baseline tuple already ignores the persona
   // frontmatter fallback (the verifier never reads it).
@@ -203,7 +206,7 @@ const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'h
   'fleet-venv-prefix.sh', 'main-extra-plugins-settings.sh', 'lib', 'owner-chat.sh', 'send-telegram.sh', 'channel-net-wait.sh',
   'agent-settings-baseline.json', 'gate-wiring-state.json', 'templates', 'profiles', 'src', 'dist', 'web',
   'agent-process.ts', 'agent-scaffold.ts', 'agent-process.js', 'agent-scaffold.js', 'sub-hooks.lock.json', '.env',
-  'agent-settings', 'apply-local.mjs'])
+  'agent-settings', 'apply-local.mjs', 'statusline-ratelimit.sh'])
 const GLOB_CHAR_RX = /[*?[{]/
 const UNRESOLVED_RX = /\$\{[^}]*\}|\$\(|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]|[`\u0000\u0003]/
 
@@ -918,7 +921,7 @@ export const INSTALL_FILE_GATE_MSG =
   'scripts/deploy/, scripts/write-main-config-root.sh, store/main-agent-config-root.json, scripts/agent-settings/, ' +
   'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json es store/.owner-slack-target fajljat, ' +
   'a launchereket (scripts/watchdog.sh, stuck-modal-guard.sh, channels.sh, channel-watchdog.sh es amit forrasolnak), ' +
-  'store/agent-settings-baseline.json, store/gate-wiring-state.json, templates/profiles/, ' +
+  'store/agent-settings-baseline.json, store/gate-wiring-state.json, scripts/statusline-ratelimit.sh, templates/profiles/, ' +
   'src/web es dist/web agent-process, agent-scaffold, hooks/, a kozos ~/.claude/settings(.local).json-t, ' +
   'a telepites gyokerenek .env fajljat (egy agens sajat csatorna-.env-je irhato), ' +
   'es minden agents/<nev>/ alatt a .claude/settings(.local).json-t, a .claude-config/settings(.local).json-t, ' +

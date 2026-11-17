@@ -142,10 +142,19 @@ describe('refused: the other new install paths', () => {
     'scripts/watchdog.sh', 'scripts/lib/owner-chat.sh', 'scripts/hooks/sub-hooks.lock.json', 'store/agent-settings-baseline.json',
     'store/gate-wiring-state.json', 'templates/profiles/default.json', 'templates/profiles/new.json',
     'src/web/agent-process.ts', 'src/web/hooks/manifest.ts', 'dist/web/agent-scaffold.js', 'dist/web/hooks/manifest.js',
+    'scripts/statusline-ratelimit.sh',
   ])('Write %s', (rel) => { expect(file('Write', rel)).toEqual(DENY_FILE) })
   it('a bare * glob word is no hit (no one-segment protected directory), so sqlite3 SELECT * still passes', () => {
     expect(bash('sqlite3 store/x.db "SELECT * FROM t; SELECT count(*) FROM t"')).toEqual(ALLOW)
     expect(file('Write', 'personas/alpha.md')).toEqual(ALLOW)
+  })
+  it('the statusLine script (Ron 17563, suggestion 3): refused by Bash spellings too, a sibling script is not', () => {
+    touch('scripts/statusline-ratelimit.sh', '#!/bin/bash\n')
+    expect(bash('echo x > scripts/statusline-ratelimit.sh')).toMatchObject({ deny: true })
+    expect(bash('cp /x/y @ROOT@/scripts/statusline-ratelimit.sh')).toMatchObject({ deny: true })
+    expect(bash('sed -i s/a/b/ statusline-ratelimit.sh', join(root, 'scripts'))).toMatchObject({ deny: true })
+    expect(file('Write', 'scripts/other-statusline.sh')).toEqual(ALLOW)
+    expect(bash('cat scripts/statusline-ratelimit.sh')).toEqual(ALLOW)
   })
   it('the rest of src/ and dist/ is not protected (stated residual)', () => {
     expect(file('Write', 'src/web/other.ts')).toEqual(ALLOW)

@@ -114,6 +114,14 @@ describe('parseLock and expectedHooks refuse what they cannot trust', () => {
       expect(() => fromLock(s, over), JSON.stringify(over)).toThrow()
     }
   })
+  it('a PreCompact prompt with $$, $&, $` or $\' lands verbatim, equal to renderHooks (Ron 17563, blocker 1)', () => {
+    const s = [...combinations()][0]
+    for (const prompt of ['costs $$5', 'a $& b', 'a $` b', 'a $\' b', '$$ $& $` $\' ${PRECOMPACT_PROMPT}']) {
+      const block = fromLock(s, { precompact: prompt }) as Block
+      expect(block.PreCompact?.[0]?.hooks?.[0]?.prompt, prompt).toBe(prompt)
+      expect(json(block), prompt).toBe(json(renderHooks(HOOK_MANIFEST, 'sub', renderCtx(s, { prompts: { precompact: prompt } }))))
+    }
+  })
 })
 
 describe('synthetic locks: the slot rules the real lock may not exercise', () => {

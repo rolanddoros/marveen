@@ -238,7 +238,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
       'scripts/watchdog.sh', 'scripts/stuck-modal-guard.sh', 'scripts/channels.sh', 'scripts/channel-watchdog.sh',
       'scripts/fleet-venv-prefix.sh', 'scripts/main-extra-plugins-settings.sh', 'scripts/lib/owner-chat.sh',
       'scripts/lib/send-telegram.sh', 'scripts/lib/channel-net-wait.sh', 'store/agent-settings-baseline.json',
-      'store/gate-wiring-state.json', 'templates/profiles', 'src/web/agent-process.ts',
+      'store/gate-wiring-state.json', 'scripts/statusline-ratelimit.sh', 'templates/profiles', 'src/web/agent-process.ts',
       'src/web/agent-scaffold.ts', 'src/web/hooks', 'dist/web/agent-process.js', 'dist/web/agent-scaffold.js',
       'dist/web/hooks', '~/.claude/settings.json', '~/.claude/settings.local.json',
       // Ron 17505 1a: the install-root .env (GATE_WIRING_ENFORCE lives there)

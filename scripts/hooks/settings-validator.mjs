@@ -13,7 +13,8 @@
 // the CLI, so an unknown KEY NAME there is only an ALERT until Roland decides otherwise (D2-REL-1). The VALUE rules
 // stay fail-closed in every kind (K3 ii): no `env` name but GH_CONFIG_DIR in agent-local, no hooks and no hook
 // switch outside agent-project, no permissions in the shared file and in the isolated copy only the strict-profile
-// pin, statusLine only as one fixed command.
+// pin, statusLine only as one fixed command, and no key whose value is a command the CLI runs outside the PreToolUse
+// gate chain (apiKeyHelper and its kin, HELPER_COMMAND_KEYS) in either user kind.
 //
 // This is part of a text brake, NOT an OS boundary (docs/db-write-gate.md): the agent's Unix user can write these
 // files with a script. The point is that a hook-disabling or env-injecting edit never reaches a start unnoticed.
@@ -31,13 +32,21 @@ export const ENV_NAMES = Object.freeze(['GH_CONFIG_DIR'])
 /** Keys that switch hooks off or narrow them to another source: never outside the scaffold's own `hooks`. */
 export const HOOK_SWITCH_KEYS = Object.freeze(['hooks', 'disableAllHooks', 'allowManagedHooksOnly'])
 
+/**
+ * Keys whose value is a command the CLI runs itself, outside the PreToolUse gate chain (Ron 17563, blocker 2).
+ * An error in both user kinds, never only an alert. apiKeyHelper: the CLI's documented key-helper command. The other
+ * three are the same class per Ron's CLI knowledge, NOT verified against CLI docs in this repo. Live, measured
+ * 2026-11-17 (key names only): none of them in the 13 isolated copies or the shared file.
+ */
+export const HELPER_COMMAND_KEYS = Object.freeze(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport', 'otelHeadersHelper'])
+
 const STRICT_KEYS = {
   'agent-project': ['hooks', 'permissions', 'enabledPlugins', 'effortLevel', 'claudeMdExcludes'],
   'agent-local': ['env', 'claudeMdExcludes', 'permissions'],
 }
 /** Keys the user kinds are known to carry (addendum 1 D2-REL-1 inventory); any other key name is an alert there. */
 const KNOWN_USER_KEYS = {
-  'agent-user': ['enabledPlugins', 'extraKnownMarketplaces', 'skipDangerousModePermissionPrompt', 'statusLine', 'model', 'apiKeyHelper', 'allowedChannelPlugins', 'permissions'],
+  'agent-user': ['enabledPlugins', 'extraKnownMarketplaces', 'skipDangerousModePermissionPrompt', 'statusLine', 'model', 'allowedChannelPlugins', 'permissions'],
   'shared-user': ['enabledPlugins', 'extraKnownMarketplaces', 'skipDangerousModePermissionPrompt', 'model'],
 }
 const PROJECT_PERMISSION_KEYS = ['allow', 'deny', 'additionalDirectories', 'defaultMode']
@@ -120,7 +129,7 @@ export function validateSettings(kind, obj, ctx = {}) {
   for (const key of Object.keys(obj)) {
     if (strict) {
       if (!strict.includes(key)) errors.push(`${key}: not allowed in ${kind}`)
-    } else if (HOOK_SWITCH_KEYS.includes(key) || key === 'env' || (key === 'permissions' && kind === 'shared-user')) {
+    } else if (HOOK_SWITCH_KEYS.includes(key) || HELPER_COMMAND_KEYS.includes(key) || key === 'env' || (key === 'permissions' && kind === 'shared-user')) {
       errors.push(`${key}: not allowed in ${kind}`)
     } else if (key === 'statusLine' && kind === 'shared-user') {
       errors.push(`${key}: not allowed in ${kind}`)

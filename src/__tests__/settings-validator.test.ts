@@ -2,7 +2,7 @@
 // and environment (Fork C settings-protect plan v2 point 1, addendum 1 D2-REL-1, Ron 17402 K3).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { validateSettings, canonicalJson, KINDS, EFFORT_LEVELS, ENV_NAMES, HOOK_SWITCH_KEYS } from '../../scripts/hooks/settings-validator.mjs'
+import { validateSettings, canonicalJson, KINDS, EFFORT_LEVELS, ENV_NAMES, HOOK_SWITCH_KEYS, HELPER_COMMAND_KEYS } from '../../scripts/hooks/settings-validator.mjs'
 import { EFFORT_LEVELS as MAIN_MODEL_EFFORT_LEVELS } from '../web/main-model.js'
 import { enforceStrictPermissionMode } from '../web/agent-scaffold.js'
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync } from 'node:fs'
@@ -123,6 +123,12 @@ describe('user kinds: an unknown key name alerts, the value rules stay fail-clos
         expect(v(kind, { ...USER, [key]: key === 'disableAllHooks' ? true : {} }).errors).toEqual([`${key}: not allowed in ${kind}`])
       })
     }
+    it(`${kind}: a helper-command key (apiKeyHelper and kin) is an error, not an alert (Ron 17563, blocker 2)`, () => {
+      expect([...HELPER_COMMAND_KEYS]).toEqual(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport', 'otelHeadersHelper'])
+      for (const key of HELPER_COMMAND_KEYS) {
+        expect(v(kind, { ...USER, [key]: '/bin/true' }), key).toEqual({ ok: false, errors: [`${key}: not allowed in ${kind}`], alerts: [] })
+      }
+    })
   }
   it('agent-user permissions: exactly the strict-profile pin the provisioning writes, nothing else', () => {
     // agent-process.ts provisionIsolatedConfigDir -> enforceStrictPermissionMode (profile developer-junior)

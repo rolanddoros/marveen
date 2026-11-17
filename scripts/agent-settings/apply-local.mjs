@@ -43,6 +43,8 @@ export const CATEGORY = 'agent_settings'
 /** SEC-5: the deploy helper's switch, one value for both categories (approvals.ts pins it equal). */
 export { CODE_DEPLOY_OWNER_CHANNEL_ONLY }
 export const CONSUMER = 'agent-settings-apply'
+/** resume lists at most this many agent_settings approvals (the dashboard's own cap) to prove its consume is the newest. */
+export const RESUME_LIST_LIMIT = 500
 export const MAX_AGE_SECONDS = 1800
 export const REQUEST_TIMEOUT_SECONDS = 3600
 /** resume seals only a consume this recent (seconds); an older stop needs a rebaseline with a new approval. */
@@ -744,9 +746,9 @@ export async function apply(ctx, { approvalId }) {
 
 /**
  * resume: after a stop between the consume and the baseline. The state file is not protected, so nothing in it is
- * trusted: the consumed approval is read back from the dashboard, the batch and the disk are re-derived, and the
- * baseline is sealed only when they give the approval's content_hash AND every target file on disk is byte-equal
- * to the approved content. Anything else: rebaseline, with a new approval.
+ * trusted: the consumed approval is read back from the dashboard (and must be this helper's newest consume), the
+ * batch and the disk are re-derived, and the baseline is sealed only when they give the approval's content_hash AND
+ * every target file on disk is byte-equal to the approved content. Anything else: rebaseline, with a new approval.
  */
 export async function resume(ctx) {
   const P = paths(ctx.root)
@@ -782,6 +784,13 @@ export async function resume(ctx) {
     // Only this helper's own consume, recently: an old consumed approval is no way back to an old baseline.
     if (row.consumed_by !== CONSUMER) throw new Stop(`the approval was consumed by ${JSON.stringify(row.consumed_by)}, not by this helper`)
     if (!Number.isFinite(row.consumed_at) || Math.floor(ctx.now() / 1000) - row.consumed_at > RESUME_MAX_AGE_SECONDS) throw new Stop(`the consume is older than ${RESUME_MAX_AGE_SECONDS} s: rebaseline needed`)
+    // ...and this helper's NEWEST consume: the state file is not protected, so an older approval it names (still within
+    // the window) must not re-seal an older baseline over a newer one (Ron 17563, suggestion 7).
+    const listed = await ctx.client.get(`/api/approvals?category=${encodeURIComponent(CATEGORY)}&limit=${RESUME_LIST_LIMIT}`)
+    if (listed.status !== 200 || !Array.isArray(listed.data)) throw new Stop(`the dashboard did not list the ${CATEGORY} approvals (HTTP ${listed.status})`)
+    if (listed.data.length >= RESUME_LIST_LIMIT) throw new Stop(`${RESUME_LIST_LIMIT} or more ${CATEGORY} approvals: the newest consume cannot be proven, rebaseline needed`)
+    const newer = listed.data.filter((r) => isPlainObject(r) && r.id !== row.id && r.consumed_by === CONSUMER && Number.isFinite(r.consumed_at) && r.consumed_at >= row.consumed_at)
+    if (newer.length > 0) throw new Stop('this helper consumed a newer (or equally new) approval since: rebaseline needed')
     const p = parsePayload(row.action_payload)
     const c = await collect(ctx, specOf(p))
     const fails = approvalFailures(row, { category: CATEGORY, mainAgentId: main, contentHash: c.contentHash, requireOwnerChannel: ctx.ownerChannelOnly ?? CODE_DEPLOY_OWNER_CHANNEL_ONLY })

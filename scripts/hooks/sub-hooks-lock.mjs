@@ -82,7 +82,8 @@ function active(e, sw) {
 }
 
 function expand(v, map) {
-  if (typeof v === 'string') return map.reduce((s, [from, to]) => s.replaceAll(from, to), v)
+  // A replacer FUNCTION: a string `to` would read $$, $&, $` and $' as replacement patterns (Ron 17563, blocker 1).
+  if (typeof v === 'string') return map.reduce((s, [from, to]) => s.replaceAll(from, () => to), v)
   if (Array.isArray(v)) return v.map((x) => expand(x, map))
   if (isPlainObject(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, expand(x, map)]))
   return v
