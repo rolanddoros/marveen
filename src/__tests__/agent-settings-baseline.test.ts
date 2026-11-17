@@ -4,9 +4,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, realpathSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 // @ts-expect-error -- plain .mjs hook module, no types
 import { parseBaseline, tupleErrors, senderRolePolicyFromGates, policySha256, nodeBinErrors, BASELINE_FORMAT, TUPLE_KEYS, HEARTBEAT_AGENT_ID, UNREADABLE_GATES_POLICY, TMP_ROOT_PREFIXES } from '../../scripts/hooks/agent-settings-baseline.mjs'
+// @ts-expect-error -- plain .mjs hook module, no types
+import { localRecord, localDifferences, agentDirRows, ownerCredentialRows, isolationObligations, isolationViolations } from '../../scripts/hooks/agent-settings-baseline.mjs'
 import { HEARTBEAT_AGENT_ID as SRC_HEARTBEAT, senderRolePolicyOf } from '../web/hooks/sub-inputs.js'
 import { UNREADABLE_GATES_POLICY as SRC_UNREADABLE } from '../web/sender-role-gate-store.js'
 import { TMP_ROOT_PREFIXES as SRC_TMP } from '../web/tmp-root-prefixes.js'
@@ -30,10 +33,17 @@ describe('copies of src constants', () => {
 
 describe('parseBaseline', () => {
   it('accepts the format, refuses anything else without echoing it', () => {
-    expect(parseBaseline(JSON.stringify({ format: BASELINE_FORMAT, agents: {} })).agents).toEqual({})
+    expect(parseBaseline(JSON.stringify({ format: BASELINE_FORMAT, isolated: [], agents: {} })).agents).toEqual({})
     expect(() => parseBaseline('{')).toThrow('baseline: not JSON')
-    expect(() => parseBaseline(JSON.stringify({ format: 'x', agents: {} }))).toThrow('baseline: unknown format')
-    expect(() => parseBaseline(JSON.stringify({ format: BASELINE_FORMAT, agents: [] }))).toThrow('baseline: unknown format')
+    expect(() => parseBaseline(JSON.stringify({ format: 'x', isolated: [], agents: {} }))).toThrow('baseline: unknown format')
+    expect(() => parseBaseline(JSON.stringify({ format: BASELINE_FORMAT, isolated: [], agents: [] }))).toThrow('baseline: unknown format')
+  })
+  it('K4: a missing or malformed isolated list is refused, never read as "nobody is isolated"', () => {
+    expect(() => parseBaseline(JSON.stringify({ format: BASELINE_FORMAT, agents: {} }))).toThrow('baseline: no valid isolated list')
+    for (const isolated of [{}, 'sally', [1], ['../x'], [''], null]) {
+      expect(() => parseBaseline(JSON.stringify({ format: BASELINE_FORMAT, isolated, agents: {} }))).toThrow('baseline: no valid isolated list')
+    }
+    expect(parseBaseline(JSON.stringify({ format: BASELINE_FORMAT, isolated: ['sally'], agents: {} })).isolated).toEqual(['sally'])
   })
 })
 
@@ -111,5 +121,64 @@ describe('nodeBinErrors (N2-1)', () => {
     expect(nodeBinErrors('/usr/local/bin/node', '/srv/inst', fakeFs({ ...okTree, '/usr/local/bin/node': 0o100775 }))).toEqual(['nodeBin: the file is group- or world-writable'])
     expect(nodeBinErrors('/usr/local/bin/node', '/srv/inst', fakeFs({ ...okTree, '/usr/local': 0o40777 }))).toEqual(['nodeBin: a directory on its path is group- or world-writable'])
     expect(nodeBinErrors('/usr/local/bin/node', '/srv/inst', fakeFs({ ...okTree, '/': 0o41777 }))).toEqual(['nodeBin: a directory on its path is group- or world-writable'])
+  })
+})
+
+describe('localRecord / localDifferences (K3 (e): name the change, never a value)', () => {
+  const text = `${JSON.stringify({ env: { GH_CONFIG_DIR: '/srv/i/agents/a/.config/gh' }, claudeMdExcludes: ['x'], permissions: { deny: ['Read(//srv/i/agents/sally/**)', 'Bash(*agents/sally*)'] } })}\n`
+  it('records the hash of the exact bytes, the deny rows, the top keys and env key NAMES only', () => {
+    const r = localRecord(text)
+    expect(r.sha256).toBe(createHash('sha256').update(text).digest('hex'))
+    expect(r).toEqual({ sha256: r.sha256, denyRows: ['Read(//srv/i/agents/sally/**)', 'Bash(*agents/sally*)'], envKeys: ['GH_CONFIG_DIR'], topKeys: ['claudeMdExcludes', 'env', 'permissions'] })
+    expect(JSON.stringify(r)).not.toContain('.config/gh')
+    expect(localRecord(null)).toEqual({ sha256: null })
+    expect(localRecord('not json')).toMatchObject({ denyRows: [], envKeys: [], topKeys: [] })
+  })
+  it('a removed deny row comes first, then added rows, keys and env key names; a value change names nothing', () => {
+    const rec = localRecord(text)
+    const now = { claudeMdExcludes: ['x'], permissions: { deny: ['Bash(*agents/sally*)', 'Read(//etc/**)'] }, statusLine: {} }
+    expect(localDifferences(rec, now)).toEqual([
+      'deny row removed: Read(//srv/i/agents/sally/**)',
+      'deny row added: Read(//etc/**)',
+      'key added: statusLine',
+      'key removed: env',
+      'env key removed: GH_CONFIG_DIR',
+    ])
+    expect(localDifferences(rec, { ...JSON.parse(text), env: { GH_CONFIG_DIR: '/elsewhere' } })).toEqual([])
+    expect(localDifferences({ sha256: rec.sha256 }, now)).toEqual([])
+  })
+})
+
+describe('K4 isolation rows', () => {
+  const AGENTS = ['andras', 'bella', 'dennis', 'hanry', 'kevin', 'lilla', 'margot', 'mily', 'neo', 'ron', 'sally', 'stuart', 'tom']
+  const set = { installDir: '/root/marveen', home: '/root', agents: AGENTS, isolated: ['sally'] }
+  it("rebuilds the isolated agent's 76 measured rows exactly (Johnny 17513: count + sha256 of the sorted rows)", () => {
+    const rows = isolationObligations('sally', set).map((o: { row: string }) => o.row)
+    expect(rows).toHaveLength(76)
+    expect(new Set(rows).size).toBe(76)
+    const sorted = [...rows].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    expect(createHash('sha256').update(`${sorted.join('\n')}\n`).digest('hex')).toBe('97498d942b7205ea537e13ae8472c8915bd3b824e12b3511d4f1124f33235706')
+  })
+  it("a not-isolated agent owes exactly the four rows measured in kevin's file (Kevin 17512)", () => {
+    expect(isolationObligations('kevin', set).map((o: { row: string }) => o.row)).toEqual([
+      'Read(//root/marveen/agents/sally/**)', 'Edit(//root/marveen/agents/sally/**)', 'Write(//root/marveen/agents/sally/**)', 'Bash(*agents/sally*)',
+    ])
+  })
+  it('the rows follow the install dir and home, not a hardcoded /root/marveen', () => {
+    expect(agentDirRows('/srv/inst/', 'x')).toEqual(['Read(//srv/inst/agents/x/**)', 'Edit(//srv/inst/agents/x/**)', 'Write(//srv/inst/agents/x/**)', 'Bash(*agents/x*)'])
+    const cred = ownerCredentialRows('/srv/inst', '/home/o')
+    expect(cred).toContain('Read(//home/o/.gmail-mcp/**)')
+    expect(cred).toContain('Bash(*/srv/inst/store/browser*)')
+    expect(cred.join('\n')).not.toContain('/root')
+  })
+  it('violations name the agent, the row and why; nobody isolated means nothing owed', () => {
+    expect(isolationViolations('kevin', ['Read(//root/marveen/agents/sally/**)'], set)).toEqual([
+      'kevin: missing deny row Edit(//root/marveen/agents/sally/**) (sally is isolated)',
+      'kevin: missing deny row Write(//root/marveen/agents/sally/**) (sally is isolated)',
+      'kevin: missing deny row Bash(*agents/sally*) (sally is isolated)',
+    ])
+    expect(isolationViolations('sally', [], set)).toHaveLength(76)
+    expect(isolationViolations('kevin', [], { ...set, isolated: [] })).toEqual([])
+    expect(isolationViolations('kevin', 'not a list', set)).toHaveLength(4)
   })
 })

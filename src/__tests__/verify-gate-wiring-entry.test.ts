@@ -15,7 +15,7 @@ import { parseEnvLikeDashboard, ENFORCE_KEYS } from '../../scripts/hooks/verify-
 // @ts-expect-error -- plain .mjs hook module, no types
 import { verifyGateWiring, gateWiringMode, readEnforceEnv, recordState, writeFileAtomic, runCli, statusLineCommandsFor, INSTALL_ROOT, STATE_REL, ENFORCE_UNTIL_MAX_DAYS } from '../../scripts/hooks/verify-gate-wiring.mjs'
 // @ts-expect-error -- plain .mjs hook module, no types
-import { policySha256, senderRolePolicyFromGates } from '../../scripts/hooks/agent-settings-baseline.mjs'
+import { policySha256, senderRolePolicyFromGates, localRecord, agentDirRows } from '../../scripts/hooks/agent-settings-baseline.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const ROOT = '/srv/marveen-inst'
@@ -36,7 +36,7 @@ let home: string
 let ad: string
 const LOCAL = `${JSON.stringify({ claudeMdExcludes: ['x'], permissions: { deny: ['Read(//root/x/**)'] } })}\n`
 const writeJson = (p: string, v: unknown) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, typeof v === 'string' ? v : JSON.stringify(v)) }
-const baseline = (agents: Record<string, unknown>) => writeJson(join(inst, 'store', 'agent-settings-baseline.json'), { format: 'marveen-agent-settings-baseline/v1', agents })
+const baseline = (agents: Record<string, unknown>) => writeJson(join(inst, 'store', 'agent-settings-baseline.json'), { format: 'marveen-agent-settings-baseline/v1', isolated: [], agents })
 const enrol = (over: Record<string, unknown> = {}, local: string | null = sha(LOCAL)) => baseline({ stuart: { switches: tuple(over), local: { sha256: local } } })
 const verify = (o: Record<string, unknown> = {}) => verifyGateWiring('stuart', { installDir: inst, home, root: ROOT, fs: nodeFs, ...o })
 
@@ -89,6 +89,35 @@ describe('verifyGateWiring on a fake install', () => {
     expect(verify().errors).toEqual(['.claude/settings.local.json: differs from the baseline (rebaseline needed)'])
     baseline({ stuart: { switches: tuple() } })
     expect(verify().errors).toContain('baseline: no settings.local.json record')
+  })
+  it('K3 (e): with the full record the message names the change, a removed deny row first, never a value', () => {
+    const before = `${JSON.stringify({ claudeMdExcludes: ['x'], env: { GH_CONFIG_DIR: join(ad, '.config', 'gh') }, permissions: { deny: ['Read(//root/x/**)', 'Bash(*agents/sally*)'] } })}\n`
+    mkdirSync(join(ad, '.config', 'gh', 'other'), { recursive: true })
+    writeJson(join(ad, '.claude', 'settings.local.json'), before)
+    baseline({ stuart: { switches: tuple(), local: localRecord(before) } })
+    expect(verify().ok).toBe(true)
+    writeJson(join(ad, '.claude', 'settings.local.json'), `${JSON.stringify({ claudeMdExcludes: ['x'], env: { GH_CONFIG_DIR: join(ad, '.config', 'gh', 'other') }, permissions: { deny: ['Read(//root/x/**)'] } })}\n`)
+    const errs = verify().errors
+    expect(errs).toEqual(['.claude/settings.local.json: differs from the baseline (rebaseline needed): deny row removed: Bash(*agents/sally*)'])
+    expect(errs.join('\n')).not.toContain('other')
+  })
+  it('K4 (g): an agent whose file lacks an isolated agent\'s rows does not pass, even when the hash matches', () => {
+    const write = (o: unknown) => { const t = `${JSON.stringify(o)}\n`; writeJson(join(ad, '.claude', 'settings.local.json'), t); return t }
+    const ok = write({ permissions: { deny: agentDirRows(inst, 'sally') } })
+    writeJson(join(inst, 'store', 'agent-settings-baseline.json'), { format: 'marveen-agent-settings-baseline/v1', isolated: ['sally'], agents: { stuart: { switches: tuple(), local: localRecord(ok) } } })
+    expect(verify().ok).toBe(true)
+    const forgot = write({ permissions: { deny: agentDirRows(inst, 'sally').slice(0, 3) } })
+    writeJson(join(inst, 'store', 'agent-settings-baseline.json'), { format: 'marveen-agent-settings-baseline/v1', isolated: ['sally'], agents: { stuart: { switches: tuple(), local: localRecord(forgot) } } })
+    expect(verify().errors).toEqual(['isolation: stuart: missing deny row Bash(*agents/sally*) (sally is isolated)'])
+    // the isolated agent itself owes every other baseline agent's rows and the owner credential rows
+    writeJson(join(inst, 'store', 'agent-settings-baseline.json'), { format: 'marveen-agent-settings-baseline/v1', isolated: ['stuart'], agents: { stuart: { switches: tuple(), local: localRecord(forgot) }, kevin: {} } })
+    const e = verify().errors
+    expect(e).toHaveLength(1)
+    expect(e[0]).toMatch(/^isolation: stuart: missing deny row Read\(\/\/.*\/agents\/kevin\/\*\*\) \(stuart is isolated\);/)
+    expect(e[0]).toMatch(/; and \d+ more$/)
+    // a baseline without the list is refused, not read as "nobody is isolated"
+    writeJson(join(inst, 'store', 'agent-settings-baseline.json'), { format: 'marveen-agent-settings-baseline/v1', agents: { stuart: { switches: tuple(), local: localRecord(forgot) } } })
+    expect(verify().errors).toEqual(['baseline: no valid isolated list'])
   })
   it('a live input changed the generated block, the baseline did not: mismatch (alert / no start)', () => {
     writeJson(join(ad, '.claude', 'settings.json'), { hooks: hooksFor({ threadReply: true }), permissions: { allow: [], deny: [] } })

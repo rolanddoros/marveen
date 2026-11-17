@@ -15,7 +15,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseLock, expectedHooks, canonicalJson } from './sub-hooks-lock.mjs'
 import { validateSettings } from './settings-validator.mjs'
-import { BASELINE_REL, parseBaseline, tupleErrors, nodeBinErrors, senderRolePolicyFromGates, policySha256 } from './agent-settings-baseline.mjs'
+import { BASELINE_REL, parseBaseline, tupleErrors, nodeBinErrors, senderRolePolicyFromGates, policySha256, localDifferences, isolationViolations } from './agent-settings-baseline.mjs'
 
 export const LOCK_PATH = join(dirname(fileURLToPath(import.meta.url)), 'sub-hooks.lock.json')
 /** The install this verifier belongs to: scripts/hooks/ is two levels below it. */
@@ -32,6 +32,8 @@ const DAY_RX = /^\d{4}-\d{2}-\d{2}$/
 export const EXTRA_HOOK_MARK = ': extra-hook;'
 /** N2-3: the agent's own PreCompact prompt, at most this many characters (the template's is 4882 on 2026-11-17). */
 export const PRECOMPACT_PROMPT_MAX = 16384
+/** K4 (g): at most this many missing isolation rows are named in the one log line; the rest are counted. */
+export const ISOLATION_SHOWN = 8
 
 /** The lock next to this file, parsed and its sha256 checked; throws (the agent does not start) otherwise. */
 export function loadLock(path = LOCK_PATH) {
@@ -283,7 +285,20 @@ export function verifyGateWiring(agent, opts = {}) {
     const want = entry.local?.sha256
     if (want !== null && (typeof want !== 'string' || !/^[0-9a-f]{64}$/.test(want))) errors.push('baseline: no settings.local.json record')
     else if (want === null && hashes.local !== null) errors.push('.claude/settings.local.json: exists, the baseline records none (rebaseline needed)')
-    else if (want !== null && hashes.local !== want) errors.push('.claude/settings.local.json: differs from the baseline (rebaseline needed)')
+    else if (want !== null && hashes.local !== want) {
+      // K3 (e): name the change, a removed deny row first; values are never named.
+      const diff = localDifferences(entry.local, files.local)
+      errors.push(`.claude/settings.local.json: differs from the baseline (rebaseline needed)${diff.length ? `: ${diff.join('; ')}` : ''}`)
+    }
+  }
+  // K4 (g): the isolation rows this agent's file must carry, independent of the hash (an approved batch that forgot
+  // them is caught here). The set is the baseline's agents plus this one.
+  if (files.local !== undefined) {
+    const deny = files.local?.permissions?.deny
+    const miss = isolationViolations(agent, Array.isArray(deny) ? deny : [], {
+      installDir, home, agents: [...Object.keys(baseline.agents), agent], isolated: baseline.isolated,
+    })
+    if (miss.length) errors.push(`isolation: ${miss.slice(0, ISOLATION_SHOWN).join('; ')}${miss.length > ISOLATION_SHOWN ? `; and ${miss.length - ISOLATION_SHOWN} more` : ''}`)
   }
 
   if (sw !== null && files.project !== undefined && files.local !== undefined && files.user !== undefined) {
