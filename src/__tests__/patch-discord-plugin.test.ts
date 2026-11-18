@@ -375,6 +375,6 @@ describe('channels.sh wiring', () => {
   })
 
   it('an isolated/explicit config dir is handed to the patcher', () => {
-    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_cfg_dir" python3 "\$INSTALL_DIR\/scripts\/patch-discord-plugin\.py"/)
+    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_rec_dir" python3 "\$INSTALL_DIR\/scripts\/patch-discord-plugin\.py"/)
   })
 })

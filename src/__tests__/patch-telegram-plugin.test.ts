@@ -1477,6 +1477,6 @@ describe.skipIf(sh === '')('channels.sh wiring (review #1529, point 1)', () => {
   })
 
   it('an isolated/explicit config dir is handed to the patcher, so it writes the cache the session launches from', () => {
-    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_cfg_dir" python3 "\$INSTALL_DIR\/scripts\/patch-telegram-plugin\.py"/)
+    expect(code).toMatch(/if \[ -n "\$CFG_ENV" \]; then\n\s*CLAUDE_CONFIG_DIR="\$_rec_dir" python3 "\$INSTALL_DIR\/scripts\/patch-telegram-plugin\.py"/)
   })
 })
