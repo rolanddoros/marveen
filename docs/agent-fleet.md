@@ -260,7 +260,7 @@ GET  /api/agents/<név>/export            # egy ügynök bundle-je (titkok nélk
 GET  /api/agents/<név>/export?secrets=1  # egy ügynök bundle-je titkokkal
 GET  /api/agents/export-all              # az EGÉSZ flotta egy bundle-ben (titkok nélkül)
 GET  /api/agents/export-all?secrets=1    # az egész flotta titkokkal
-POST /api/agents/import                  # bundle feltöltése (multipart: file=, name=, overwrite=1)
+POST /api/agents/import                  # bundle feltöltése (multipart: file=, name=, overwrite=1); csak a gazda (mayActAsOwner)
                                          #   -- egy-ügynök ÉS flotta-bundle-t is fogad
 ```
 

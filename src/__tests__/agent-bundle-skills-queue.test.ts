@@ -86,7 +86,8 @@ function fakeCtx(path: string, method: string, body?: Buffer): {
   const url = new URL(`http://localhost:3420${path}`)
   const req = Object.assign(Readable.from(body === undefined ? [] : [body]), { headers: { 'content-type': 'application/gzip' }, url: path })
   return {
-    ctx: { req, res, path: url.pathname, method, url } as RouteContext,
+    // Fork A2 (4fccfbee): POST /api/agents/import takes the owner; these cases are the owner's imports.
+    ctx: { req, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as RouteContext,
     out,
   }
 }
