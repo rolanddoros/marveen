@@ -43,7 +43,11 @@ export const CATEGORY = 'agent_settings'
 /** SEC-5: the deploy helper's switch, one value for both categories (approvals.ts pins it equal). */
 export { CODE_DEPLOY_OWNER_CHANNEL_ONLY }
 export const CONSUMER = 'agent-settings-apply'
-/** resume lists at most this many agent_settings approvals (the dashboard's own cap) to prove its consume is the newest. */
+/**
+ * resume lists at most this many agent_settings approvals (the dashboard's own cap) to prove its consume is the newest.
+ * Never above the cap in src/web/routes/approvals.ts and src/db.ts listApprovals (a test reads both): a longer list
+ * cannot come back, so the "cannot be proven" stop would never fire (Ron N3).
+ */
 export const RESUME_LIST_LIMIT = 500
 export const MAX_AGE_SECONDS = 1800
 export const REQUEST_TIMEOUT_SECONDS = 3600
