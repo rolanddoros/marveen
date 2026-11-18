@@ -140,7 +140,8 @@ function call(method: string, path: string, payload: unknown): Promise<{ status:
     ;(req as unknown as EventEmitter).emit('end')
   })
   return tryHandleAgents(
-    { req, res, path: url.pathname, method, url } as unknown as RouteContext,
+    // Fork A1 (23e0c5c7): PUT /api/agents/:name takes the owner; these cases are the owner's edits.
+    { req, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as unknown as RouteContext,
     join(PROJECT_ROOT, 'web'),
   ).then((handled) => {
     expect(handled).toBe(true)

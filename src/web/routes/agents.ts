@@ -119,6 +119,7 @@ import {
 } from '../agent-scaffold.js'
 import {
   isAgentRunning,
+  resolveProviderEnv,
   agentRunState,
   startAgentProcess,
   stopAgentProcess,
@@ -822,6 +823,21 @@ function writeNewAgentHookSettings(name: string, profile: Parameters<typeof writ
   } catch (err) {
     return { ok: false, error: hookErrorSummary(err) }
   }
+}
+
+// Fork A1 (kanban 23e0c5c7): what the shared token may still send to PUT /api/agents/:name. Exactly one own key,
+// `model`, a valid model id that the launcher classifies as Claude (resolveProviderEnv: deepseek-*, minimax-*,
+// any x/y and every other id go to a third-party or local base URL). An alias resolves first ('opus' -> Claude).
+const TOKEN_MODEL_BODY_MAX_BYTES = 4096
+function tokenMayWriteModelOnly(body: Buffer): boolean {
+  let data: unknown
+  try { data = JSON.parse(body.toString()) } catch { return false }
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return false
+  const keys = Object.keys(data)
+  if (keys.length !== 1 || keys[0] !== 'model') return false
+  const model = (data as { model: unknown }).model
+  if (typeof model !== 'string' || !isValidModelId(model)) return false
+  return resolveProviderEnv(resolveModelId(model), () => '""', null).provider === 'claude'
 }
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
@@ -2792,13 +2808,42 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (agentMatch && method === 'PUT') {
+    // Fork A1 (kanban 23e0c5c7, Ron 17697 option 2b): the owner writes every field; the SHARED token (not a
+    // sub-agent's own token, not a peer or a device key) may only switch an agent to another Claude model, the
+    // one step the main agent's quota skills take. A model id alone can route a whole session to a third party
+    // with the fleet's keys, so "Claude" is the launcher's own classification, not a prefix written here.
+    // Fixed order: (a) neither the owner nor the shared token: 403 before the body is read; (b) the shared token:
+    // the body is read once, capped; (c) anything but exactly {model: <a Claude model>} is 403 before any write;
+    // (d) only then the agent-exists 404 and the main-agent 400 (a token caller can tell a known name from an
+    // unknown one, as GET /api/agents already shows it).
+    const owner = mayActAsOwner(ctx.auth, req)
+    const sharedToken = ctx.auth?.kind === 'token' && !ctx.auth.tokenAgent
+    if (!owner && !sharedToken) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Agent update refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
+    let body: Buffer | null = null
+    if (!owner) {
+      try {
+        body = await readBody(req, { maxBytes: TOKEN_MODEL_BODY_MAX_BYTES })
+      } catch {
+        body = Buffer.alloc(0) // too large or cut off: it cannot be a bare {model}, refused below
+      }
+      if (!tokenMayWriteModelOnly(body)) {
+        logger.warn({ path, method, auth: ctx.auth?.kind }, 'Agent update refused: the shared token may only set a Claude model')
+        json(res, OWNER_SESSION_REQUIRED, 403)
+        return true
+      }
+    }
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     if (isMainChannelsAgent(name)) {
       json(res, { error: 'Main agent configuration is read-only through the dashboard API' }, 400)
       return true
     }
-    const body = await readBody(req)
+    // The owner's body is read here, after the 404 and the 400, as before this gate; the token's was read once above.
+    if (body === null) body = await readBody(req)
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
