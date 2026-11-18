@@ -55,7 +55,8 @@ function fakeCtx(path: string, body: unknown) {
   const raw = Buffer.from(JSON.stringify(body))
   const req = { on(ev: string, cb: (x?: Buffer) => void) { if (ev === 'data') cb(raw); if (ev === 'end') cb(); return req } }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method: 'POST', url } as unknown as RouteContext
+  // The owner's session: channel setup takes the owner since fork A4 (kanban 774c7ece); this file tests the .env guard.
+  const ctx = { req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'session', user: 'owner' } } as unknown as RouteContext
   return { ctx, out }
 }
 

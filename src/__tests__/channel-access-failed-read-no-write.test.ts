@@ -68,7 +68,8 @@ function fakeCtx(method: string, path: string, body: unknown) {
     on(ev: string, cb: (x?: Buffer) => void) { if (ev === 'data') cb(raw); if (ev === 'end') cb(); return req },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url } as unknown as RouteContext
+  // The owner's session: these routes take the owner since fork A4 (kanban 774c7ece); this file tests the access.json guard.
+  const ctx = { req, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as unknown as RouteContext
   return { ctx, out }
 }
 

@@ -149,11 +149,11 @@ describe('the predicate (the five-case matrix, Samu 65617, and Dani 65623 (c))',
   })
 })
 
-describe('which call site asks which predicate (source pin, all 24 sites: upstream 17 + the fork A1 gates in fleet.ts and agent-terminal.ts + the fork 8f51c983 gates in fleet-q.ts and agents.ts + the fork 23e0c5c7 gate on PUT /api/agents/:name, the 4fccfbee gate on POST /api/agents/import and the 4314eef9 gate on PUT /api/agents/:name/remote in agents.ts)', () => {
+describe('which call site asks which predicate (source pin, all 33 sites: upstream 17 + the fork A1 gates in fleet.ts and agent-terminal.ts + the fork 8f51c983 gates in fleet-q.ts and agents.ts + the fork 23e0c5c7 gate on PUT /api/agents/:name, the 4fccfbee gate on POST /api/agents/import, the 4314eef9 gate on PUT /api/agents/:name/remote and the 774c7ece gates on the 9 channel access routes in agents.ts)', () => {
   const src = (f: string) => readFileSync(join(ROOT, 'src', 'web', 'routes', f), 'utf-8')
   const count = (f: string, fn: string) => (src(f).match(new RegExp(`${fn}\\((?:ctx\\.auth|auth), `, 'g')) ?? []).length
   it('the non-issuing owner actions take the Bridge key beside the cookie', () => {
-    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 1], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 3], ['agent-terminal.ts', 1], ['settings.ts', 1], ['fleet-q.ts', 1], ['agents.ts', 4]] as const) {
+    for (const [f, n] of [['approvals.ts', 2], ['skills.ts', 1], ['federation.ts', 1], ['autonomy.ts', 1], ['fleet-freeze.ts', 1], ['fleet.ts', 3], ['agent-terminal.ts', 1], ['settings.ts', 1], ['fleet-q.ts', 1], ['agents.ts', 13]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayIssueCredentials')]).toEqual([f, n, 0])
     }
   })
