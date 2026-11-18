@@ -185,7 +185,7 @@ import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
-import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
@@ -1869,6 +1869,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (secGetMatch && method === 'PUT') {
+    // The owner only once a dashboard login exists (kanban 8f51c983): the profile regenerates the agent's hook
+    // settings, and the shared Bearer token is held by every agent while AGENT_TOKENS is off. Before the
+    // agent-exists check and the body, so a non-owner learns nothing about which names exist.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Security profile update refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const name = decodeURIComponent(secGetMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)

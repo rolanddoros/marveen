@@ -10,6 +10,9 @@ start. A hand-added copy of the hook is a "kept hook" for the verifier (an error
 ## Steps 3-4, replace with
 
 3. Böngésző-képesség: `PUT /api/agents/<n>/capabilities` a `browser` képességgel (`src/web/routes/fleet-q.ts:25`).
+   Ez GAZDA-LÉPÉS (kanban 8f51c983): az első dashboard-belépés óta a végpont a gazda sessionjét kéri
+   (`mayActAsOwner`), a közös tokennel 403 `owner_session_required`. Roland a saját, belépett dashboard-sessionjéből
+   küldi; ügynök nem hívja, hanem kéri Rolandtól (Kevinen vagy Johnnyn át). Felület ehhez nincs.
    Ettől rendereli a generátor a `browser-content-notice-playwright` PostToolUse hookot (matcher
    `mcp__playwright__browser_.*`); kézzel NEM írod a `settings.json`-ba (a db-write-gate tiltja).
    A képesség a baseline kapcsoló-tuple része: utána a gazda jóváhagyásával

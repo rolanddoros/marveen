@@ -3228,8 +3228,8 @@ const EVIDENCE_BLOCK_RE = new RegExp(
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
 //
 // Threat model for capability tags:
-// - Capability strings come from two external-input paths: the Bearer-gated
-//   PUT /api/agents/:name/capabilities endpoint and user-editable persona
+// - Capability strings come from two external-input paths: the owner-gated
+//   PUT /api/agents/:name/capabilities endpoint (mayActAsOwner) and user-editable persona
 //   frontmatter. Both can contain arbitrary text.
 // - Each tag ends up embedded in every PEER agent's CLAUDE.md, so a poisoned
 //   capability could inject instructions into the prompt of another agent.
