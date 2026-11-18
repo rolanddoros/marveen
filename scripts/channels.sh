@@ -1704,9 +1704,10 @@ unset _auth_file
 # launches from is written (its own CLAUDE_CONFIG_DIR when CFG_ENV set one
 # above, else the inherited one / ~/.claude), never the user-level cache on
 # top. The outcome lands in store/telegram-plugin-patch.json for /status.
+# That dir is $_rec_dir: the config section above unsets its own $_cfg_dir.
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ -n "$CFG_ENV" ]; then
-    CLAUDE_CONFIG_DIR="$_cfg_dir" python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+    CLAUDE_CONFIG_DIR="$_rec_dir" python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
   else
     python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
   fi
@@ -1720,7 +1721,7 @@ fi
 case " $CHANNEL_PROVIDER $CHANNEL_PLUGINS_EXTRA " in
   *" discord "*|*" discord@"*)
     if [ -n "$CFG_ENV" ]; then
-      CLAUDE_CONFIG_DIR="$_cfg_dir" python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+      CLAUDE_CONFIG_DIR="$_rec_dir" python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
     else
       python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
     fi
