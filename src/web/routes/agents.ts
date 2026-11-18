@@ -2046,6 +2046,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // strings clear the fields (revert to local). The main agent is always local.
   const remoteCfgMatch = path.match(/^\/api\/agents\/([^/]+)\/remote$/)
   if (remoteCfgMatch && method === 'PUT') {
+    // The owner only once a dashboard login exists (fork A3, kanban 4314eef9): the next start runs the session on
+    // that host over ssh with the router's keys, without the local hook/settings scaffolding, and messages and
+    // schedules for the agent follow it there. The shared Bearer token is held by every agent while AGENT_TOKENS is
+    // off. Set and clear alike; before the main-agent and agent-exists checks and the body, so a non-owner learns
+    // nothing about which names exist.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Remote config update refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const name = decodeURIComponent(remoteCfgMatch[1])
     if (name === MAIN_AGENT_ID) { json(res, { error: 'Main agent is always local' }, 400); return true }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
