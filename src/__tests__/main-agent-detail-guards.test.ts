@@ -40,6 +40,8 @@ function fakeCtx(path: string, method: string): {
     path: url.pathname,
     method,
     url,
+    // Fork A1 (23e0c5c7): PUT /api/agents/:name takes the owner first; the main-agent 400 is the owner's answer.
+    auth: { kind: 'session', user: 'owner' },
   } as RouteContext
   return { ctx, out }
 }
