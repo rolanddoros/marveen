@@ -106,6 +106,7 @@ PUT /api/agents/<name>/remote   { "host": "devbox", "workdir": "/home/user/proje
 PUT /api/agents/<name>/remote   { "host": "", "workdir": "" }   # törlés -> újra helyi
 ```
 
+- Csak a gazda (`mayActAsOwner`): az első dashboard-belépés után a közös tokennel 403, beállításnál és törlésnél is; első futásnál, belépés előtt a közös token is.
 - `host`: ssh-destination -- alias a `~/.ssh/config`-ból (ajánlott) vagy `user@host`. **NINCS `:port`** a host-stringben; a portot a `~/.ssh/config` `Port` direktívájába tedd. Shell-metakarakter nem engedett.
 - `workdir`: **abszolút** elérési út a távoli gépen (relatív/tilde nem engedett, hogy a `--continue` projekt-kódolás determinisztikus legyen).
 - Csak ha MINDKETTŐ érvényes, lesz az ügynök távoli; félig konfigurált ügynök helyi marad. A fő ügynök (`marveen`) mindig helyi.
