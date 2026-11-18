@@ -2730,6 +2730,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (path === '/api/agents/import' && method === 'POST') {
+    // Fork A2 (kanban 4fccfbee, Ron 17725 R1): the owner only, before the body is read, with or without overwrite and
+    // for both bundle kinds. The importers copy the whole unpacked agent/ dir (CLAUDE.md, SOUL.md, .mcp.json,
+    // .claude/settings.json with its hooks, skills, agent-config.json, channel files), so an import, even a new one,
+    // would step around the owner gates on PUT /api/agents/:name and /security. The dashboard's import dialog is the
+    // one caller (the owner's browser).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Agent import refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
     let bundle: Buffer | undefined
