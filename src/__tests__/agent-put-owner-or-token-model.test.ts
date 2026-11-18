@@ -200,6 +200,19 @@ describe('the shared token may send exactly {model: <Claude model>} (option 2b)'
     refused(await put(AGENT, bearer(TOKEN), { model: 'claude-sonnet-5-5', pad: 'x'.repeat(8000) }), 1)
   })
 
+  it('the cap alone: a valid {model} body padded past 4096 bytes is refused (read once, nothing written)', async () => {
+    await addOwner()
+    const padded = '{"model":"claude-sonnet-5-5"}' + ' '.repeat(8000)
+    // CONTROL: the same body is valid JSON with exactly the one key, so only its size can refuse it.
+    expect(Object.keys(JSON.parse(padded))).toEqual(['model'])
+    refused(await put(AGENT, bearer(TOKEN), padded), 1)
+  })
+
+  it('the gate\'s own isValidModelId step: a claude- id with a shell metacharacter is refused before any write', async () => {
+    await addOwner()
+    refused(await put(AGENT, bearer(TOKEN), { model: "claude-x'; id" }), 1)
+  })
+
   it('a sub-agent\'s own token is 403 even before the first login, body unread', async () => {
     refused(await put(AGENT, bearer(TOKEN), { model: 'claude-sonnet-5-5' }, { kind: 'token', agent: 'zara', tokenAgent: 'zara' } as Auth), 0)
   })
