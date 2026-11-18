@@ -111,6 +111,38 @@ if [ "${1:-}" = "--check-scaffolded" ]; then
   exit 0
 fi
 
+# Fork C settings-protect (plan v2 point 3, Ron D2-REL-2): the standalone gate-wiring verifier, called right before
+# a sub-agent's `tmux new-session`. Only exit 0 starts the agent (nothing wrong, or report mode); any other status
+# does not (1 = enforce and a problem, 2 = usage, 124 = timeout, 127 = no node, a kill). Its one stderr line goes to
+# the log; a NEW problem set goes to the owner once through notify.sh (the verifier keeps that state in
+# store/gate-wiring-state.json, so the alert does not repeat every tick).
+gate_wiring_ok() {
+  local agent="$1" node out rc
+  node="$(command -v node || true)"
+  out="$(timeout 30 "${node:-node}" "$INSTALL_DIR/scripts/hooks/verify-gate-wiring.mjs" --agent "$agent" 2>&1 >/dev/null)"
+  rc=$?
+  if [ -n "$out" ]; then
+    echo "$(timestamp) $out" >> "$LOG"
+    case "$out" in
+      *" NEW: "*)
+        bash "$INSTALL_DIR/scripts/notify.sh" "$out" >/dev/null 2>&1 \
+          || echo "$(timestamp) [GATE-WIRING] $agent: the owner alert could not be sent" >> "$LOG" ;;
+    esac
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "$(timestamp) [GATE-WIRING] $agent: not started (verifier exit $rc)" >> "$LOG"
+    return 1
+  fi
+  return 0
+}
+
+# Self-test hook: run the verifier step for one agent id and print the start decision, nothing else.
+if [ "${1:-}" = "--gate-wiring" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --gate-wiring <agent-id>" >&2; exit 2; }
+  if gate_wiring_ok "$2"; then echo "start=yes"; else echo "start=no"; fi
+  exit 0
+fi
+
 
 # NATIVECLAUDEFIRST1011 (#1896): $HOME/.local/bin first, as in channels.sh -- the
 # sub-agent restart below resolves claude by name (CLAUDE_BIN) under this PATH.
@@ -261,6 +293,7 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
 
   CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && export MARVEEN_AGENT_ID=$(sh_single_quote "$AGENT_ID") && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official$(agent_sandbox_flag "$AGENT_ID")"
 
+  gate_wiring_ok "$AGENT_ID" || continue
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2
 

@@ -44,7 +44,7 @@
 // Engine: scheduleSurfaceDeny in scripts/self-pace-gate.mjs (segments, quoting,
 // escape/glob variants, message-data residue), run with `surface: 'security'`.
 
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -83,6 +83,9 @@ export const PROTECTED_INSTALL_PATHS = [
   // The code deploy (plan-v3 7): the helper and its modules, the record that names the main agent's config root, and
   // the one script the launchers call to write that record. Only the launchers write the record; no tool call does.
   { rel: 'scripts/deploy', dir: true },
+  // Fork C settings-protect K2: the agent-settings helper, the one route to a sub-agent's settings.local.json and the
+  // baseline besides the owner's terminal.
+  { rel: 'scripts/agent-settings', dir: true },
   { rel: 'store/main-agent-config-root.json' },
   { rel: 'scripts/write-main-config-root.sh' },
   { rel: 'store/extra-hooks.json' },
@@ -105,17 +108,79 @@ export const PROTECTED_INSTALL_PATHS = [
   // The user's git config, read by every git on the machine (Samu 56310 2): an url.*.insteadOf there redirects origin.
   { home: '.gitconfig' },
   { home: 'git/config', xdg: true },
+  // Fork C settings-protect (plan v2 point 2, addendum 1, Ron 17451): what decides a sub-agent's hooks at its next
+  // start. The launchers and every file they source (they build the launch line), the owner-approved baseline and
+  // the verifier's state, the profile templates and persona files the dashboard's generator reads, the code that
+  // writes the settings and calls the verifier (src and dist), and the shared user settings every agent inherits.
+  // The settings files under agents/<n>/ are PROTECTED_PER_AGENT_PATHS below.
+  { rel: 'scripts/watchdog.sh' },
+  { rel: 'scripts/stuck-modal-guard.sh' },
+  { rel: 'scripts/channels.sh' },
+  { rel: 'scripts/channel-watchdog.sh' },
+  { rel: 'scripts/fleet-venv-prefix.sh' },
+  { rel: 'scripts/main-extra-plugins-settings.sh' },
+  { rel: 'scripts/lib/owner-chat.sh' },
+  { rel: 'scripts/lib/send-telegram.sh' },
+  { rel: 'scripts/lib/channel-net-wait.sh' },
+  { rel: 'store/agent-settings-baseline.json' },
+  { rel: 'store/gate-wiring-state.json' },
+  // The one command an isolated copy's statusLine may run (verify-gate-wiring.mjs statusLineCommandsFor): the CLI runs
+  // it outside the PreToolUse gate chain, so its text is protected like a hook script (Ron 17563, suggestion 3).
+  { rel: 'scripts/statusline-ratelimit.sh' },
+  // personas/ (Ron 17451's optional add-on) is NOT listed: a one-segment protected directory makes every bare `*` word
+  // an exact hit (`sqlite3 "SELECT * ..."`, `count(*)` refused), and the baseline tuple already ignores the persona
+  // frontmatter fallback (the verifier never reads it).
+  { rel: 'templates/profiles', dir: true },
+  { rel: 'src/web/agent-process.ts' },
+  { rel: 'src/web/agent-scaffold.ts' },
+  { rel: 'src/web/hooks', dir: true },
+  { rel: 'dist/web/agent-process.js' },
+  { rel: 'dist/web/agent-scaffold.js' },
+  { rel: 'dist/web/hooks', dir: true },
+  { home: '.claude/settings.json' },
+  { home: '.claude/settings.local.json' },
+  // Ron 17505 1a: the install-root .env carries GATE_WIRING_ENFORCE(_UNTIL); an agent writing it could switch the
+  // verifier to report at will. Exactly the root file: an agent's channel .env (agents/<n>/.claude/channels/...)
+  // and other state-dir .env files stay writable. Legitimate writers: the dashboard process (not a tool call),
+  // the installer and the migration scripts from the owner's terminal (docs/db-write-gate.md lists them).
+  // dotGlobOnly: a one-segment file at the root would make every bare `*` word an exact hit (sqlite3 "SELECT *",
+  // the personas/ lesson). Bash's own rule applies to it instead: a glob reaches a leading-dot name only when the
+  // pattern segment starts with a dot (`.e*`), unless the command turns on dotglob or GLOBIGNORE (then fail closed).
+  { rel: '.env', dotGlobOnly: true },
 ]
+// Under every agents/<name>/ (Fork C settings-protect plan v1 point 2, addendum 1 D2-SEC-3), all EXACT: the three
+// settings files that load hooks and env, and the directories that hold them, so renaming, deleting or swapping a
+// directory for a symlink is refused while everything under it (skills, memory, gh's own files) stays writable.
+export const PROTECTED_PER_AGENT_PATHS = Object.freeze([
+  '.claude', '.claude/settings.json', '.claude/settings.local.json',
+  '.claude-config', '.claude-config/settings.json', '.claude-config/settings.local.json',
+  '.config', '.config/gh',
+])
+const AGENT_DIR_NAME_RX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+/** The agent directories under <root>/agents, read on every gate process (a new agent is covered at its first call). */
+function agentDirNames(root) {
+  try {
+    return readdirSync(join(root, 'agents'), { withFileTypes: true })
+      .filter((d) => (d.isDirectory() || d.isSymbolicLink()) && AGENT_DIR_NAME_RX.test(d.name))
+      .map((d) => d.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
 // The database file, by NAME anywhere (as the Bash rule reads it).
 const DB_FILE_NAME_RX = /(?:^|\/)claudeclaw\.db(?:-wal|-shm|-journal)?$/i
 
 const targetCache = new Map()
 export function installTargets(root = INSTALL_ROOT) {
   const k = resolve(root)
-  if (!targetCache.has(k)) {
-    targetCache.set(k, {
+  const agents = agentDirNames(k)
+  const cacheKey = `${k}\0${agents.join('\0')}`
+  if (!targetCache.has(cacheKey)) {
+    const perAgent = agents.flatMap((n) => PROTECTED_PER_AGENT_PATHS.map((p) => ({ rel: `agents/${n}/${p}`, perAgent: true })))
+    targetCache.set(cacheKey, {
       rootKey: pathKey(k),
-      list: PROTECTED_INSTALL_PATHS.map((t) => {
+      list: [...PROTECTED_INSTALL_PATHS, ...perAgent].map((t) => {
         const abs = t.home == null ? resolve(k, t.rel)
           : t.xdg ? resolve(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), t.home) : resolve(homedir(), t.home)
         const key = pathKey(abs)
@@ -125,7 +190,7 @@ export function installTargets(root = INSTALL_ROOT) {
       }),
     })
   }
-  return targetCache.get(k)
+  return targetCache.get(cacheKey)
 }
 
 // Which words are resolved at all: anything path-like (a slash, a dotted name,
@@ -135,7 +200,13 @@ export function installTargets(root = INSTALL_ROOT) {
 const PATH_LIKE_RX = /\/|\.\w|^~/
 const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
   'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.claude', 'scripts', 'store', '.', '..', '~',
-  'deploy', 'main-agent-config-root.json', 'write-main-config-root.sh'])
+  'deploy', 'main-agent-config-root.json', 'write-main-config-root.sh',
+  // Fork C settings-protect
+  '.claude-config', '.config', 'gh', 'agents', 'watchdog.sh', 'stuck-modal-guard.sh', 'channels.sh', 'channel-watchdog.sh',
+  'fleet-venv-prefix.sh', 'main-extra-plugins-settings.sh', 'lib', 'owner-chat.sh', 'send-telegram.sh', 'channel-net-wait.sh',
+  'agent-settings-baseline.json', 'gate-wiring-state.json', 'templates', 'profiles', 'src', 'dist', 'web',
+  'agent-process.ts', 'agent-scaffold.ts', 'agent-process.js', 'agent-scaffold.js', 'sub-hooks.lock.json', '.env',
+  'agent-settings', 'apply-local.mjs', 'statusline-ratelimit.sh'])
 const GLOB_CHAR_RX = /[*?[{]/
 const UNRESOLVED_RX = /\$\{[^}]*\}|\$\(|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]|[`\u0000\u0003]/
 
@@ -196,6 +267,7 @@ export function classifyWord(word, ctx, only = null) {
           let ok = true
           for (let i = 0; i < n && ok; i++) ok = nameForms(W[i]).some((f) => globMatchesName(f, T[i]))
           if (!ok) continue
+          if (t.dotGlobOnly && !ctx.dotglobOn && W.length >= T.length && !W[T.length - 1].startsWith('.')) continue
           if (W.length === T.length) return 'exact'
           if (W.length > T.length) { if (t.dir) return 'under'; continue }
           best = 'ancestor'
@@ -522,7 +594,8 @@ export function subshellParts(own) {
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null }
+  // dotglobOn: the command may make a bare glob reach dot names (see the .env entry's dotGlobOnly)
+  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, dotglobOn: /dotglob|GLOBIGNORE/i.test(cmd) }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root).list.some((t) => t.dir && underKey(pathKey(cwd), t.key))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
   // fast path: nothing in any spelling of the whole command reaches a target,
@@ -697,11 +770,27 @@ const DEPLOY_HELPER_ARGS_RX = /^(?:request|status|apply --approval [A-Za-z0-9-]{
 // An install root that a shell would read as one plain word; any other root has no allowed spelling.
 const PLAIN_ROOT_RX = /^\/[A-Za-z0-9._/-]*$/
 
-export function deployHelperForm(command, root = INSTALL_ROOT) {
+function helperForm(command, root, rel, argsRx) {
   const r = resolve(String(root))
   if (!PLAIN_ROOT_RX.test(r)) return false
-  const prefix = `node ${join(r, DEPLOY_HELPER_REL)} `
-  return typeof command === 'string' && command.startsWith(prefix) && DEPLOY_HELPER_ARGS_RX.test(command.slice(prefix.length))
+  const prefix = `node ${join(r, rel)} `
+  return typeof command === 'string' && command.startsWith(prefix) && argsRx.test(command.slice(prefix.length))
+}
+
+export function deployHelperForm(command, root = INSTALL_ROOT) {
+  return helperForm(command, root, DEPLOY_HELPER_REL, DEPLOY_HELPER_ARGS_RX)
+}
+
+// The agent-settings helper's exception (Fork C settings-protect plan addendum 1 K2, plan v2 point 6), the same rule:
+//   node <install>/scripts/agent-settings/apply-local.mjs request --batch <id> | baseline --isolated <names|none> |
+//     rebaseline --agent <name> | apply --approval <id> | resume | status
+// as the whole command, from the main agent only; any other command that names it is denied.
+export const SETTINGS_HELPER_REL = 'scripts/agent-settings/apply-local.mjs'
+const HELPER_NAME = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}'
+const SETTINGS_HELPER_ARGS_RX = new RegExp(`^(?:resume|status|request --batch [A-Za-z0-9-]{1,64}|baseline --isolated (?:none|${HELPER_NAME}(?:,${HELPER_NAME})*)|rebaseline --agent ${HELPER_NAME}|apply --approval [A-Za-z0-9-]{1,64})$`)
+
+export function settingsHelperForm(command, root = INSTALL_ROOT) {
+  return helperForm(command, root, SETTINGS_HELPER_REL, SETTINGS_HELPER_ARGS_RX)
 }
 
 // The directories a command's relative words could be read from: the payload cwd, home, /, every absolute word, and
@@ -732,16 +821,16 @@ function reachableDirs(words, ctx) {
 // a word that lands under the install's scripts/deploy (lexically, through a symlink, as a glob, or as an unresolved
 // expansion followed by that tail); a word carrying the helper's file name that is not a literal absolute path outside
 // the install; for such a relative word, a reading from any directory the command can reach that lands in the install.
-export function mentionsDeployHelper(command, opts = {}) {
+function mentionsHelper(command, opts, dirRel, nameTag) {
   const ctx = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null }
   const { list, rootKey } = installTargets(ctx.root)
-  const deployDir = list.filter((t) => t.rel === 'scripts/deploy')
+  const helperDir = list.filter((t) => t.rel === dirRel)
   const words = pathWords(command)
   let dirs
   for (const w of words) {
-    const c = classifyWord(w, { ...ctx, cwdInsideDir: false }, deployDir)
+    const c = classifyWord(w, { ...ctx, cwdInsideDir: false }, helperDir)
     if (c === 'exact' || c === 'under' || c === 'unresolved') return true
-    if (!nameForms(w).some((f) => f.includes('fork-deploy'))) continue
+    if (!nameForms(w).some((f) => f.includes(nameTag))) continue
     if (UNRESOLVED_RX.test(w) || GLOB_CHAR_RX.test(w)) return true
     const lit = w === '~' ? homedir() : expandHome(w)
     if (lit.startsWith('/')) {
@@ -753,6 +842,24 @@ export function mentionsDeployHelper(command, opts = {}) {
     if (dirs.some((d) => underKey(pathKey(resolve(d, lit)), rootKey))) return true
   }
   return false
+}
+
+export function mentionsDeployHelper(command, opts = {}) {
+  return mentionsHelper(command, opts, 'scripts/deploy', 'fork-deploy')
+}
+
+/** The same three readings for the agent-settings helper and anything under scripts/agent-settings. */
+export function mentionsSettingsHelper(command, opts = {}) {
+  return mentionsHelper(command, opts, 'scripts/agent-settings', 'apply-local')
+}
+
+function settingsHelperDecision(command, opts) {
+  const root = opts.root ?? INSTALL_ROOT
+  if (settingsHelperForm(command, root)) {
+    const who = callerIsMain({ transcript_path: opts.transcriptPath }, root, opts.identity ?? loadIdentityContext(root))
+    return who.main ? { deny: false, settingsHelper: true } : { deny: true, reason: 'settings-helper', why: who.why }
+  }
+  return mentionsSettingsHelper(command, opts) ? { deny: true, reason: 'settings-helper', why: 'not the exact form' } : null
 }
 
 function deployHelperDecision(command, opts) {
@@ -773,7 +880,7 @@ function decide(toolName, toolInput, opts = {}) {
   if (name === 'Bash') {
     const command = String(toolInput?.command ?? '')
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
-    const helper = deployHelperDecision(command, opts)
+    const helper = deployHelperDecision(command, opts) ?? settingsHelperDecision(command, opts)
     if (helper) return helper
     const file = installFileDeny(command, opts)
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
@@ -811,8 +918,15 @@ export const DB_GATE_MSG =
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
-  'scripts/deploy/, scripts/write-main-config-root.sh, store/main-agent-config-root.json, ' +
-  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json es store/.owner-slack-target fajljat (Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
+  'scripts/deploy/, scripts/write-main-config-root.sh, store/main-agent-config-root.json, scripts/agent-settings/, ' +
+  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json es store/.owner-slack-target fajljat, ' +
+  'a launchereket (scripts/watchdog.sh, stuck-modal-guard.sh, channels.sh, channel-watchdog.sh es amit forrasolnak), ' +
+  'store/agent-settings-baseline.json, store/gate-wiring-state.json, scripts/statusline-ratelimit.sh, templates/profiles/, ' +
+  'src/web es dist/web agent-process, agent-scaffold, hooks/, a kozos ~/.claude/settings(.local).json-t, ' +
+  'a telepites gyokerenek .env fajljat (egy agens sajat csatorna-.env-je irhato), ' +
+  'es minden agents/<nev>/ alatt a .claude/settings(.local).json-t, a .claude-config/settings(.local).json-t, ' +
+  'valamint a .claude, .claude-config, .config es .config/gh KONYVTARAT magat (atnevezes, torles, symlink; a tartalmuk irhato) ' +
+  '(Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
   'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), egy hook-szkriptet KOZVETLENUL futtatni is ' +
@@ -850,10 +964,21 @@ export const DEPLOY_HELPER_GATE_MSG =
   'olvasom: ez baleset- es injekcio-fek, NEM biztonsagi hatar (docs/db-write-gate.md). A deploy a gazda ' +
   'jovahagyasaval megy, a fo ugynokon at.' + LIMIT_MSG
 
+export const SETTINGS_HELPER_GATE_MSG =
+  'Az agens-beallitas helper hivasa ebben az alakban TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). ' +
+  `Egyetlen alak fut, a TELJES parancskent, es csak a fo ugynoktol: "node ${join(INSTALL_ROOT, SETTINGS_HELPER_REL)} ` +
+  'request --batch <id>", "... baseline --isolated <nevek|none>", "... rebaseline --agent <nev>", "... apply --approval <id>", ' +
+  '"... resume" vagy "... status". Elotte nincs ertekadas vagy env, nincs masik parancs (; && || |), cd, behelyettesites, ' +
+  'atiranyitas, glob vagy idezojel. A batch-fajlt a store/agent-settings-staging/<id>.json-ba ird (Write), a helper onnan ' +
+  'olvassa. A scripts/agent-settings/ fajljait olvasni is csak egy worktree sajat masolataban lehet, ABSZOLUT uttal. ' +
+  'A hivo kiletet a hook payload transcript_path-jabol olvasom: ez baleset- es injekcio-fek, NEM biztonsagi hatar ' +
+  '(docs/db-write-gate.md). Egy sub-agens settings.local.json-ja es a baseline a gazda jovahagyasaval valtozik, a fo ugynokon at.' + LIMIT_MSG
+
 function gateMessage(reason) {
   if (reason === 'git') return GIT_GATE_MSG
   if (reason === 'install-file') return INSTALL_FILE_GATE_MSG
   if (reason === 'deploy-helper') return DEPLOY_HELPER_GATE_MSG
+  if (reason === 'settings-helper') return SETTINGS_HELPER_GATE_MSG
   return DB_GATE_MSG
 }
 
