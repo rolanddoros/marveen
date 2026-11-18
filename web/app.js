@@ -4293,7 +4293,9 @@ function tmuxAttachCommand(agent) {
   const session = agent.session || ('agent-' + agent.name)
   const direct = 'tmux attach -t ' + session
   const remoteHost = agent.remoteHost || null
-  return remoteHost ? 'ssh ' + remoteHost + " -t '" + direct + "'" : direct
+  // '-t' before '--' and the host: after '--' ssh reads nothing as an option, so a
+  // '-t' behind the host would be dropped from the options (no tty, kanban b15fe512).
+  return remoteHost ? 'ssh -t -- ' + remoteHost + " '" + direct + "'" : direct
 }
 
 // Append a single "copy tmux attach command" button to a running agent card.

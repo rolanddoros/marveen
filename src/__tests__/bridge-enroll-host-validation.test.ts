@@ -16,6 +16,7 @@
 import { isIP } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { checkEnrollHost } from '../remote-enroll-core.js'
+import { resolveRemoteConfig } from '../web/agent-config.js'
 
 const REPORTED = 'jaequas2605@gmail.com'
 
@@ -72,8 +73,8 @@ describe('checkEnrollHost', () => {
     // The measurement that justifies a separate validator: agent-config.ts's
     // REMOTE_HOST_ALLOWED accepts the reported email. If someone later swaps
     // checkEnrollHost for that regex, this test is the one that objects.
-    const REMOTE_HOST_ALLOWED = /^[A-Za-z0-9_.@-]+$/
-    expect(REMOTE_HOST_ALLOWED.test(REPORTED), 'the ssh-destination charset accepts the email').toBe(true)
+    // Asked through the real resolver, not a copy of its regex (kanban b15fe512).
+    expect(resolveRemoteConfig(JSON.stringify({ remoteHost: REPORTED, remoteWorkdir: '/w' })).host, 'the ssh-destination charset accepts the email').toBe(REPORTED)
     expect(checkEnrollHost(REPORTED, isIP).ok, 'ours must not').toBe(false)
   })
 })

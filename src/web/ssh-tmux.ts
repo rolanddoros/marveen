@@ -21,6 +21,13 @@ import { agentIdEnvExport } from './agent-id-env.js'
 // single quote with the four-char sequence '\'' (close-quote, escaped-quote,
 // open-quote). Inside single quotes EVERYTHING else (spaces, $, ;, &, globs,
 // brackets) is literal.
+//
+// Every ssh argv puts '--' right after the options and before the host
+// (kanban b15fe512, measured with ssh -G, OpenSSH 10.2): without it a host
+// starting with '-' is read as an option (`-Jx` = ProxyJump), and ssh also
+// parses '-' arguments AFTER the host as options. The host validator
+// (agent-config.ts REMOTE_HOST_ALLOWED) refuses a leading '-' too; this is the
+// second wall, at the one place every remote call passes.
 
 /** POSIX single-quote a string so it survives re-parsing by a remote shell. */
 export function shQuote(s: string): string {
@@ -95,7 +102,7 @@ export function buildTmuxInvocation(
   // remoteTmuxBin is a trusted constant ('tmux'); only the args carry data, so
   // only the args are quoted. The whole thing is a single argv element for ssh.
   const remoteCmd = [remoteTmuxBin, ...tmuxArgs.map(shQuote)].join(' ')
-  return { file: 'ssh', args: [...SSH_OPTS, host, remoteCmd] }
+  return { file: 'ssh', args: [...SSH_OPTS, '--', host, remoteCmd] }
 }
 
 /**
@@ -104,7 +111,7 @@ export function buildTmuxInvocation(
  * data embedded in `remoteCmd`.
  */
 export function buildSshExec(host: string, remoteCmd: string): TmuxInvocation {
-  return { file: 'ssh', args: [...SSH_OPTS, host, remoteCmd] }
+  return { file: 'ssh', args: [...SSH_OPTS, '--', host, remoteCmd] }
 }
 
 /** True when `session` appears as an exact line in `tmux list-sessions` output. */
@@ -246,7 +253,7 @@ export function ensureControlDir(): void {
  */
 export function cleanStaleSshSockets(host: string): void {
   try {
-    execFileSync('ssh', ['-O', 'exit', '-o', `ControlPath=${CONTROL_PATH}`, host], {
+    execFileSync('ssh', ['-O', 'exit', '-o', `ControlPath=${CONTROL_PATH}`, '--', host], {
       timeout: 3000,
       stdio: 'ignore',
     })
