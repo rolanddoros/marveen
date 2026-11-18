@@ -344,6 +344,14 @@ describe('assertPlainBundleTree on a tree built in place (runs as any user)', ()
     expect(() => assertPlainBundleTree(root)).toThrow('Invalid bundle: setuid/setgid entry agent/shared')
   })
 
+  it('a setgid directory is refused (own dir, own group: any user can set the bit)', () => {
+    const root = tree()
+    mkdirSync(join(root, 'agent', 'group'))
+    chmodSync(join(root, 'agent', 'group'), 0o2755)
+    expect(lstatSync(join(root, 'agent', 'group')).mode & 0o7000).toBe(0o2000)
+    expect(() => assertPlainBundleTree(root)).toThrow('Invalid bundle: setuid/setgid entry agent/group')
+  })
+
   it('a dangling link at the top level is refused', () => {
     const root = tree()
     symlinkSync('/nonexistent-ab15088d/none', join(root, 'agents'))
