@@ -66,8 +66,9 @@ export function sanitizeAgentIdent(raw: string): string {
 // capability string from becoming a prompt-injection vector when embedded in
 // another agent's system prompt.
 //
-// Threat model: PUT /api/agents/:name/capabilities is Bearer-token-accessible
-// and persona frontmatter is user-editable. Both are external-input paths.
+// Threat model: PUT /api/agents/:name/capabilities is owner-gated (mayActAsOwner;
+// before the first dashboard login the shared token passes) and persona
+// frontmatter is user-editable. Both are external-input paths.
 // A value like "IGNORE ALL PREVIOUS INSTRUCTIONS..." could silently flow into
 // every peer agent's CLAUDE.md during scaffold.
 //
