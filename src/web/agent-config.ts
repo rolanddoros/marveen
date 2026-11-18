@@ -275,8 +275,11 @@ export function readAgentClaudeConfigDir(name: string): string | null {
 // launch command (shQuoted), so it is validated strictly too.
 
 // ssh alias or user@host. NO ':' -- `ssh host:port` is not valid syntax; the
-// port belongs in the ~/.ssh/config `Port` directive.
-const REMOTE_HOST_ALLOWED = /^[A-Za-z0-9_.@-]+$/
+// port belongs in the ~/.ssh/config `Port` directive. The first character is a
+// letter, digit or '_': a leading '-' would make the argv element an ssh OPTION
+// (`-Jattacker.example` = ProxyJump, measured with ssh -G; kanban b15fe512), and a
+// leading '@' (empty user) is an ssh usage error, so every call would fail.
+const REMOTE_HOST_ALLOWED = /^[A-Za-z0-9_][A-Za-z0-9_.@-]*$/
 // Absolute path only. Tilde is rejected: a `~/proj` workdir would encode to
 // `~-proj` for the --continue probe but Claude Code stores the tilde-EXPANDED
 // path as `-home-user-proj`, so the probe would never match and --continue would
@@ -380,7 +383,7 @@ export function writeAgentRemoteConfig(
   if (!probe.host || !probe.workdir) {
     return {
       ok: false,
-      error: 'Invalid remoteHost (alias or user@host, no port/metachars) or remoteWorkdir (must be an absolute path without `..`).',
+      error: 'Invalid remoteHost (alias or user@host, no port/metachars, must not start with \'-\') or remoteWorkdir (must be an absolute path without `..`).',
     }
   }
   config.remoteHost = probe.host

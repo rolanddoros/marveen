@@ -36,6 +36,22 @@ describe('resolveRemoteConfig', () => {
       .toEqual({ host: null, workdir: null })
   })
 
+  // kanban b15fe512 (Ron 17751 M1): the host is an ssh argv element. A leading '-' is an ssh OPTION
+  // (`-Jx.example` = ProxyJump, measured with ssh -G), a leading '@' (empty user) an ssh usage error.
+  it('rejects a host that starts with -, @ or .', () => {
+    for (const host of ['-Jattacker.example', '-D1080', '-oBatchMode=no', '-', '--', '-x@devbox', '@devbox', '.devbox']) {
+      expect(resolveRemoteConfig(JSON.stringify({ remoteHost: host, remoteWorkdir: '/x' })), host)
+        .toEqual({ host: null, workdir: null })
+    }
+  })
+
+  it('still accepts an alias, user@host, a leading digit or _ and inner - . @', () => {
+    for (const host of ['devbox', 'user@laptop', '_devbox', '9box', 'host-1.lan', 'my-user@host-1.lan']) {
+      expect(resolveRemoteConfig(JSON.stringify({ remoteHost: host, remoteWorkdir: '/x' })), host)
+        .toEqual({ host, workdir: '/x' })
+    }
+  })
+
   it('rejects a relative or tilde workdir (encoding must be deterministic)', () => {
     expect(resolveRemoteConfig('{"remoteHost":"devbox","remoteWorkdir":"~/proj"}'))
       .toEqual({ host: null, workdir: null })

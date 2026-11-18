@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { writeAgentRemoteConfig, readAgentRemoteConfig, agentDir } from '../web/agent-config.js'
+import { writeAgentRemoteConfig, readAgentRemoteConfig, readAgentRemoteHost, agentDir } from '../web/agent-config.js'
 
 // Exercises the persistence layer that backs `PUT /api/agents/:name/remote`.
 // The HTTP handler itself imports db.js (better-sqlite3, ABI-mismatched in this
@@ -36,6 +36,23 @@ describe('writeAgentRemoteConfig (PUT /remote backing logic)', () => {
     const res = writeAgentRemoteConfig(TEST_AGENT, 'bad host;rm', '/x')
     expect(res.ok).toBe(false)
     expect(readAgentRemoteConfig(TEST_AGENT)).toEqual({ host: null, workdir: null })
+  })
+
+  it("rejects a host starting with '-' (an ssh option), says so, and does NOT persist", () => {
+    const before = readFileSync(join(agentDir(TEST_AGENT), 'agent-config.json'), 'utf-8')
+    const res = writeAgentRemoteConfig(TEST_AGENT, '-Jattacker.example', '/x')
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error).toContain("must not start with '-'")
+    expect(readFileSync(join(agentDir(TEST_AGENT), 'agent-config.json'), 'utf-8')).toBe(before)
+  })
+
+  it("an already STORED '-' host (written before the check) reads back as local: start, router and UI all see null", () => {
+    writeFileSync(
+      join(agentDir(TEST_AGENT), 'agent-config.json'),
+      JSON.stringify({ model: 'claude-sonnet-5', remoteHost: '-Jattacker.example', remoteWorkdir: '/home/user/proj' }),
+    )
+    expect(readAgentRemoteConfig(TEST_AGENT)).toEqual({ host: null, workdir: null })
+    expect(readAgentRemoteHost(TEST_AGENT)).toBeNull()
   })
 
   it('rejects a host with a colon/port', () => {
