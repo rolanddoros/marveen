@@ -8,6 +8,7 @@ import {
   cpSync,
   readdirSync,
   statSync,
+  lstatSync,
 } from 'node:fs'
 import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -184,6 +185,28 @@ export function exportAgentBundle(
   }
 }
 
+// Refuse an extracted bundle unless every entry under <extractRoot> (its direct
+// children included, dot-names and dangling links too) is a plain file or a
+// directory without setuid/setgid/sticky bits. lstat never follows a link, so a
+// symlink entry (agent/ itself, manifest.json, agent-config.json, anything
+// nested) is refused before any importer reads, deletes or copies through it;
+// a fifo/socket/device would otherwise be dropped silently by cpSync.
+// Post-extraction check; write-through-a-link during extraction is the host tar's job.
+export function assertPlainBundleTree(extractRoot: string): void {
+  const walk = (dir: string, rel: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const abs = join(dir, entry)
+      const relPath = rel ? `${rel}/${entry}` : entry
+      const st = lstatSync(abs)
+      if (st.isSymbolicLink()) throw new Error(`Invalid bundle: symlink entry ${relPath}`)
+      if (st.mode & 0o7000) throw new Error(`Invalid bundle: setuid/setgid entry ${relPath}`)
+      if (st.isDirectory()) walk(abs, relPath)
+      else if (!st.isFile()) throw new Error(`Invalid bundle: special file entry ${relPath}`)
+    }
+  }
+  walk(extractRoot, '')
+}
+
 // Parse + validate a bundle's manifest without unpacking the whole thing.
 // Throws with an operator-facing message on anything malformed.
 export function readBundleManifest(extractedRoot: string): BundleManifest {
@@ -262,6 +285,8 @@ export function importAgentBundle(
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
+    // Before any read, delete or copy below (manifest, agent/ check, sanitize, rmSync, cpSync).
+    assertPlainBundleTree(extractRoot)
 
     const manifest = readBundleManifest(extractRoot)
     const stagedAgentDir = join(extractRoot, 'agent')
@@ -452,6 +477,8 @@ export function importAllAgentsBundle(
     } catch {
       throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
     }
+    // The whole fleet bundle is refused, before any agent is read, deleted or copied.
+    assertPlainBundleTree(extractRoot)
 
     const manifest = readFleetManifest(extractRoot)
     const agentsRoot = join(extractRoot, 'agents')
