@@ -507,6 +507,21 @@ describe('a partial apply, status and resume (V2-A1-REL-2)', () => {
     expect(await resume(ctxOf(d))).toBe(EXIT.STOP)
     expect(lines.pop()).toContain('is not the approved content')
   })
+  it('RESUME_LIST_LIMIT never exceeds the dashboard\'s own list cap (Ron N3)', () => {
+    // The dashboard answers at most its cap, whatever limit is asked for. A RESUME_LIST_LIMIT above it could never be
+    // reached by the list's length, so the ">= limit: cannot be proven" stop would silently never fire. scripts/ does
+    // not import src/, so the two caps are read from their source text: the route clamps the query, db.ts clamps again.
+    const capIn = (rel: string, rx: RegExp): number => {
+      const text = readFileSync(new URL(rel, import.meta.url), 'utf-8')
+      const hits = [...text.matchAll(rx)]
+      expect(hits.length, `${rel}: exactly one cap expression`).toBe(1)
+      return Number(hits[0]![1])
+    }
+    const routeCap = capIn('../web/routes/approvals.ts', /const limit = limitRaw \? Math\.min\(parseInt\(limitRaw, 10\) \|\| \d+, (\d+)\) : \d+/g)
+    const dbCap = capIn('../db.ts', /const limit = Math\.min\(opts\.limit \?\? \d+, (\d+)\)\n {2}params\.push\(limit\)\n {2}return db\.prepare\(`SELECT \* FROM approvals /g)
+    expect(RESUME_LIST_LIMIT).toBeGreaterThan(0)
+    expect(RESUME_LIST_LIMIT).toBeLessThanOrEqual(Math.min(routeCap, dbCap))
+  })
 })
 
 describe('rebaseline: today\'s file and today\'s switches', () => {
