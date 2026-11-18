@@ -1608,6 +1608,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // POST /api/agents/:name/channels/:provider (legacy: /telegram) -- setup
   const setupMatch = matchChannelRoute(path, '')
   if (setupMatch && method === 'POST') {
+    // The owner only once a dashboard login exists (fork A4, kanban 774c7ece; same gate on every channel ACCESS
+    // route: setup, removal, pairing approve, invite create/list/revoke, allowed removal, channel request
+    // approve/deny). These decide WHO can write to an agent from outside (bot token, access.json, invites), the
+    // main agent's own channel included, and the shared Bearer token is held by every agent while AGENT_TOKENS is
+    // off. Before the name checks, the 404 and the body, so a non-owner learns nothing about which names exist.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel setup refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const [name, provider] = setupMatch
     const isMain = name === MAIN_AGENT_ID
     // Marveen lives at PROJECT_ROOT, not under agents/marveen/ -- skip the
@@ -1839,6 +1849,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // DELETE /api/agents/:name/channels/:provider (legacy: /telegram) -- remove
   if (setupMatch && method === 'DELETE') {
+    // The owner only (fork A4, kanban 774c7ece: see the channel setup POST).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel removal refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const [name, provider] = setupMatch
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const stateDir = channelStateDir(provider, agentDir(name))
@@ -2188,6 +2204,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // POST /api/agents/:name/channels/:provider/approve (legacy: /telegram/approve)
   const approveMatch = matchChannelRoute(path, '/approve')
   if (approveMatch && method === 'POST') {
+    // The owner only (fork A4, kanban 774c7ece: see the channel setup POST).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel pairing approve refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const [name, provider] = approveMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
       json(res, { error: 'Agent not found' }, 404)
@@ -2263,6 +2285,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // POST /api/agents/:name/channels/:provider/invites (legacy: /telegram/invites)
   const inviteCreateMatch = matchChannelRoute(path, '/invites')
   if (inviteCreateMatch && method === 'POST') {
+    // The owner only (fork A4, kanban 774c7ece: see the channel setup POST).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel invite create refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const [name, provider] = inviteCreateMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
       json(res, { error: 'Agent not found' }, 404)
@@ -2297,6 +2325,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // GET /api/agents/:name/channels/:provider/invites (legacy: /telegram/invites)
   if (inviteCreateMatch && method === 'GET') {
+    // The owner only (fork A4, kanban 774c7ece): the list carries the live invite tokens with a ready deep
+    // link, the same capability as creating one.
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel invite list refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const [name, provider] = inviteCreateMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
       json(res, { error: 'Agent not found' }, 404)
@@ -2329,6 +2364,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       ? { name: decodeURIComponent(inviteRevokeLegacyMatch[1]), provider: 'telegram' as ChannelProviderType, token: decodeURIComponent(inviteRevokeLegacyMatch[2]) }
       : null
   if (inviteRevokeMatch && method === 'DELETE') {
+    // The owner only (fork A4, kanban 774c7ece: see the channel setup POST).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel invite revoke refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const { name, provider, token } = inviteRevokeMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
       json(res, { error: 'Agent not found' }, 404)
@@ -2350,6 +2391,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       ? { name: decodeURIComponent(allowedRemoveLegacyMatch[1]), provider: 'telegram' as ChannelProviderType, kind: allowedRemoveLegacyMatch[2], id: decodeURIComponent(allowedRemoveLegacyMatch[3]) }
       : null
   if (allowedRemoveMatch && method === 'DELETE') {
+    // The owner only (fork A4, kanban 774c7ece: see the channel setup POST).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel allowed removal refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const { name, provider, kind, id } = allowedRemoveMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
       json(res, { error: 'Agent not found' }, 404)
@@ -2395,6 +2442,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   const chReqApproveMatch = path.match(/^\/api\/agents\/([^/]+)\/channel-requests\/(\d+)\/approve$/)
   if (chReqApproveMatch && method === 'POST') {
+    // The owner only (fork A4, kanban 774c7ece: see the channel setup POST).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel request approve refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const name = decodeURIComponent(chReqApproveMatch[1])
     const reqId = Number(chReqApproveMatch[2])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
@@ -2444,6 +2497,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   const chReqDenyMatch = path.match(/^\/api\/agents\/([^/]+)\/channel-requests\/(\d+)\/deny$/)
   if (chReqDenyMatch && method === 'POST') {
+    // The owner only (fork A4, kanban 774c7ece: see the channel setup POST).
+    if (!mayActAsOwner(ctx.auth, req)) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Channel request deny refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const name = decodeURIComponent(chReqDenyMatch[1])
     const reqId = Number(chReqDenyMatch[2])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
