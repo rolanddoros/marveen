@@ -82,8 +82,10 @@ describe('DELETE /api/agents/:name and the desired run-state', () => {
     addDesiredAgent(THROWAWAY)
     addDesiredAgent(bystander)
     try {
-      const { ctx } = fakeCtx(`/api/agents/${THROWAWAY}`, 'DELETE')
+      const { ctx, out } = fakeCtx(`/api/agents/${THROWAWAY}`, 'DELETE')
       await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
+      // The delete really ran (a refused call, e.g. a 403, would leave the bystander alone and prove nothing).
+      expect(out.status).toBe(200)
       // The delete must be surgical: clearing the whole file would "pass" the
       // test above while silently un-desiring the entire fleet.
       expect(getDesiredAgents().has(bystander)).toBe(true)
