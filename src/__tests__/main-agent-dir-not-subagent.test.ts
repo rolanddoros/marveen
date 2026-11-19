@@ -36,7 +36,8 @@ async function call(path: string, method: string): Promise<{ status: number; bod
     end(chunk?: string | Buffer) { if (chunk) out.body = JSON.parse(chunk.toString()) as Record<string, unknown> },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req: { headers: {} }, res, path: url.pathname, method, url } as unknown as Ctx
+  // Fork D part (a) (f8bbd94c): DELETE /api/agents/:name takes the owner or the shared token; this is the owner's call.
+  const ctx = { req: { headers: {} }, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as unknown as Ctx
   expect(await tryHandleAgents(ctx, join(SANDBOX, 'web'))).toBe(true)
   return out
 }

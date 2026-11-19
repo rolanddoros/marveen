@@ -116,7 +116,8 @@ function startCreate(): Promise<{ status: number; body: Record<string, any> }> {
     ;(req as unknown as EventEmitter).emit('end')
   })
   return tryHandleAgents(
-    { req, res, path: url.pathname, method: 'POST', url } as unknown as RouteContext,
+    // Fork D part (a) (f8bbd94c): POST /api/agents takes the owner or the shared token; these are the owner's creates.
+    { req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'session', user: 'owner' } } as unknown as RouteContext,
     join(PROJECT_ROOT, 'web'),
   ).then((handled) => {
     expect(handled).toBe(true)

@@ -840,6 +840,17 @@ function tokenMayWriteModelOnly(body: Buffer): boolean {
   return resolveProviderEnv(resolveModelId(model), () => '""', null).provider === 'claude'
 }
 
+// Fork A1 (23e0c5c7) and Fork D part (a) (f8bbd94c): the one predicate behind PUT /api/agents/:name, POST /api/agents
+// and DELETE /api/agents/:name. `owner` = mayActAsOwner (an owner session, a full Bridge key with the owner's cookie,
+// the shared token before the first login); `sharedToken` = the SHARED dashboard token (kind 'token' without
+// tokenAgent): never a sub-agent's own token, a federation peer, a device or operator key. Neither -> the route is 403.
+function ownerOrSharedToken(ctx: RouteContext): { owner: boolean; sharedToken: boolean } {
+  return {
+    owner: mayActAsOwner(ctx.auth, ctx.req),
+    sharedToken: ctx.auth?.kind === 'token' && !ctx.auth.tokenAgent,
+  }
+}
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -1227,6 +1238,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (path === '/api/agents' && method === 'POST') {
+    // Fork D part (a) (kanban f8bbd94c, Roland TG 3735): creating an agent is the owner's or the main agent's step
+    // (uj-agens-felvetel). The FIRST statement: a refused caller is answered before the body is read, the install
+    // default is probed or any name is checked, so it learns nothing about names and nothing is created.
+    const createGate = ownerOrSharedToken(ctx)
+    if (!createGate.owner && !createGate.sharedToken) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Agent create refused: neither the owner nor the shared token')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
     const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
@@ -2895,8 +2915,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // the body is read once, capped; (c) anything but exactly {model: <a Claude model>} is 403 before any write;
     // (d) only then the agent-exists 404 and the main-agent 400 (a token caller can tell a known name from an
     // unknown one, as GET /api/agents already shows it).
-    const owner = mayActAsOwner(ctx.auth, req)
-    const sharedToken = ctx.auth?.kind === 'token' && !ctx.auth.tokenAgent
+    const { owner, sharedToken } = ownerOrSharedToken(ctx)
     if (!owner && !sharedToken) {
       logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Agent update refused: no owner session')
       json(res, OWNER_SESSION_REQUIRED, 403)
@@ -3051,6 +3070,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (agentMatch && method === 'DELETE') {
+    // Fork D part (a) (kanban f8bbd94c, Roland TG 3735): deleting an agent is the owner's or the main agent's step
+    // (agens-torles). The FIRST statement: before the main-agent 400 and the 404, so unknown and existing names get
+    // the same answer, and before the desired-state change, the stop, the backup and the removal.
+    const deleteGate = ownerOrSharedToken(ctx)
+    if (!deleteGate.owner && !deleteGate.sharedToken) {
+      logger.warn({ path, method, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Agent delete refused: neither the owner nor the shared token')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const name = decodeURIComponent(agentMatch[1])
     // A directory named after the main agent is not a sub-agent: deleting it
     // here would remove whatever it holds and strip the main agent from every

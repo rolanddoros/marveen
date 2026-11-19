@@ -44,7 +44,8 @@ function fakeCtx(path: string, method: string): {
   }
   const url = new URL(`http://localhost:3420${path}`)
   return {
-    ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method, url } as RouteContext,
+    // Fork D part (a) (f8bbd94c): DELETE /api/agents/:name takes the owner or the shared token; these are the owner's deletes.
+    ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as RouteContext,
     out,
   }
 }
@@ -81,8 +82,10 @@ describe('DELETE /api/agents/:name and the desired run-state', () => {
     addDesiredAgent(THROWAWAY)
     addDesiredAgent(bystander)
     try {
-      const { ctx } = fakeCtx(`/api/agents/${THROWAWAY}`, 'DELETE')
+      const { ctx, out } = fakeCtx(`/api/agents/${THROWAWAY}`, 'DELETE')
       await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
+      // The delete really ran (a refused call, e.g. a 403, would leave the bystander alone and prove nothing).
+      expect(out.status).toBe(200)
       // The delete must be surgical: clearing the whole file would "pass" the
       // test above while silently un-desiring the entire fleet.
       expect(getDesiredAgents().has(bystander)).toBe(true)
