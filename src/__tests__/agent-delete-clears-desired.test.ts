@@ -44,7 +44,8 @@ function fakeCtx(path: string, method: string): {
   }
   const url = new URL(`http://localhost:3420${path}`)
   return {
-    ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method, url } as RouteContext,
+    // Fork D part (a) (f8bbd94c): DELETE /api/agents/:name takes the owner or the shared token; these are the owner's deletes.
+    ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as RouteContext,
     out,
   }
 }
