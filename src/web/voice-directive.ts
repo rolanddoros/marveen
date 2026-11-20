@@ -83,3 +83,11 @@ export function buildTtsDirective(opts: {
     return null
   }
 }
+
+/** The visible line an agent gets when its voice note was not transcribed in time (card 58b9aa06, Johnny 18320:
+ *  a timeout is never silent). The retry handle is the Telegram file_id: the audio is not kept on this machine
+ *  (_vtools.py downloads it to a temp file), and scripts/voice/stt.sh fetches it again from Telegram. */
+export function sttTimeoutNotice(budgetS: number, fileParam: string): string {
+  return `[Hang átirat]: időtúllépés, ${budgetS} s alatt nem készült el az átirat (transcription timed out). ` +
+    `Kézi újrapróbálás: scripts/voice/stt.sh ${fileParam}`
+}

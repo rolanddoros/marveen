@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, VOICE_TRANSCRIBE_INBOUND } from '../config.js'
-import { resolveAgentChannelStateDir } from './voice-directive.js'
+import { resolveAgentChannelStateDir, sttTimeoutNotice } from './voice-directive.js'
+import type { SttOutcome } from './routes/voice.js'
 import {
   getPendingMessages,
   getMessageStatus,
@@ -784,6 +785,7 @@ function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: n
 export async function runMessageRouterTick(): Promise<void> {
     // Reset per-tick batched-message tracker.
     batchedMsgIdsThisTick = new Set()
+    sweepVoiceSttJobs()
     // Cap work per tick: process at most MAX_MESSAGES_PER_TICK messages, the
     // rest roll to the next 5s tick. Bounds a single tick's wall-time so a
     // backlog (e.g. after a delivery stall) can never make one tick run long
@@ -926,6 +928,9 @@ export async function runMessageRouterTick(): Promise<void> {
       // Skip messages already batched by the reconnect pre-pass: they are
       // 'done' in the DB now but still appear in our snapshot slice.
       if (batchedMsgIdsThisTick.has(msg.id)) continue
+      // Card 58b9aa06: an older voice note to the same agent is still being transcribed (off the tick): this row
+      // waits behind it, so the agent reads its messages in order. STOP / urgent rows are exempt.
+      if (voiceSttHoldsRow(msg)) continue
       // Per-message fault isolation: a throw from any helper (e.g. safeJoin
       // on a '..'-bearing to_agent) previously escaped the whole tick through
       // the catch-less try/finally, aborting delivery for every younger
@@ -1224,13 +1229,26 @@ export async function runMessageRouterTick(): Promise<void> {
           // agents, so an existing install does not start running
           // faster-whisper on every inbound voice note after an update.
           if (shouldTranscribeInboundVoice(readAgentVoiceConfig(msg.to_agent), VOICE_TRANSCRIBE_INBOUND)) {
-            // Attempt STT; on failure fall through to raw voice block.
-            const transcript = await callVoiceSTT(voiceFileId, msg.to_agent)
-            if (transcript) {
-              deliveryContent = injectTranscript(msg.content, transcript)
+            // Card 58b9aa06: STT runs OFF the tick. The first tick that reaches the row starts it and moves on (the
+            // row stays pending, later rows to this agent wait behind it: voiceSttHoldsRow); a later tick delivers
+            // it once the outcome is in. Awaiting it here held EVERY agent's delivery for the whole transcription
+            // (up to the budget, 900 s by default with whisper large-v3).
+            const job = voiceSttJobs.get(msg.id)
+            if (!job) {
+              startVoiceStt(msg.id, msg.to_agent, voiceFileId)
+              continue
+            }
+            if (!job.outcome) continue
+            const outcome = job.outcome
+            if (outcome.ok && outcome.text) {
+              deliveryContent = injectTranscript(msg.content, outcome.text)
               logger.info({ id: msg.id, agent: msg.to_agent }, 'message-router: voice STT applied')
               // TTS directive is injected by the UserPromptSubmit hook (voice-reply-directive.py)
               // which fires on every delivery path, not just coordinator-relay.
+            } else if (!outcome.ok && outcome.reason === 'timeout') {
+              // Never silent: the agent sees that the note was not transcribed and how to retry, above the raw block.
+              deliveryContent = `${sttTimeoutNotice(outcome.budgetS, voiceFileId)}\n${msg.content}`
+              logger.warn({ id: msg.id, agent: msg.to_agent, budgetS: outcome.budgetS }, 'message-router: STT timed out, delivering the raw voice block with the timeout notice')
             } else {
               logger.warn({ id: msg.id, agent: msg.to_agent }, 'message-router: STT failed, delivering raw voice block')
             }
@@ -1244,9 +1262,9 @@ export async function runMessageRouterTick(): Promise<void> {
       try {
         // RE-READ before sending. The work set of this tick is a SNAPSHOT taken
         // at the top (getPendingMessages into an array), and everything below
-        // has been working from that copy: session lookups, the readiness gate,
-        // voice STT -- which the re-entrancy guard notes can hold a tick for up
-        // to 65 seconds on its own. With up to MAX_MESSAGES_PER_TICK rows sent
+        // has been working from that copy: session lookups, the readiness gate
+        // (voice STT no longer runs on the tick, card 58b9aa06, but a voice row
+        // can wait ticks for it). With up to MAX_MESSAGES_PER_TICK rows sent
         // serially, the gap between reading a row and sending it is the length
         // of the tick, not an instant.
         //
@@ -1264,6 +1282,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // who closed it and why.
         const liveStatus = getMessageStatus(msg.id)
         if (liveStatus !== 'pending') {
+          voiceSttJobs.delete(msg.id)
           logger.info(
             { id: msg.id, from: msg.from_agent, to: msg.to_agent, liveStatus },
             'message-router: row is no longer pending at send time, skipping delivery',
@@ -1389,6 +1408,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
+        voiceSttJobs.delete(msg.id)
         // ROUTERSAWTURN824: 'delivered' above means "keys were pressed". Look in
         // the recipient's transcript a grace period later and tell the main
         // agent if the prompt never arrived. Keyboard deliveries only (the
@@ -1561,14 +1581,51 @@ function injectTranscript(content: string, transcript: string): string {
   return result
 }
 
-// Transcribe an inbound voice message. Calls transcribeVoiceFile() DIRECTLY
+// ---- voice STT off the tick (card 58b9aa06) -----------------------------------
+// One job per voice row (message id): started by the first tick that reaches the row, its outcome filled in when
+// whisper finishes, removed when the row is delivered or is no longer pending. In memory only: after a dashboard
+// restart the row is still pending and the next tick simply starts it again.
+interface VoiceSttJob { agent: string; startedAt: number; outcome?: SttOutcome }
+const voiceSttJobs = new Map<number, VoiceSttJob>()
+
+function startVoiceStt(msgId: number, agent: string, fileId: string): void {
+  const job: VoiceSttJob = { agent, startedAt: Date.now() }
+  voiceSttJobs.set(msgId, job)
+  logger.info({ id: msgId, agent }, 'message-router: voice STT started off the tick; the row waits for it')
+  void callVoiceSTT(fileId, agent).then((o) => { job.outcome = o })
+}
+
+/** True when an OLDER voice row to the same agent has a job that is not delivered yet: the row waits behind it.
+ *  A STOP or urgent row never waits for a transcription. */
+export function voiceSttHoldsRow(msg: Pick<AgentMessage, 'id' | 'to_agent'> & Partial<AgentMessage>): boolean {
+  if (voiceSttJobs.size === 0) return false
+  if (isUrgentDelivery(msg as AgentMessage, MAIN_AGENT_ID)) return false
+  for (const [id, job] of voiceSttJobs) {
+    if (job.agent === msg.to_agent && id < msg.id) return true
+  }
+  return false
+}
+
+/** Drop finished jobs whose row is no longer pending (failed, abandoned, closed elsewhere). */
+function sweepVoiceSttJobs(): void {
+  for (const [id, job] of voiceSttJobs) {
+    if (job.outcome && getMessageStatus(id) !== 'pending') voiceSttJobs.delete(id)
+  }
+}
+
+/** For tests only. */
+export function _voiceSttJobsForTest(): ReadonlyMap<number, Readonly<VoiceSttJob>> { return voiceSttJobs }
+export function _resetVoiceSttJobsForTest(): void { voiceSttJobs.clear() }
+
+// Transcribe an inbound voice message. Calls transcribeVoiceFileOutcome() DIRECTLY
 // (in-process) instead of self-HTTP'ing to /api/voice/stt: the old fetch to
 // the same process's dashboard (65s AbortSignal) ran on the tick and coupled
 // delivery to the HTTP server -- under sustained voice traffic it progressively
 // throttled the event loop (/api/agents 73ms -> 12s -> timeout). The whisper
-// subprocess keeps its own 60s timeout inside transcribeVoiceFile, so this can
-// never hang the tick beyond that. Returns the transcript, or null on failure.
-async function callVoiceSTT(fileId: string, agentId: string): Promise<string | null> {
+// subprocess keeps its own budget inside it (STT_TIMEOUT_MS, 900 s by default,
+// the wait for the single whisper slot included), and since card 58b9aa06 the
+// tick does not await it at all (startVoiceStt). Never rejects.
+async function callVoiceSTT(fileId: string, agentId: string): Promise<SttOutcome> {
   try {
     const { existsSync } = await import('node:fs')
     const { join } = await import('node:path')
@@ -1576,13 +1633,13 @@ async function callVoiceSTT(fileId: string, agentId: string): Promise<string | n
     // Resolve the agent's channel state_dir using the canonical helper so
     // sub-agents (whose .env lives under AGENTS_BASE_DIR) are found correctly.
     const resolvedDir = resolveAgentChannelStateDir(agentId, 'telegram')
-    if (!existsSync(join(resolvedDir, '.env'))) return null
+    if (!existsSync(join(resolvedDir, '.env'))) return { ok: false, reason: 'unavailable' }
 
-    const { transcribeVoiceFile } = await import('./routes/voice.js')
-    return await transcribeVoiceFile(fileId, resolvedDir)
+    const { transcribeVoiceFileOutcome } = await import('./routes/voice.js')
+    return await transcribeVoiceFileOutcome(fileId, resolvedDir)
   } catch (err) {
     logger.warn({ err }, 'message-router: callVoiceSTT error')
-    return null
+    return { ok: false, reason: 'failed' }
   }
 }
 

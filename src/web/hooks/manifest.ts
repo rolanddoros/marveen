@@ -300,7 +300,8 @@ export const HOOK_MANIFEST_ENTRIES: readonly HookManifestEntry[] = [
     sidecar: { purpose: 'UserPromptSubmit hook: on a human message, remind the agent to look in its memory.' } },
   { id: 'channel-inbox-drain', kind: 'directive', script: 'scripts/hooks/channel-inbox-drain.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 5, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: drain sub-agent Telegram channel notifications.' } },
-  { id: 'voice-reply-directive', kind: 'directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 180, ...open,
+  // timeout 920 s: the outermost bound of the STT chain (routes/voice.ts STT_DIRECTIVE_CEILING_MS 900 s < the hook's urlopen 910 s < 920 s, card 58b9aa06).
+  { id: 'voice-reply-directive', kind: 'directive', script: 'scripts/hooks/voice-reply-directive.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 920, ...open,
     sidecar: { purpose: 'UserPromptSubmit hook: voice-reply directive injection + server-side STT.' } },
   { id: 'telegram_progress', kind: 'handler', script: 'scripts/hooks/telegram_progress.py', scope: 'both', events: ['UserPromptSubmit'], timeout: 15, ...open,
     sidecar: { purpose: 'Posts the Telegram "processing" indicator when an inbound message starts a turn.' } },

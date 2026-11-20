@@ -22,33 +22,49 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
-import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio } from '../voice-directive.js'
-import { PROJECT_ROOT } from '../../config.js'
+import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, sttTimeoutNotice } from '../voice-directive.js'
+import { PROJECT_ROOT, MARVEEN_STT_TIMEOUT_MS_RAW } from '../../config.js'
 import type { RouteContext } from './types.js'
 
 const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
 const VTOOLS_PY = join(VOICE_DIR, '_vtools.py')
 const VENV_PY = join(VOICE_DIR, 'venv', 'bin', 'python')
 
-// STT wall-clock budget. Measured 2026-09-18 on an 8-core CPU box with the
-// STOCK _vtools.py settings (faster-whisper "small"/int8, beam_size=5): a 2:26
-// voice note took 110.1 s. The previous 60 s budget therefore silently killed
-// every voice message longer than about two minutes -- the route returned
-// transcript=null and nothing said why, so the owner's message simply vanished.
-// At that measured rate 160 s covers roughly 3.5 minutes of audio.
-// The figure is deliberately quoted for stock settings: an earlier revision of
-// this change also lowered beam_size, which would have made the same budget
-// stretch further, but that tuning lives in the INSTALLED copy of _vtools.py
-// and a merge cannot deliver it -- so the budget must hold without it.
+// STT wall-clock budget (card 58b9aa06). History: 60 s silently dropped every note over ~2 min (2026-09-18,
+// faster-whisper "small"); 160 s covered ~3.5 min of audio on that model. Whisper large-v3 (the owner's choice,
+// Roland TG 3875) is far slower on this CPU box: measured 2026-11-20 (Johnny, 10 threads, 47 s of audio) load 11 s
+// warm / 43 s cold, transcribe 85 s, wall 97 s, peak RSS 4.1 GB -- about 1.8x the audio length plus the load. The
+// default 900 s therefore covers 45 s + 1.8 x ~475 s: a voice note of about 7-8 minutes, cold.
+// MARVEEN_STT_TIMEOUT_MS overrides it (whole milliseconds, 30 s .. 1 h); anything else keeps the default and says so.
 //
-// THE THREE BOUNDS MUST BE STRICTLY INCREASING, innermost first:
-//   this STT budget 160 s  <  voice-reply-directive.py urlopen 170 s
-//                          <  hook `timeout` in settings.json 180 s
-// The shortest wins, so if an outer bound is the smallest it fires first and
-// the caller sees a bare socket/hook timeout instead of the server's own
-// transcript=null -- the same "vanished with no reason" failure this change
-// exists to remove, just later. Raising one of the three alone changes nothing.
-const STT_TIMEOUT_MS = 160_000
+// The budget counts from the moment a caller ASKS for a transcription, so the wait for the single whisper slot
+// (runWhisperExclusive, below) is part of it: a caller is never kept longer than its budget in total.
+//
+// THE HOOK PATH HAS A STRICTLY INCREASING CHAIN OF BOUNDS, innermost first:
+//   STT_DIRECTIVE_CEILING_MS 900 s (+ STT_KILL_GRACE_MS 5 s)  <  voice-reply-directive.py urlopen 910 s
+//                                   <  hook `timeout` 920 s (src/web/hooks/manifest.ts, voice-reply-directive)
+// The shortest wins, so if an outer bound were the smallest it would fire first and the agent would see a bare
+// socket/hook timeout instead of the server's own timeout notice -- the "vanished with no reason" failure. The
+// directive path therefore uses min(STT_TIMEOUT_MS, STT_DIRECTIVE_CEILING_MS): the env can lower it, never push it
+// past the chain (the hook process does not see the dashboard's env). Raising one of the three alone changes nothing.
+// The router path (message-router.ts) has no outer bound and uses STT_TIMEOUT_MS as is.
+export const STT_TIMEOUT_DEFAULT_MS = 900_000
+export const STT_TIMEOUT_MIN_MS = 30_000
+export const STT_TIMEOUT_MAX_MS = 3_600_000
+export const STT_DIRECTIVE_CEILING_MS = 900_000
+
+/** The STT budget from MARVEEN_STT_TIMEOUT_MS: whole milliseconds within [30 s, 1 h], else the 900 s default. */
+export function resolveSttTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MARVEEN_STT_TIMEOUT_MS
+  if (raw === undefined || raw.trim() === '') return STT_TIMEOUT_DEFAULT_MS
+  const v = /^\d{1,9}$/.test(raw.trim()) ? Number(raw.trim()) : NaN
+  if (!Number.isInteger(v) || v < STT_TIMEOUT_MIN_MS || v > STT_TIMEOUT_MAX_MS) {
+    logger.warn({ value: raw.slice(0, 40), defaultMs: STT_TIMEOUT_DEFAULT_MS }, `MARVEEN_STT_TIMEOUT_MS must be whole milliseconds between ${STT_TIMEOUT_MIN_MS} and ${STT_TIMEOUT_MAX_MS}; using the default`)
+    return STT_TIMEOUT_DEFAULT_MS
+  }
+  return v
+}
+export const STT_TIMEOUT_MS = resolveSttTimeoutMs({ MARVEEN_STT_TIMEOUT_MS: MARVEEN_STT_TIMEOUT_MS_RAW })
 
 // Telegram file_ids are base64url + some punctuation; reject anything else.
 const SAFE_FILE_ID_RE = /^[A-Za-z0-9_\-]{10,200}$/
@@ -86,24 +102,37 @@ function isVoiceInstalled(): boolean {
   return existsSync(VENV_PY) && existsSync(VTOOLS_PY)
 }
 
+// Grace between SIGINT and SIGKILL for a timed-out whisper (card 58b9aa06, Johnny 18334). Python runs its finally
+// blocks on SIGINT (KeyboardInterrupt) but NOT on SIGTERM (measured 2026-11-20: SIGTERM rc 143, finally skipped;
+// SIGINT rc 130, finally ran), and _vtools.py deletes its downloaded temp .ogg in a finally. SIGKILL alone left an
+// orphan file in /tmp per timeout. The grace keeps the hook chain: 900 s + 5 s < urlopen 910 s.
+export const STT_KILL_GRACE_MS = 5_000
+
 function runProc(
   cmd: string,
   args: string[],
-  opts: { stdinData?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
-): Promise<{ stdout: string; stderr: string; code: number }> {
+  opts: { stdinData?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; interruptGraceMs?: number } = {},
+): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
   return new Promise((resolve) => {
     const proc = spawn(cmd, args, { shell: false, ...(opts.env ? { env: opts.env } : {}) })
     let stdout = ''
     let stderr = ''
-    const timer = opts.timeoutMs
-      ? setTimeout(() => { proc.kill('SIGKILL') }, opts.timeoutMs)
-      : null
+    let timedOut = false
+    let graceTimer: NodeJS.Timeout | null = null
+    const onTimeout = () => {
+      timedOut = true
+      if (opts.interruptGraceMs === undefined) { proc.kill('SIGKILL'); return }
+      proc.kill('SIGINT')
+      graceTimer = setTimeout(() => { proc.kill('SIGKILL') }, opts.interruptGraceMs)
+    }
+    const timer = opts.timeoutMs ? setTimeout(onTimeout, opts.timeoutMs) : null
     proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
     proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
     if (opts.stdinData != null) { proc.stdin.write(opts.stdinData, 'utf-8'); proc.stdin.end() }
     proc.on('close', (code) => {
       if (timer) clearTimeout(timer)
-      resolve({ stdout, stderr, code: code ?? 1 })
+      if (graceTimer) clearTimeout(graceTimer)
+      resolve({ stdout, stderr, code: code ?? 1, timedOut })
     })
   })
 }
@@ -111,26 +140,83 @@ function runProc(
 // Concurrency guard: prevents parallel installs racing on the same venv/DEST.
 let _installInProgress = false
 
+// ONE whisper process at a time, process-wide (card 58b9aa06). large-v3 peaks at 4.1 GB RSS (measured 2026-11-20),
+// and the router and the directive route could otherwise start one each. Callers queue in arrival order. The wait
+// counts against the caller's budget: a caller whose budget runs out while queued gets 'timeout' without running,
+// and its place in the queue is released as soon as it is reached, so it never holds the next caller.
+let whisperTail: Promise<void> = Promise.resolve()
+export async function runWhisperExclusive<T>(budgetMs: number, run: (remainingMs: number) => Promise<T>, onTimeout: () => T): Promise<T> {
+  const deadline = Date.now() + budgetMs
+  let release!: () => void
+  const mine = new Promise<void>((r) => { release = r })
+  const turn = whisperTail
+  whisperTail = turn.then(() => mine)
+  let timer: NodeJS.Timeout | undefined
+  const waited = await Promise.race([
+    turn.then(() => true),
+    new Promise<false>((r) => { timer = setTimeout(() => r(false), Math.max(0, budgetMs)) }),
+  ])
+  if (timer) clearTimeout(timer)
+  if (!waited) {
+    void turn.then(release)
+    return onTimeout()
+  }
+  try {
+    const remaining = deadline - Date.now()
+    return remaining > 0 ? await run(remaining) : onTimeout()
+  } finally {
+    release()
+  }
+}
+
+/** For tests only: forget the queue (a test that leaves a slot held would block the next file's callers). */
+export function _resetWhisperQueueForTest(): void { whisperTail = Promise.resolve() }
+
+export type SttOutcome =
+  | { ok: true; text: string }
+  | { ok: false; reason: 'timeout'; budgetS: number }
+  | { ok: false; reason: 'failed' | 'unavailable' }
+
+async function transcribeWithin(fileParam: string, stateDir: string, budgetMs: number): Promise<SttOutcome> {
+  const budgetS = Math.round(budgetMs / 1000)
+  return runWhisperExclusive<SttOutcome>(budgetMs, async (remainingMs) => {
+    const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: remainingMs, interruptGraceMs: STT_KILL_GRACE_MS })
+    if (result.timedOut) {
+      logger.warn({ fileParam, budgetS }, 'STT timed out: whisper killed at the budget')
+      return { ok: false, reason: 'timeout', budgetS }
+    }
+    if (result.code !== 0) {
+      logger.warn({ fileParam, stderr: result.stderr.slice(0, 200) }, 'STT failed: whisper exited non-zero')
+      return { ok: false, reason: 'failed' }
+    }
+    // An empty transcript stays ok:true with '' (unchanged: the callers treat '' as "no transcript").
+    return { ok: true, text: result.stdout.trim() }
+  }, () => {
+    logger.warn({ fileParam, budgetS }, 'STT timed out: the budget ran out while waiting for the whisper slot')
+    return { ok: false, reason: 'timeout', budgetS }
+  })
+}
+
 // Transcribe a Telegram voice file via the local whisper toolkit. This is the
 // single in-process entry point for STT -- both the /api/voice/stt route AND
-// the message-router tick call it DIRECTLY. The router must never self-HTTP to
+// the message-router call it DIRECTLY. The router must never self-HTTP to
 // /api/voice/stt: a process HTTP-calling its own dashboard from the 5s tick
 // coupled message delivery to the HTTP server and, under sustained voice
 // traffic, threw the event loop (progressive /api/agents latency 73ms -> 12s ->
-// timeout). Returns the transcript, or null on any failure (toolkit missing,
-// invalid input, whisper non-zero). The whisper subprocess keeps its own
-// STT_TIMEOUT_MS budget inside runProc, so a slow transcription can never hang
-// the caller.
+// timeout). The router no longer awaits this on its tick either (card 58b9aa06):
+// it starts the call and delivers the row on a later tick. The whisper
+// subprocess keeps its STT_TIMEOUT_MS budget (slot wait included).
+export async function transcribeVoiceFileOutcome(fileId: string, stateDir: string): Promise<SttOutcome> {
+  if (!isVoiceInstalled()) return { ok: false, reason: 'unavailable' }
+  if (!SAFE_FILE_ID_RE.test(fileId)) return { ok: false, reason: 'unavailable' }
+  if (!isSafeStateDir(stateDir)) return { ok: false, reason: 'unavailable' }
+  return transcribeWithin(fileId, stateDir, STT_TIMEOUT_MS)
+}
+
+/** The transcript, or null on any failure (kept for callers that need no reason). */
 export async function transcribeVoiceFile(fileId: string, stateDir: string): Promise<string | null> {
-  if (!isVoiceInstalled()) return null
-  if (!SAFE_FILE_ID_RE.test(fileId)) return null
-  if (!isSafeStateDir(stateDir)) return null
-  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: STT_TIMEOUT_MS })
-  if (result.code !== 0) {
-    logger.warn({ fileId, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: whisper failed')
-    return null
-  }
-  return result.stdout.trim()
+  const o = await transcribeVoiceFileOutcome(fileId, stateDir)
+  return o.ok ? o.text : null
 }
 
 /**
@@ -179,17 +265,21 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
       : inboundWasAudio ? buildTtsDirective(ttsParams)  // auto: only when inbound was audio
       : null
 
+    // stt_notice: a line the hook prints as is when the transcription timed out (never silent, card 58b9aa06).
     let transcript: string | null = null
+    let sttNotice: string | null = null
     if (inboundWasAudio && isVoiceInstalled()) {
-      const sttResult = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: STT_TIMEOUT_MS })
-      if (sttResult.code === 0) {
-        transcript = sttResult.stdout.trim() || null
+      const outcome = await transcribeWithin(fileParam, stateDir, Math.min(STT_TIMEOUT_MS, STT_DIRECTIVE_CEILING_MS))
+      if (outcome.ok) {
+        transcript = outcome.text || null
+      } else if (outcome.reason === 'timeout') {
+        sttNotice = sttTimeoutNotice(outcome.budgetS, fileParam)
       } else {
-        logger.warn({ fileParam, stderr: sttResult.stderr }, '/api/voice/directive: STT failed (non-fatal)')
+        logger.warn({ fileParam }, '/api/voice/directive: STT failed (non-fatal)')
       }
     }
 
-    json(res, { directive, transcript })
+    json(res, { directive, transcript, stt_notice: sttNotice })
     return true
   }
 
@@ -246,13 +336,17 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (!SAFE_FILE_ID_RE.test(fileId)) { json(res, { error: 'Invalid file_id' }, 400); return true }
     if (!isSafeStateDir(stateDir)) { json(res, { error: 'Invalid state_dir' }, 400); return true }
 
-    const transcript = await transcribeVoiceFile(fileId, stateDir)
-    if (transcript === null) {
+    const outcome = await transcribeVoiceFileOutcome(fileId, stateDir)
+    if (!outcome.ok && outcome.reason === 'timeout') {
+      json(res, { error: 'STT timed out', stt_notice: sttTimeoutNotice(outcome.budgetS, fileId) }, 504)
+      return true
+    }
+    if (!outcome.ok) {
       logger.warn({ fileId }, '/api/voice/stt: whisper failed')
       json(res, { error: 'STT failed' }, 500)
       return true
     }
-    json(res, { transcript })
+    json(res, { transcript: outcome.text })
     return true
   }
 

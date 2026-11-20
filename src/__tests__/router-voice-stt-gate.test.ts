@@ -53,12 +53,17 @@ vi.mock('../db.js', () => ({
   closeOtelSpan: () => false,
 }))
 
-vi.mock('../web/voice-directive.js', () => ({
+vi.mock('../web/voice-directive.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/voice-directive.js')>()),
   resolveAgentChannelStateDir: () => stateDir,
 }))
 
+// Card 58b9aa06: the router asks for an outcome (ok / timeout / failed), and no longer awaits it on the tick.
 vi.mock('../web/routes/voice.js', () => ({
-  transcribeVoiceFile: (...a: unknown[]) => mockTranscribe(...a),
+  transcribeVoiceFileOutcome: async (...a: unknown[]) => {
+    const t = await mockTranscribe(...a)
+    return t ? { ok: true, text: t } : { ok: false, reason: 'failed' }
+  },
 }))
 
 vi.mock('../web/agent-config.js', () => ({
@@ -86,7 +91,7 @@ vi.mock('../web/agent-message-wrap.js', () => ({
 }))
 vi.mock('../web/telegram-inbox-wake.js', () => ({ maybeWakeSubAgentsForTelegram: vi.fn() }))
 
-import { runMessageRouterTick, shouldTranscribeInboundVoice } from '../web/message-router.js'
+import { runMessageRouterTick, shouldTranscribeInboundVoice, _resetVoiceSttJobsForTest } from '../web/message-router.js'
 
 let nextId = 100
 function queueVoiceNote() {
@@ -103,9 +108,18 @@ function queueVoiceNote() {
   })
 }
 
+// Card 58b9aa06: a transcribed voice row takes two ticks (the first starts STT off the tick, the next delivers
+// it); an untranscribed one goes on the first. The snapshot is re-queued for the second tick, as the DB would
+// still list the pending row.
 async function deliverOneVoiceNote(): Promise<string> {
   queueVoiceNote()
+  const row = pending[pending.length - 1]
   await runMessageRouterTick()
+  if (mockSendPrompt.mock.calls.length === 0) {
+    await new Promise((r) => setTimeout(r, 20))
+    pending.push(row)
+    await runMessageRouterTick()
+  }
   expect(mockSendPrompt).toHaveBeenCalledTimes(1)
   return String(mockWrap.mock.calls[0]?.[3] ?? '')
 }
@@ -114,6 +128,7 @@ describe('router voice STT gate (end to end through the tick)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     pending.length = 0
+    _resetVoiceSttJobsForTest()
     cfgState.installDefault = false
     voiceCfg.current = { responseMode: 'text', voiceModel: 'm' }
   })
