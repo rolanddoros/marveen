@@ -471,7 +471,6 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
     "role": "member",
     "reportsTo": "marveen",
     "delegatesTo": [],
-    "autoDelegation": false,
     "trustFrom": []
   }
 }

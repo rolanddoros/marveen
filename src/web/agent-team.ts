@@ -16,7 +16,6 @@ export interface TeamConfig {
   role: 'leader' | 'member'
   reportsTo: string | null
   delegatesTo: string[]
-  autoDelegation: boolean
   // Optional override so an operator can grant "trusted peer" status to an
   // agent outside the usual reportsTo / delegatesTo derivation -- e.g. a
   // cross-team collaborator. Unknown names and self-references are stripped
@@ -28,7 +27,6 @@ export const DEFAULT_TEAM: TeamConfig = {
   role: 'member',
   reportsTo: null,
   delegatesTo: [],
-  autoDelegation: false,
   trustFrom: [],
 }
 
@@ -41,9 +39,8 @@ export function readAgentTeam(name: string): TeamConfig {
       const role = raw.role === 'leader' ? 'leader' : 'member'
       const reportsTo = typeof raw.reportsTo === 'string' && raw.reportsTo.trim() ? raw.reportsTo.trim() : null
       const delegatesTo = Array.isArray(raw.delegatesTo) ? raw.delegatesTo.filter((x: unknown) => typeof x === 'string') : []
-      const autoDelegation = !!raw.autoDelegation
       const trustFrom = Array.isArray(raw.trustFrom) ? raw.trustFrom.filter((x: unknown) => typeof x === 'string') : []
-      return { role, reportsTo, delegatesTo, autoDelegation, trustFrom }
+      return { role, reportsTo, delegatesTo, trustFrom }
     }
   } catch { /* fall through */ }
   return { ...DEFAULT_TEAM, trustFrom: [] }
@@ -136,7 +133,6 @@ export function sanitizeTeamConfig(
       role: team.role,
       reportsTo,
       delegatesTo: cleanList(team.delegatesTo, 'delegatesTo'),
-      autoDelegation: team.autoDelegation,
       trustFrom: cleanList(team.trustFrom ?? [], 'trustFrom'),
     },
     warnings,

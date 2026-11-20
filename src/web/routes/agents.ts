@@ -2150,7 +2150,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       delegatesTo: Array.isArray(data.delegatesTo)
         ? data.delegatesTo.filter((x: unknown) => typeof x === 'string')
         : current.delegatesTo,
-      autoDelegation: typeof data.autoDelegation === 'boolean' ? data.autoDelegation : current.autoDelegation,
       trustFrom: Array.isArray(data.trustFrom)
         ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
         : (current.trustFrom ?? []),

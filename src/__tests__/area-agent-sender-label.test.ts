@@ -26,7 +26,7 @@ function agent(name: string, cfg: Record<string, unknown>): void {
   mkdirSync(agentDir(name), { recursive: true })
   writeFileSync(join(agentDir(name), 'agent-config.json'), JSON.stringify(cfg, null, 2))
 }
-const team = (reportsTo: string | null) => ({ role: 'member', reportsTo, delegatesTo: [], autoDelegation: false, trustFrom: [] })
+const team = (reportsTo: string | null) => ({ role: 'member', reportsTo, delegatesTo: [], trustFrom: [] })
 
 beforeAll(() => {
   // The names are unique to this test; a pre-existing dir means we are not in a clean checkout, and we refuse

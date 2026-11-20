@@ -463,7 +463,6 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
     "role": "member",
     "reportsTo": "marveen",
     "delegatesTo": [],
-    "autoDelegation": false,
     "trustFrom": []
   }
 }

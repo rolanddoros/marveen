@@ -13796,7 +13796,7 @@ document.getElementById('chatRefreshBtn')?.addEventListener('click', () => {
 })
 
 function renderTeamEditor(agent, allAgents) {
-  const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
+  const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], trustFrom: [] }
   document.getElementById('editTeamRole').value = team.role || 'member'
   const reportsSel = document.getElementById('editTeamReportsTo')
   reportsSel.innerHTML = ''
@@ -13832,12 +13832,10 @@ function renderTeamEditor(agent, allAgents) {
   }
   buildCheckboxList('editTeamDelegatesList', team.delegatesTo)
   buildCheckboxList('editTeamTrustFromList', team.trustFrom)
-  document.getElementById('editTeamAutoDelegation').checked = !!team.autoDelegation
   // Only leaders make sense to delegate from -- hide the lists for members.
   const updateLeaderVisibility = () => {
     const isLeader = document.getElementById('editTeamRole').value === 'leader'
     document.getElementById('editTeamDelegatesGroup').style.display = isLeader ? '' : 'none'
-    document.getElementById('editTeamAutoGroup').style.display = isLeader ? '' : 'none'
   }
   document.getElementById('editTeamRole').onchange = updateLeaderVisibility
   updateLeaderVisibility()
@@ -13850,7 +13848,6 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
   const reportsToRaw = document.getElementById('editTeamReportsTo').value
   const delegates = Array.from(document.querySelectorAll('#editTeamDelegatesList input[type=checkbox]:checked')).map(cb => cb.value)
   const trustFrom = Array.from(document.querySelectorAll('#editTeamTrustFromList input[type=checkbox]:checked')).map(cb => cb.value)
-  const autoDelegation = document.getElementById('editTeamAutoDelegation').checked
   const originalText = btn.textContent
   btn.disabled = true
   btn.textContent = t('team.save_saving')
@@ -13863,7 +13860,6 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         reportsTo: reportsToRaw || null,
         delegatesTo: role === 'leader' ? delegates : [],
         trustFrom,
-        autoDelegation: role === 'leader' ? autoDelegation : false,
       }),
     })
     if (!res.ok) throw new Error()
