@@ -503,7 +503,7 @@ lists the verbs). The helper and `scripts/agent-msg.sh` are on the `developer-ju
 allow-list, and the generated CLAUDE.md blocks give a strict agent this recipe; every other
 agent keeps the `curl` recipe unchanged. The helper sends the token only to a loopback address, or to exactly the
 `AGENT_API_ORIGIN` / `DASHBOARD_PUBLIC_URL` in the install's `.env` (`MARVEEN_API_BASE`), and reads it only from a `.dashboard-token` file.
-The same gate (`scripts/lib/env_gate.py`) runs in `scripts/agent-msg.sh`, `scripts/jegyzetek.py` and the
+The same gate (`scripts/lib/env_gate.py`) runs in `scripts/agent-msg.sh` and the
 `scripts/hooks/marveen-commands.py` hook and the pre-push review gate too, always before the token is read; when it
 refuses, nothing is sent (for the review gate, the push is refused too). The allowed `.env` is always the one of the
 install the script itself sits in, never one named by an environment variable. The review gate loads the module from

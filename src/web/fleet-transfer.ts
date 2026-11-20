@@ -808,7 +808,6 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     dailyLogs,
     kanban,
     ideaBox,
-    teamNotes: db.prepare('SELECT * FROM team_notes').all() as Record<string, unknown>[],
     dashboardSettings: exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
@@ -1001,7 +1000,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       labels: newLabels,
       dailyLogs: newDailyLogs,
       ideaBox: (fleet.ideaBox?.ideas ?? []).length,
-      teamNotes: (fleet.teamNotes ?? []).filter((n) => !db.prepare('SELECT 1 FROM team_notes WHERE id = ?').get((n as any).id)).length,
+      teamNotes: 0,
     },
     wouldOverwrite: {
       agents: existingAgentsToOverwrite,
@@ -1360,19 +1359,10 @@ export function importFleet(
         }
       }
 
-      // team_notes -- idempotent on id; deleted rows come along so the 7-day
-      // deletion history (who, when, why) survives the move too.
-      for (const note of fleet.teamNotes ?? []) {
-        const n = note as any
-        if (!n.id || !n.assignee || !n.content || n.created_at == null || !n.created_by) {
-          logger.warn({ id: n.id }, 'Fleet import: skipping team note with missing required fields'); continue
-        }
-        db.prepare(
-          `INSERT OR IGNORE INTO team_notes
-           (id, assignee, content, due_date, created_at, created_by, deleted_at, deleted_by, delete_reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(n.id, n.assignee, n.content, n.due_date ?? null, n.created_at, n.created_by,
-          n.deleted_at ?? null, n.deleted_by ?? null, n.delete_reason ?? null)
+      // team_notes -- the Notes page was removed (c3/remove-team-notes);
+      // old bundles that still carry the key are accepted but the rows are skipped.
+      if (fleet.teamNotes && fleet.teamNotes.length > 0) {
+        logger.info({ count: fleet.teamNotes.length }, 'Fleet import: skipping team notes from an older bundle (page removed)')
       }
 
       // FTS rebuild after all memory inserts
@@ -1454,7 +1444,7 @@ export function importFleet(
         labels: (fleet.kanban?.labels ?? []).length,
         dailyLogs: (fleet.dailyLogs ?? []).length,
         ideaBox: (fleet.ideaBox?.ideas ?? []).length,
-        teamNotes: (fleet.teamNotes ?? []).length,
+        teamNotes: 0,
       },
       ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
     }
