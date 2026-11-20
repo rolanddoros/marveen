@@ -8,9 +8,10 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
+import { writeWhisperPidfile, defaultWhisperReapDeps } from '../web/whisper-orphan.js'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync, copyFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // The toolkit is found under homedir() when voice.ts loads: a scratch HOME with a fake whisper, set in beforeAll
@@ -38,9 +39,13 @@ const VOICE_DIR = join(fake.home, '.local', 'share', 'marveen-voice')
 const FAKE_PY = join(VOICE_DIR, 'venv', 'bin', 'python')
 const PIDFILE = join(fake.home, 'whisper.pid')
 
+const STORE_PIDFILE = join(fake.home, 'store', 'whisper.pid')
+
 beforeAll(async () => {
   process.env.HOME = fake.home
   V = await import('../web/routes/voice.js')
+  mkdirSync(dirname(STORE_PIDFILE), { recursive: true })
+  V._setWhisperPidfileForTest(STORE_PIDFILE)
   mkdirSync(join(VOICE_DIR, 'venv', 'bin'), { recursive: true })
   writeFileSync(join(VOICE_DIR, '_vtools.py'), '# fake\n')
   mkdirSync(fake.stateDir, { recursive: true })
@@ -173,7 +178,10 @@ describe('a timeout is never silent', () => {
     expect(r.body.transcript).toBeNull()
     expect(r.body.stt_notice).toBe(sttTimeoutNotice(900, FILE_ID))
     expect(r.body.stt_notice).toContain('(transcription timed out)')
-    expect(r.body.stt_notice).toContain(`scripts/voice/stt.sh ${FILE_ID}`)
+    // Ron 18424 item 3: the retry command is absolute (an agent's cwd is agents/<name>) and names the real script
+    const retry = join(REPO, 'scripts', 'voice', 'stt.sh')
+    expect(r.body.stt_notice.endsWith(`Kézi újrapróbálás: ${retry} ${FILE_ID}`)).toBe(true)
+    expect(isAbsolute(retry) && existsSync(retry)).toBe(true)
     expect(pidAlive(Number(readFileSync(PIDFILE, 'utf-8')))).toBe(false)
     // SIGINT first: the whisper's own finally ran and deleted its temp .ogg (SIGKILL alone left it behind)
     expect(existsSync(readFileSync(MARK, 'utf-8'))).toBe(false)
@@ -238,6 +246,57 @@ describe('a timeout is never silent', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+// Ron 18424 item 2: the whisper pidfile (pid + argv) exists exactly while a whisper runs, and on startup an
+// orphan a previous dashboard left running is stopped while the whisper slot is held, so no new whisper runs
+// next to it.
+describe('the whisper pidfile and the startup reap of an orphan', () => {
+  afterEach(() => { vi.useRealTimers() })
+  const tail = () => [join(VOICE_DIR, '_vtools.py'), 'transcribe', FILE_ID, fake.stateDir]
+
+  it('the running whisper is recorded with its pid and argv, and the record goes when it ends', async () => {
+    fakeWhisper('slow')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const c = await call('GET', directivePath)
+    for (let i = 0; i < 200 && !existsPid(); i++) await realSleep(10)
+    const rec = JSON.parse(readFileSync(STORE_PIDFILE, 'utf-8'))
+    expect(rec).toEqual({ pid: Number(readFileSync(PIDFILE, 'utf-8')), argv: [FAKE_PY, ...tail()] })
+    await vi.advanceTimersByTimeAsync(V.STT_DIRECTIVE_CEILING_MS + 1)
+    vi.useRealTimers()
+    await c.done
+    expect(existsSync(STORE_PIDFILE)).toBe(false)
+    fakeWhisper({ text: 'kész' })
+    expect((await (await call('GET', directivePath)).done).body.transcript).toBe('kész')
+    expect(existsSync(STORE_PIDFILE)).toBe(false)
+  })
+
+  it('startup: the orphan is stopped (SIGINT, its finally ran) before the next whisper caller runs', async () => {
+    fakeWhisper('slow')
+    const orphan = spawn(FAKE_PY, tail(), { stdio: 'ignore' })
+    for (let i = 0; i < 300 && !existsPid(); i++) await realSleep(10)
+    const pid = orphan.pid!
+    expect(Number(readFileSync(PIDFILE, 'utf-8'))).toBe(pid)
+    const tmpOgg = readFileSync(MARK, 'utf-8')
+    writeWhisperPidfile(STORE_PIDFILE, pid, [FAKE_PY, ...tail()]) // what the dead dashboard had recorded
+    expect(defaultWhisperReapDeps.readArgv(pid)).not.toBeNull() // positive control: it runs as a whisper now
+    try {
+      const reap = V.reapOrphanWhisperOnStartup()
+      const seen = await V.runWhisperExclusive(20_000, async () => ({ argv: defaultWhisperReapDeps.readArgv(pid), ogg: existsSync(tmpOgg) }), () => null)
+      expect(await reap).toBe('killed')
+      expect(seen).toEqual({ argv: null, ogg: false })
+      expect(existsSync(STORE_PIDFILE)).toBe(false)
+    } finally {
+      orphan.kill('SIGKILL')
+    }
+  })
+
+  it('web.ts queues the reap before the router starts, on the live instance only', () => {
+    const web = readFileSync(join(REPO, 'src', 'web.ts'), 'utf-8')
+    const reapAt = web.indexOf('if (!servicesOff) void reapOrphanWhisperOnStartup()')
+    expect(reapAt).toBeGreaterThan(0)
+    expect(reapAt).toBeLessThan(web.indexOf('startMessageRouter()'))
   })
 })
 

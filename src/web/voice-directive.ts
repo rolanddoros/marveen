@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { STORE_DIR, WEB_PORT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR, WEB_PORT } from '../config.js'
 import { AGENTS_BASE_DIR } from './agent-config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 
@@ -86,8 +86,12 @@ export function buildTtsDirective(opts: {
 
 /** The visible line an agent gets when its voice note was not transcribed in time (card 58b9aa06, Johnny 18320:
  *  a timeout is never silent). The retry handle is the Telegram file_id: the audio is not kept on this machine
- *  (_vtools.py downloads it to a temp file), and scripts/voice/stt.sh fetches it again from Telegram. */
+ *  (_vtools.py downloads it to a temp file), and scripts/voice/stt.sh fetches it again from Telegram.
+ *  The script path is ABSOLUTE (Ron 18424 item 3): a sub-agent's cwd is agents/<name>, where a relative
+ *  scripts/voice/stt.sh does not exist. A path outside the shell-safe set is single-quoted for copy-paste. */
+export const STT_RETRY_SCRIPT = join(PROJECT_ROOT, 'scripts', 'voice', 'stt.sh')
 export function sttTimeoutNotice(budgetS: number, fileParam: string): string {
+  const script = /^[A-Za-z0-9_./-]+$/.test(STT_RETRY_SCRIPT) ? STT_RETRY_SCRIPT : `'${STT_RETRY_SCRIPT.replace(/'/g, `'\\''`)}'`
   return `[Hang átirat]: időtúllépés, ${budgetS} s alatt nem készült el az átirat (transcription timed out). ` +
-    `Kézi újrapróbálás: scripts/voice/stt.sh ${fileParam}`
+    `Kézi újrapróbálás: ${script} ${fileParam}`
 }

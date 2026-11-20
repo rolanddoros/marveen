@@ -23,7 +23,8 @@ import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, sttTimeoutNotice } from '../voice-directive.js'
-import { PROJECT_ROOT, MARVEEN_STT_TIMEOUT_MS_RAW } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, MARVEEN_STT_TIMEOUT_MS_RAW } from '../../config.js'
+import { writeWhisperPidfile, clearWhisperPidfile, reapOrphanWhisper, defaultWhisperReapDeps, type WhisperReapDeps, type WhisperReapResult } from '../whisper-orphan.js'
 import type { RouteContext } from './types.js'
 
 const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
@@ -111,10 +112,11 @@ export const STT_KILL_GRACE_MS = 5_000
 function runProc(
   cmd: string,
   args: string[],
-  opts: { stdinData?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; interruptGraceMs?: number } = {},
+  opts: { stdinData?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; interruptGraceMs?: number; onSpawn?: (pid: number) => void } = {},
 ): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
   return new Promise((resolve) => {
     const proc = spawn(cmd, args, { shell: false, ...(opts.env ? { env: opts.env } : {}) })
+    if (proc.pid !== undefined) opts.onSpawn?.(proc.pid)
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -172,6 +174,31 @@ export async function runWhisperExclusive<T>(budgetMs: number, run: (remainingMs
 /** For tests only: forget the queue (a test that leaves a slot held would block the next file's callers). */
 export function _resetWhisperQueueForTest(): void { whisperTail = Promise.resolve() }
 
+// The running whisper is recorded here (pid + argv) and the record is cleared when it exits; see whisper-orphan.ts
+// for why (Ron 18424 item 2: KillMode=process leaves an orphaned whisper behind a dashboard restart). In the
+// install's store directory, next to the dashboard's own pidfile: per install, never a /tmp session path.
+let whisperPidfile = join(STORE_DIR, 'whisper.pid')
+/** For tests only. */
+export function _setWhisperPidfileForTest(path: string): void { whisperPidfile = path }
+
+function recordWhisper(pid: number, argv: string[]): void {
+  try { writeWhisperPidfile(whisperPidfile, pid, argv) } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'whisper pidfile not written; an orphan of this run would not be reaped on restart')
+  }
+}
+
+/** Startup: stop a whisper the previous dashboard left running, holding the whisper slot until it is gone, so a
+ *  new transcription (the router restarts STT for a still-pending voice row at once) never runs next to it. The
+ *  wait counts against a queued caller's budget like any slot wait (at most the 5 s grace + 2 s). Never rejects. */
+export function reapOrphanWhisperOnStartup(deps: WhisperReapDeps = defaultWhisperReapDeps): Promise<WhisperReapResult> {
+  const done = whisperTail.then(() => reapOrphanWhisper(whisperPidfile, deps, STT_KILL_GRACE_MS, { vtoolsPath: VTOOLS_PY })).catch((err: unknown) => {
+    logger.warn({ err: (err as Error)?.message }, 'orphaned whisper reap failed')
+    return 'none' as const
+  })
+  whisperTail = done.then(() => undefined)
+  return done
+}
+
 export type SttOutcome =
   | { ok: true; text: string }
   | { ok: false; reason: 'timeout'; budgetS: number }
@@ -180,7 +207,17 @@ export type SttOutcome =
 async function transcribeWithin(fileParam: string, stateDir: string, budgetMs: number): Promise<SttOutcome> {
   const budgetS = Math.round(budgetMs / 1000)
   return runWhisperExclusive<SttOutcome>(budgetMs, async (remainingMs) => {
-    const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: remainingMs, interruptGraceMs: STT_KILL_GRACE_MS })
+    const args = [VTOOLS_PY, 'transcribe', fileParam, stateDir]
+    let spawned: number | undefined
+    let result: Awaited<ReturnType<typeof runProc>>
+    try {
+      result = await runProc(VENV_PY, args, {
+        timeoutMs: remainingMs, interruptGraceMs: STT_KILL_GRACE_MS,
+        onSpawn: (pid) => { spawned = pid; recordWhisper(pid, [VENV_PY, ...args]) },
+      })
+    } finally {
+      if (spawned !== undefined) { try { clearWhisperPidfile(whisperPidfile, spawned) } catch { /* next start treats it as stale */ } }
+    }
     if (result.timedOut) {
       logger.warn({ fileParam, budgetS }, 'STT timed out: whisper killed at the budget')
       return { ok: false, reason: 'timeout', budgetS }

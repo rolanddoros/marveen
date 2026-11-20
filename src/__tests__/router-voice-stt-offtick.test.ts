@@ -72,6 +72,7 @@ vi.mock('../web/agent-message-wrap.js', () => ({
 vi.mock('../web/telegram-inbox-wake.js', () => ({ maybeWakeSubAgentsForTelegram: vi.fn() }))
 
 import { runMessageRouterTick, voiceSttHoldsRow, _voiceSttJobsForTest, _resetVoiceSttJobsForTest } from '../web/message-router.js'
+import { sttTimeoutNotice } from '../web/voice-directive.js'
 
 afterAll(() => rmSync(stateDir, { recursive: true, force: true }))
 
@@ -168,7 +169,8 @@ describe('voice STT off the router tick', () => {
     await flush()
     await tick(v)
     const delivered = sentTo()[0]!.text
-    expect(delivered).toMatch(/^\[Hang átirat\]: időtúllépés, 900 s alatt nem készült el az átirat \(transcription timed out\)\. Kézi újrapróbálás: scripts\/voice\/stt\.sh FILE\d+\n/)
+    expect(delivered).toMatch(/^\[Hang átirat\]: időtúllépés, 900 s alatt nem készült el az átirat \(transcription timed out\)\. Kézi újrapróbálás: \/\S+\/scripts\/voice\/stt\.sh FILE\d+\n/)
+    expect(delivered.startsWith(`${sttTimeoutNotice(900, v.content.match(/attachment_file_id="([^"]+)"/)![1]!)}\n`)).toBe(true)
     expect(delivered).toContain('attachment_kind="voice"')
   })
 
@@ -191,5 +193,47 @@ describe('voice STT off the router tick', () => {
     await tick(v) // not re-listed: the sweep at the tick start drops the finished job of a non-pending row
     expect(sentTo()).toEqual([])
     expect(_voiceSttJobsForTest().size).toBe(0)
+  })
+
+  // Ron 18424 item 1: closed BEFORE the STT output. The job used to stay (the sweep dropped finished jobs only),
+  // so the agent's next row waited out the whole budget (up to 900 s) behind a row that is never delivered.
+  it('a voice row closed BEFORE its STT output releases the hold: the next row goes out in the next tick', async () => {
+    const v = voice('dex')
+    const later = text('dex', 'utána jövő sor')
+    await tick(v, later)
+    expect(sentTo()).toEqual([])
+    expect(voiceSttHoldsRow(later)).toBe(true) // positive control: held while the voice row is pending
+    statusOf.set(v.id, 'done') // closed elsewhere (message-close / failed / batched); whisper still running
+    await tick(v, later)
+    expect(sentTo().map((s) => s.text)).toEqual([expect.stringContaining('utána jövő sor')])
+    expect(_voiceSttJobsForTest().size).toBe(0)
+    // The late outcome changes nothing: no job comes back, the closed voice row is never sent.
+    stt.calls[0]!.resolve({ ok: true, text: 'túl késő' } satisfies Outcome)
+    await flush()
+    await tick(v)
+    expect(sentTo()).toHaveLength(1)
+    expect(_voiceSttJobsForTest().size).toBe(0)
+    expect(stt.calls).toHaveLength(1)
+  })
+
+  it('the sweep alone drops an unfinished job of a closed row (no later row needed)', async () => {
+    const v = voice('dex')
+    await tick(v)
+    expect(_voiceSttJobsForTest().size).toBe(1)
+    statusOf.set(v.id, 'failed')
+    await tick()
+    expect(_voiceSttJobsForTest().size).toBe(0)
+    stt.calls[0]!.resolve({ ok: false, reason: 'failed' })
+  })
+
+  it('the hold itself releases a closed row\'s job mid-tick, before any sweep runs', async () => {
+    const v = voice('dex')
+    await tick(v)
+    const later = text('dex', 'közben')
+    expect(voiceSttHoldsRow(later)).toBe(true)
+    statusOf.set(v.id, 'done') // e.g. batched by this tick's reconnect pre-pass, after the sweep at the tick start
+    expect(voiceSttHoldsRow(later)).toBe(false)
+    expect(_voiceSttJobsForTest().size).toBe(0)
+    stt.calls[0]!.resolve({ ok: true, text: 'x' })
   })
 })

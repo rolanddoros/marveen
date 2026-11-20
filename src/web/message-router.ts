@@ -1596,21 +1596,34 @@ function startVoiceStt(msgId: number, agent: string, fileId: string): void {
 }
 
 /** True when an OLDER voice row to the same agent has a job that is not delivered yet: the row waits behind it.
- *  A STOP or urgent row never waits for a transcription. */
+ *  A STOP or urgent row never waits for a transcription. A job whose voice row is no longer pending (closed,
+ *  failed or batched elsewhere while whisper runs) holds nothing: it is released here, so the agent's later rows do
+ *  not wait out the rest of the budget behind a row that will never be delivered (Ron 18424 item 1). */
 export function voiceSttHoldsRow(msg: Pick<AgentMessage, 'id' | 'to_agent'> & Partial<AgentMessage>): boolean {
   if (voiceSttJobs.size === 0) return false
   if (isUrgentDelivery(msg as AgentMessage, MAIN_AGENT_ID)) return false
   for (const [id, job] of voiceSttJobs) {
-    if (job.agent === msg.to_agent && id < msg.id) return true
+    if (job.agent !== msg.to_agent || id >= msg.id) continue
+    if (getMessageStatus(id) !== 'pending') { releaseVoiceSttJob(id, 'hold'); continue }
+    return true
   }
   return false
 }
 
-/** Drop finished jobs whose row is no longer pending (failed, abandoned, closed elsewhere). */
+/** Drop every job whose row is no longer pending (failed, abandoned, closed or batched elsewhere), finished or not.
+ *  An unfinished one keeps its whisper running to the end (the single slot stays taken until then); only the
+ *  hold on the agent's later rows is released, and the late outcome lands on the dropped job object unread. */
 function sweepVoiceSttJobs(): void {
-  for (const [id, job] of voiceSttJobs) {
-    if (job.outcome && getMessageStatus(id) !== 'pending') voiceSttJobs.delete(id)
+  for (const id of [...voiceSttJobs.keys()]) {
+    if (getMessageStatus(id) !== 'pending') releaseVoiceSttJob(id, 'sweep')
   }
+}
+
+function releaseVoiceSttJob(id: number, where: 'hold' | 'sweep'): void {
+  const job = voiceSttJobs.get(id)
+  if (!job) return
+  voiceSttJobs.delete(id)
+  if (!job.outcome) logger.info({ id, agent: job.agent, where }, 'message-router: voice row no longer pending while its STT runs; the job is released and holds no later row')
 }
 
 /** For tests only. */

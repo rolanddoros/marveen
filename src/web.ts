@@ -118,7 +118,7 @@ import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
-import { tryHandleVoice } from './web/routes/voice.js'
+import { tryHandleVoice, reapOrphanWhisperOnStartup } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
@@ -452,6 +452,11 @@ export function startWebServer(port = 3420): http.Server {
   if (servicesOff && !webOnly) logger.warn({ reason: services.reason }, 'Second instance: background services disabled (start it with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1 in the environment to run them)')
   if (services.override) logger.warn({ reason: services.reason }, 'Second instance with ' + ALLOW_SECOND_INSTANCE_SERVICES_KEY + '=1: background services RUN (schedule runner included)')
 
+  // Ron 18424 item 2: a whisper the previous dashboard left running (KillMode=process keeps children alive) is
+  // stopped before any new one may start; it holds the whisper slot until it is gone. Synchronously queued here,
+  // before the router's first tick and before any request is handled. Live instance only: a second instance has
+  // its own store (its own pidfile) and runs no router.
+  if (!servicesOff) void reapOrphanWhisperOnStartup()
   const routerInterval = servicesOff ? undefined : startMessageRouter()
   if (!servicesOff) logger.info('Agent message router started (5s poll)')
   // Card 3ed09d25: an alert whose owner chat cannot be resolved reaches the main
