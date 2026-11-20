@@ -52,10 +52,11 @@ describe('agent creation never deletes the agent directory on failure', () => {
     expect(body).not.toMatch(/rmSync\(\s*agentDir\(/)
   })
 
-  it('the failure path writes fallback personality files instead', () => {
+  it('the failure path writes the fallback personality file instead', () => {
     const body = createHandlerBody(stripComments(read()))
     expect(body).toMatch(/fallbackClaudeMd\(/)
-    expect(body).toMatch(/fallbackSoulMd\(/)
+    // Card df560c9f: SOUL.md is no longer generated, so there is no SOUL.md template either.
+    expect(body).not.toMatch(/fallbackSoulMd\(|SOUL\.md/)
   })
 
   it('the failure path marks the personality as a placeholder', () => {

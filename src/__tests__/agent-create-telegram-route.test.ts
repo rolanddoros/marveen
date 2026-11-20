@@ -8,8 +8,9 @@ import { tmpdir } from 'node:os'
 // agent will have a Telegram bot. POST /api/agents takes it as `telegram` (boolean;
 // missing = true, today's behaviour; anything else = 400), stores it as
 // personaAtCreation, and without Telegram creates no persona: generateClaudeMd gets
-// { telegram: false }, generateSoulMd is not called, no SOUL.md (not even the fallback
-// template). Attaching Telegram later only logs a warning that the agent has no persona.
+// { telegram: false }. Card df560c9f: no agent gets a SOUL.md any more, with or without
+// Telegram, not even as the fallback template. Attaching Telegram later only logs a warning
+// that the agent has no persona.
 //
 // Both routes run end to end; everything with a side effect outside the temp dir is
 // stubbed (agent dir, model/profile/settings writers, context-guard row, DB queue,
@@ -18,7 +19,6 @@ import { tmpdir } from 'node:os'
 const h = vi.hoisted(() => ({
   root: '',
   claudeArgs: [] as unknown[][],
-  soulCalls: 0,
   fail: false,
   // C1 PR 11c-5 (Ron Low, 11c-4): per-name, so a call with the wrong name fails.
   persona: {} as Record<string, boolean>,
@@ -64,11 +64,6 @@ vi.mock('../web/agent-scaffold.js', async (importOriginal) => {
       h.claudeArgs.push(args)
       if (h.fail) throw new Error('boom')
       return '# generated CLAUDE\n'
-    },
-    generateSoulMd: async () => {
-      h.soulCalls++
-      if (h.fail) throw new Error('boom')
-      return '# generated SOUL\n'
     },
     buildCreationSections: async (name: string) => `## Memoria rendszer\n\n(the seven sections for ${name})`,
   }
@@ -123,7 +118,7 @@ const { logger } = await import('../logger.js')
 type RouteContext = import('../web/routes/types.js').RouteContext
 
 const NAME = 'zz-telegram-question-probe'
-const NO_PERSONA_WARN = 'Telegram attached to an agent created without Telegram: it has no persona (no SOUL.md, none in CLAUDE.md); write one by hand if needed'
+const NO_PERSONA_WARN = 'Telegram attached to an agent created without Telegram: it has no persona in its CLAUDE.md; write one by hand if needed'
 
 function call(method: string, path: string, payload: unknown): Promise<{ status: number; body: Record<string, any> }> {
   const req = new EventEmitter() as unknown as RouteContext['req']
@@ -156,7 +151,6 @@ const savedCliEnv = process.env[CLI_VERSION_OVERRIDE_ENV]
 beforeEach(() => {
   h.root = mkdtempSync(join(tmpdir(), 'telegram-question-'))
   h.claudeArgs = []
-  h.soulCalls = 0
   h.fail = false
   h.persona = { [NAME]: true }
   h.names = []
@@ -173,17 +167,14 @@ afterEach(() => {
 })
 
 describe('POST /api/agents: the telegram answer (C1 PR 11c-2)', () => {
-  it('telegram=false: no persona asked for, no generateSoulMd, no SOUL.md; CLAUDE.md written; personaAtCreation false', async () => {
-    // C1 PR 11c-3 (Ron Low 2): a successful creation logs no error. Without the
-    // `content === null` skip the absent SOUL.md would throw into the catch, which
-    // logs a false "generation failed" while the response still says ok.
+  it('telegram=false: no persona asked for, no SOUL.md; CLAUDE.md written; personaAtCreation false', async () => {
+    // C1 PR 11c-3 (Ron Low 2): a successful creation logs no error.
     const error = vi.spyOn(logger, 'error')
     const r = await create({ telegram: false })
     expect(error).not.toHaveBeenCalled()
     expect(r.status).toBe(200)
     expect(r.body).toEqual({ ok: true, name: NAME })
     expect(h.claudeArgs).toEqual([[NAME, 'probe agent', expect.any(String), { telegram: false }]])
-    expect(h.soulCalls).toBe(0)
     expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toBe('# generated CLAUDE\n')
     expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
     expect(existsSync(join(dir(), 'SOUL.generated.md'))).toBe(false)
@@ -191,12 +182,16 @@ describe('POST /api/agents: the telegram answer (C1 PR 11c-2)', () => {
     expect(h.writePersona).toHaveBeenCalledWith(NAME, false)
   })
 
-  it('telegram=true: CLAUDE.md and SOUL.md generated as today; personaAtCreation true', async () => {
+  it('telegram=true: CLAUDE.md generated with the persona, NO SOUL.md (card df560c9f); personaAtCreation true', async () => {
+    const error = vi.spyOn(logger, 'error')
     const r = await create({ telegram: true })
     expect(r.status).toBe(200)
+    expect(r.body).toEqual({ ok: true, name: NAME })
+    expect(error).not.toHaveBeenCalled()
     expect(h.claudeArgs).toEqual([[NAME, 'probe agent', expect.any(String), { telegram: true }]])
-    expect(h.soulCalls).toBe(1)
-    expect(readFileSync(join(dir(), 'SOUL.md'), 'utf8')).toBe('# generated SOUL\n')
+    expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toBe('# generated CLAUDE\n')
+    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
+    expect(existsSync(join(dir(), 'SOUL.generated.md'))).toBe(false)
     expect(h.writePersona).toHaveBeenCalledWith(NAME, true)
   })
 
@@ -204,8 +199,7 @@ describe('POST /api/agents: the telegram answer (C1 PR 11c-2)', () => {
     const r = await create({})
     expect(r.status).toBe(200)
     expect(h.claudeArgs).toEqual([[NAME, 'probe agent', expect.any(String), { telegram: true }]])
-    expect(h.soulCalls).toBe(1)
-    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(true)
+    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
     expect(h.writePersona).toHaveBeenCalledWith(NAME, true)
   })
 
@@ -225,24 +219,25 @@ describe('POST /api/agents: the telegram answer (C1 PR 11c-2)', () => {
     const r = await create({ telegram: false })
     expect(r.status).toBe(200)
     expect(r.body.personalityPending).toBe(true)
-    expect(h.soulCalls).toBe(0)
     expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toContain('SABLON')
     expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
     expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(true)
   })
 
-  it('telegram=true and generation FAILS: both templates land, as today', async () => {
+  it('telegram=true and generation FAILS: the CLAUDE.md template lands, no SOUL.md template (card df560c9f)', async () => {
     h.fail = true
-    await create({ telegram: true })
+    const r = await create({ telegram: true })
+    expect(r.body.personalityPending).toBe(true)
     expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toContain('SABLON')
-    expect(readFileSync(join(dir(), 'SOUL.md'), 'utf8')).toContain('SABLON')
+    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
+    expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(true)
   })
 })
 
 // C1 PR 11c-3 (Johnny 13431): telegram=false + failed generation speaks of the role
 // description and CLAUDE.md only; the Telegram failure keeps today's wording. Texts verbatim.
 describe('POST /api/agents: failure-path wording without Telegram (C1 PR 11c-3)', () => {
-  const TG_WARNING = 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.'
+  const TG_WARNING = 'Agent created with a template personality because generation failed. Edit CLAUDE.md to replace it.'
   const HEADLESS_WARNING = 'CLAUDE.md generation failed, a template role description was used. Edit CLAUDE.md.'
   const TG_HEADER = '> **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a\n'
   const HEADLESS_HEADER = '> **FIGYELEM: ez egy SABLON.** Az ügynök szerepleírásának generálása nem sikerült a\n'
@@ -281,8 +276,8 @@ describe('POST /api/agents: failure-path wording without Telegram (C1 PR 11c-3)'
   })
 })
 
-// C1 PR 11c-3 (Ron Low 1): a persona-less agent never gets a SOUL.md, so CLAUDE.md
-// alone makes it 'configured'; an agent created with a persona still needs both.
+// C1 PR 11c-3 (Ron Low 1) + card df560c9f: CLAUDE.md alone makes an agent 'configured',
+// with or without a persona (SOUL.md is neither generated nor required any more).
 describe('GET /api/agents: status of an agent created without Telegram (C1 PR 11c-3)', () => {
   const statusOf = async (files: Record<string, string>) => {
     mkdirSync(dir(), { recursive: true })
@@ -305,10 +300,14 @@ describe('GET /api/agents: status of an agent created without Telegram (C1 PR 11
     expect(await statusOf({ 'CLAUDE.md': '  \n' })).toBe('draft')
   })
 
-  it('with a persona: CLAUDE.md without SOUL.md = draft, both = configured (unchanged)', async () => {
+  it('with a persona: CLAUDE.md alone = configured (card df560c9f; was draft without SOUL.md)', async () => {
     h.persona[NAME] = true
-    expect(await statusOf({ 'CLAUDE.md': '# role\n' })).toBe('draft')
-    expect(await statusOf({ 'SOUL.md': '# soul\n' })).toBe('configured')
+    expect(await statusOf({ 'CLAUDE.md': '# role\n' })).toBe('configured')
+  })
+
+  it('with a persona: a SOUL.md without a CLAUDE.md does not make it configured', async () => {
+    h.persona[NAME] = true
+    expect(await statusOf({ 'CLAUDE.md': '  \n', 'SOUL.md': '# soul\n' })).toBe('draft')
   })
 })
 
@@ -471,7 +470,7 @@ describe('POST /api/agents: a failed hook-settings render (C3-3b)', () => {
     expect(r.body).toEqual({ error: 'hook settings could not be generated; the agent was created, its settings are the template seed', name: NAME })
     expect(store.seedContextGuardForNewAgent).toHaveBeenCalledWith(NAME)
     expect(readFileSync(join(dir(), 'CLAUDE.md'), 'utf8')).toBe('# generated CLAUDE\n')
-    expect(readFileSync(join(dir(), 'SOUL.md'), 'utf8')).toBe('# generated SOUL\n')
+    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
     expect(readFileSync(join(dir(), '.claude', 'settings.json'), 'utf8')).toBe(seed)
     expect(warn).toHaveBeenCalledWith({ agent: NAME, error: 'HookShapeError' }, 'agent created, but its hook settings could not be generated (C3-3b)')
     expect(JSON.stringify(warn.mock.calls)).not.toContain('CANARY-nc-event')

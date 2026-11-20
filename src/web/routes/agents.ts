@@ -114,7 +114,6 @@ import {
   writeAgentSettingsFromProfile,
   scaffoldAgentDir,
   generateClaudeMd,
-  generateSoulMd,
   buildCreationSections,
 } from '../agent-scaffold.js'
 import {
@@ -237,7 +236,7 @@ const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'disc
 
 // Dropped into the agent dir when personality generation failed and the agent was
 // kept on a template instead of being deleted. Its presence means "this agent
-// works, but its CLAUDE.md/SOUL.md are placeholders".
+// works, but its CLAUDE.md is a placeholder".
 //
 // It does NOT mean the agent is waiting for anything. NOTHING reads this file:
 // there is no regeneration job, no queue, no retry. It is a marker for an
@@ -246,10 +245,10 @@ const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'disc
 // separate copies of "awaiting regeneration" had to be removed once already.
 export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 
-// Minimal placeholders used when generateClaudeMd/generateSoulMd fail. Hungarian
-// with accents, because that is what they stand in for: the generators produce
-// Hungarian agent personalities (see agent-scaffold.ts, whose SOUL prompt states
-// "Write ALL Hungarian text with proper accents"). Deliberately NOT an imitation
+// Minimal placeholder used when generateClaudeMd fails. Hungarian with accents,
+// because that is what it stands in for: the generator produces Hungarian agent
+// personalities. (SOUL.md is no longer generated at all: it never reached any
+// model context, card df560c9f, Roland TG 3799.) Deliberately NOT an imitation
 // of a generated personality -- the first line says it is a template, so a
 // stand-in never silently becomes the agent's identity.
 //
@@ -292,18 +291,6 @@ ${description}
 
 ${model}
 ` + (sections ? `\n${sections}\n` : '')
-}
-
-function fallbackSoulMd(name: string, description: string): string {
-  return `# ${name} - SOUL
-
-> **FIGYELEM: ez egy SABLON.** A generálás nem sikerült, ez helyőrző szöveg.
-
-${description}
-
-Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
-itt írhatod meg.
-`
 }
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
@@ -641,14 +628,12 @@ function getAgentSummary(name: string): AgentSummary {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
-  const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const tg = readAgentTelegramConfig(name)
   const dc = readAgentDiscordConfig(name)
   const sc = readAgentSlackConfig(name)
   const gc = readAgentGooglechatConfig(name)
   const tc = readAgentTeamsConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
-  const hasSoulMd = soulMd.trim().length > 0
   // Card c755f4b2 Block B: resolve once and report both the answer and how it
   // was reached, so "configured" and "resolved" are never conflated in the API.
   let agentModelConfig: { model?: unknown; modelProfile?: unknown } = {}
@@ -705,9 +690,9 @@ function getAgentSummary(name: string): AgentSummary {
     hasGooglechat: gc.hasGooglechat,
     hasTeams: tc.hasTeams,
     channelProvider: readAgentChannelProvider(name),
-    // C1 PR 11c-3 (Ron Low 1): an agent created without Telegram never gets a
-    // SOUL.md, so for it the CLAUDE.md alone is a complete configuration.
-    status: hasClaudeMd && (hasSoulMd || !readAgentPersonaAtCreation(name)) ? 'configured' : 'draft',
+    // Card df560c9f: CLAUDE.md alone is a complete configuration (SOUL.md is no
+    // longer generated or required; it never reached a session).
+    status: hasClaudeMd ? 'configured' : 'draft',
     running,
     runState,
     remoteHost: remote.host,
@@ -1305,7 +1290,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     seedContextGuardForNewAgent(name)
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
 
-    logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
+    logger.info({ name, description }, 'Generating agent CLAUDE.md...')
     // Set when the personality fell back to a template. The response is deferred
     // to after the notification block so that BOTH outcomes announce the agent:
     // a template-personality agent exists and is usable, so the fleet has to hear
@@ -1316,24 +1301,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // NOW, and let both completion paths write only while each file is still
     // exactly this -- an operator who wrote it in the meantime wins. See
     // persona-write-guard.ts for the measured incident.
-    const personaFiles = (['CLAUDE.md', 'SOUL.md'] as const).map(file => {
+    // Card df560c9f (Roland TG 3799): CLAUDE.md is the only personality file. SOUL.md was generated here too, but
+    // nothing ever loaded it into a session; the persona lives in CLAUDE.md, the file Claude Code loads.
+    const personaFiles = (['CLAUDE.md'] as const).map(file => {
       const path = join(agentDir(name), file)
       return { file, path, baseline: snapshotPersonaFile(path) }
     })
-    const [claudeMdFile, soulMdFile] = personaFiles
+    const [claudeMdFile] = personaFiles
     // Files a completion path left alone because they changed under it.
     const personaSkipped: Array<{ file: string; sidecarPath: string | null }> = []
     // Files the success path already wrote, so a throw after the first write
     // does not have the fallback report our own generated file as "changed".
     const personaWrittenByUs = new Set<string>()
     try {
-      // C1 PR 11c-2: without Telegram there is no persona, so no SOUL.md at all.
-      const [claudeMd, soulMd] = await Promise.all([
-        generateClaudeMd(name, description, model, { telegram }),
-        telegram ? generateSoulMd(name, description) : Promise.resolve(null),
-      ])
-      for (const [f, content] of [[claudeMdFile, claudeMd], [soulMdFile, soulMd]] as const) {
-        if (content === null) continue
+      const claudeMd = await generateClaudeMd(name, description, model, { telegram })
+      for (const [f, content] of [[claudeMdFile, claudeMd]] as const) {
         const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: true })
         if (r.written) personaWrittenByUs.add(f.file)
         else personaSkipped.push({ file: f.file, sidecarPath: r.sidecarPath })
@@ -1356,7 +1338,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // agents}, the channel state dir, memory/MEMORY.md, .mcp.json, the
       // quarantine-reader sub-agent -- and the model, security profile,
       // settings and display name are all written. The only thing missing is
-      // the two PERSONALITY files, produced by the single most failure-prone
+      // the PERSONALITY file (CLAUDE.md), produced by the single most failure-prone
       // step: an LLM call that can time out, hit missing auth, a CLI error or a
       // network fault. Throwing away everything that succeeded because the
       // least essential part failed turns a slow generation into silent data
@@ -1384,10 +1366,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       try {
         for (const [f, content] of [
           [claudeMdFile, fallbackClaudeMd(name, description, model, sections, telegram)],
-          // C1 PR 11c-2: no SOUL.md template either for an agent created without Telegram.
-          [soulMdFile, telegram ? fallbackSoulMd(name, description) : null],
         ] as const) {
-          if (content === null) continue
           if (personaWrittenByUs.has(f.file)) continue
           const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: false })
           if (r.written) templateWritten = true
@@ -1459,13 +1438,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // The warning says what actually happens next. An earlier wording promised
       // "It is queued for regeneration", and there is no queue: the sentinel is
       // written by this handler and read by nothing (grep PERSONALITY_PENDING_SENTINEL).
-      // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
+      // What DOES exist is PUT /api/agents/:name with claudeMd, so that is
       // what the message points at. The sentinel stays as a marker for whenever a
       // regeneration path gets built; it just must not be described as one today.
-      // C1 PR 11c-3 (Johnny 13431): without Telegram there is no persona and no
-      // SOUL.md, so the warning names the role description and CLAUDE.md only.
+      // C1 PR 11c-3 (Johnny 13431): without Telegram there is no persona, so the
+      // warning names the role description. Card df560c9f: no SOUL.md either way.
       const warning = telegram
-        ? 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.'
+        ? 'Agent created with a template personality because generation failed. Edit CLAUDE.md to replace it.'
         : 'CLAUDE.md generation failed, a template role description was used. Edit CLAUDE.md.'
       json(res, { ok: true, name, personalityPending: true, warning, detail: personalityPendingDetail, ...skippedField }, 200)
       return true
@@ -1834,10 +1813,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         setAgentEnabledPlugins(name, provider)
       }
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
-      // C1 PR 11c-2: an agent created without Telegram got no persona (no SOUL.md,
-      // none in CLAUDE.md). Attaching Telegram now does not generate one: say so.
+      // C1 PR 11c-2: an agent created without Telegram got no persona (none in its
+      // CLAUDE.md). Attaching Telegram now does not generate one: say so.
       if (provider === 'telegram' && !readAgentPersonaAtCreation(name)) {
-        logger.warn({ name }, 'Telegram attached to an agent created without Telegram: it has no persona (no SOUL.md, none in CLAUDE.md); write one by hand if needed')
+        logger.warn({ name }, 'Telegram attached to an agent created without Telegram: it has no persona in its CLAUDE.md; write one by hand if needed')
       }
       wasRunning = isAgentRunning(name)
       // Same restart-slot discipline as the GC branch above: this too is a

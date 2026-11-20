@@ -411,7 +411,6 @@ window._i18n.hu = {
   'agents.model.create_cards_btn': 'Kanban kártyák létrehozása',
   'agents.model.cards_created':    '{n} kártya létrehozva',
   'agents.claude_md_generating':   'CLAUDE.md generálás...',
-  'agents.soul_md_generating':     'SOUL.md generálás...',
   'agents.api_key.ok':             'API kulcs konfigurálva a vault-ban',
   'agents.api_key.missing':        'Nincs API kulcs beállítva',
   'agents.error.restart':          'Agent újraindítása sikertelen',

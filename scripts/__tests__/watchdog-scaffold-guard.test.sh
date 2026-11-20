@@ -55,11 +55,11 @@ expect_check "complete agent is startable" \
 expect_check "bare directory mid-generation is NOT startable" \
   "$(make_agent bare)" "scaffolded=no"
 
-# CLAUDE.md lands first in the handler (Promise.all resolves both, but a partial
-# write or a failed SOUL.md fallback can leave exactly this state). Personality
-# is incomplete, so it still must not start.
-expect_check "CLAUDE.md alone is NOT startable" \
-  "$(make_agent claude-only CLAUDE.md)" "scaffolded=no"
+# Card df560c9f: CLAUDE.md is the only personality file (SOUL.md is no longer
+# generated), and the handler writes it only after generation, so CLAUDE.md alone
+# is a finished agent.
+expect_check "CLAUDE.md alone is startable" \
+  "$(make_agent claude-only CLAUDE.md)" "scaffolded=yes"
 
 expect_check "SOUL.md alone is NOT startable" \
   "$(make_agent soul-only SOUL.md)" "scaffolded=no"

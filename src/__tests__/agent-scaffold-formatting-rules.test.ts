@@ -1,9 +1,9 @@
 // Tests for the shared formatting contract of the agent-scaffold generators.
 // Background: generateClaudeMd() instructs the model to write Hungarian with
-// proper accents and to never use an em dash. generateSoulMd() and
-// generateSkillMd() used to omit that block, so the same wizard produced a
-// CLAUDE.md with zero em dashes next to a SOUL.md full of them -- a file that
-// violates the rule its sibling file declares.
+// proper accents and to never use an em dash. generateSkillMd() (and the
+// SOUL.md generator, removed with card df560c9f) used to omit that block, so the
+// same wizard produced a CLAUDE.md with zero em dashes next to a file full of
+// them -- a file that violates the rule its sibling file declares.
 //
 // These are source-level assertions on each prompt body (the same technique as
 // agent-scaffold-dashboard-origin.test.ts): the prompts are template literals
@@ -28,8 +28,8 @@ function promptBodyOf(fnName: string, terminator: string): string {
 }
 
 const GENERATORS: Array<{ name: string; terminator: string }> = [
-  { name: 'generateClaudeMd', terminator: 'export async function generateSoulMd' },
-  { name: 'generateSoulMd', terminator: 'export async function generateSkillMd' },
+  // Card df560c9f: generateSoulMd is gone; the next function is generateSkillMd (the slice is unchanged).
+  { name: 'generateClaudeMd', terminator: 'export async function generateSkillMd' },
   { name: 'generateSkillMd', terminator: '' },
 ]
 

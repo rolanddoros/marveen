@@ -5041,7 +5041,7 @@ export async function generateClaudeMd(
   const helper = agentUsesApiHelper(name)
 
   // C1 PR 11c-2 (Roland TG 3151 = C): an agent created without a Telegram bot gets no
-  // persona: role, domain and work rules only (and no SOUL.md, routes/agents.ts). With
+  // persona: role, domain and work rules only. With
   // Telegram (the default) the request is byte for byte what it was.
   const task = opts.telegram !== false
     ? `Generate the agent's role and persona only:
@@ -5291,34 +5291,6 @@ function blockedHint(target: string, reason: string): string {
     `Reason: ${reason}. If this is an AUP block, rephrase the request or try a ` +
     `different model; the prior conversation/session is unaffected.`
   )
-}
-
-export async function generateSoulMd(name: string, description: string): Promise<string> {
-  const prompt = `You are creating the SOUL.md (personality definition) for an AI agent.
-Agent name: ${name}
-Description: ${description}
-
-Generate a personality definition that includes:
-- Core personality traits
-- Communication tone and style
-- How it addresses the user (whose name is ${OWNER_NAME} -- use this name, not any other)
-- Unique quirks or characteristics
-- What it should avoid
-
-IMPORTANT FORMATTING RULES:
-- Write ALL Hungarian text with proper accents (á, é, í, ó, ö, ő, ú, ü, ű). NEVER write Hungarian without accents.
-- Never use em dash (—), only simple hyphen (-).
-
-Make the personality distinctive but professional.
-Output ONLY the markdown content, no code fences.`
-
-  const { text, error } = await runAgent(prompt)
-  if (!text) throw new Error(error ? blockedHint('SOUL.md', error) : noOutputHint('SOUL.md'))
-  let cleaned = text.trim()
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
-  }
-  return cleaned
 }
 
 export async function generateSkillMd(skillName: string, description: string): Promise<string> {

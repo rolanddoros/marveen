@@ -62,20 +62,23 @@ describe('creation wizard: the Telegram question (C1 PR 11c-2)', () => {
     expect(body).toMatch(/profile: document\.getElementById\('agentProfile'\)\.value,\s*telegram,/)
   })
 
-  it('step 3 hides the SOUL.md editor and does not send soulMd for an agent created without Telegram', () => {
-    expect(step('wizardStep3')).toContain('<div class="form-group" id="wizardSoulGroup">')
+  // Card df560c9f: no SOUL.md is generated for any agent, so step 3 has no SOUL.md editor and never sends soulMd.
+  it('step 3 has no SOUL.md editor and sends only claudeMd, with or without Telegram', () => {
+    const s3 = step('wizardStep3')
+    const panel = s3.slice(0, s3.indexOf('class="wizard-actions"'))
+    expect(panel).toContain('id="wizardClaudeMd"')
+    expect(panel).not.toMatch(/wizardSoul|SOUL\.md/)
     expect(APP).toContain('wizardTelegram = telegram')
-    expect(APP).toContain("document.getElementById('wizardSoulGroup').hidden = !wizardTelegram")
-    expect(APP).toContain('body: JSON.stringify(wizardTelegram ? { claudeMd, soulMd } : { claudeMd }),')
-    expect(APP).not.toContain('body: JSON.stringify({ claudeMd, soulMd }),')
+    expect(APP).not.toMatch(/wizardSoul|generatedSoulMd/)
+    expect(createHandler()).toContain('body: JSON.stringify({ claudeMd }),')
+    expect(createHandler()).not.toContain('soulMd')
   })
 
-  it('opening the wizard resets the answer to checked and the SOUL.md editor to visible', () => {
+  it('opening the wizard resets the answer to checked', () => {
     const reset = APP.slice(APP.indexOf("wizardCreatedName = ''\n  wizardPersonalityPending = null"))
     const head = reset.slice(0, reset.indexOf('updateWizardUI()'))
     expect(head).toContain('wizardTelegram = true')
     expect(head).toContain("document.getElementById('agentTelegram').checked = true")
-    expect(head).toContain("document.getElementById('wizardSoulGroup').hidden = false")
   })
 
   // Kevin 13421: the two follow-ons of the new option, in this PR.
@@ -101,19 +104,15 @@ describe('creation wizard: the Telegram question (C1 PR 11c-2)', () => {
     expect(h).toMatch(/\n {6}await openAgentDetail\(name\)\n/)
   })
 
-  it('without Telegram the step-2 status does not mention SOUL.md (existing key, both languages); with it, as before', () => {
+  it('the step-2 status names CLAUDE.md only, for both answers (card df560c9f); the SOUL.md key is gone', () => {
     const h = nextHandler()
-    const m = h.match(/statusEl\.textContent = t\(telegram \? '([^']+)' : '([^']+)'\)/)
-    expect(m, 'the status after the POST depends on the answer').not.toBeNull()
-    const [, withKey, withoutKey] = m!
-    expect(withKey).toBe('agents.soul_md_generating')
-    expect(withoutKey).toBe('agents.claude_md_generating')
+    expect(h).toContain("statusEl.textContent = t('agents.claude_md_generating')")
+    expect(h).not.toContain('soul_md_generating')
     for (const lang of [hu, en]) {
-      expect(lang[withoutKey]).toBeTypeOf('string')
-      expect(lang[withoutKey]).not.toMatch(/SOUL/i)
+      expect(lang['agents.claude_md_generating']).toBeTypeOf('string')
+      expect(lang['agents.claude_md_generating']).not.toMatch(/SOUL/i)
+      expect(lang['agents.soul_md_generating']).toBeUndefined()
     }
-    // no unconditional SOUL.md status left in the step-1 handler
-    expect(h.split("'agents.soul_md_generating'").length - 1).toBe(1)
   })
 })
 

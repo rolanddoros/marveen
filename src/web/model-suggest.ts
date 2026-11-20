@@ -105,7 +105,7 @@ export interface AgentSignals {
 }
 
 // Keyword sets keyed by suggested model tier.
-// Match against lowercased persona text (CLAUDE.md + SOUL.md concatenated).
+// Match against lowercased persona text (CLAUDE.md + personas/<name>.md concatenated, routes/agents.ts).
 const OPUS_KEYWORDS = [
   'architekt', 'architecture', 'architect',
   'rendszerterv', 'system design', 'elosztott', 'distributed',
@@ -300,7 +300,7 @@ function buildReason(
  * Classify a persona into a model tier based on the persona text and
  * optional context-window usage. Deterministic and side-effect-free.
  *
- * @param personaText  Concatenated CLAUDE.md + SOUL.md content (or either)
+ * @param personaText  Concatenated CLAUDE.md + personas/<name>.md content (or either)
  * @param contextTokens  Current session context size (0 = unknown / not running)
  */
 export function classifyPersona(
