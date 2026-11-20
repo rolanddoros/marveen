@@ -27,7 +27,7 @@ export const DEFAULT_TEAM: TeamConfig = {
   role: 'member',
   reportsTo: null,
   delegatesTo: [],
-    trustFrom: [],
+  trustFrom: [],
 }
 
 export function readAgentTeam(name: string): TeamConfig {
