@@ -90,7 +90,7 @@ describe('fleet transfer: team notes', () => {
   it('an older bundle with teamNotes does not cause errors', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
     // apply: true returns ImportResult on success, throws on error.
-    const r = importFleet(fleet({ teamNotes: [NOTE, DELETED] }), { apply: true })
+    const r = importFleet(fleet({ teamNotes: [NOTE, DELETED] }), { apply: true }) as { ok: boolean }
     expect(r.ok).toBe(true)
   })
 })

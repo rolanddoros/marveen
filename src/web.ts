@@ -280,7 +280,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
-            if (await tryHandlePdfRender(routeCtx)) return
+      if (await tryHandlePdfRender(routeCtx)) return
       if (await tryHandleVideoReview(routeCtx, WEB_DIR)) return
       if (await tryHandleSpans(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return

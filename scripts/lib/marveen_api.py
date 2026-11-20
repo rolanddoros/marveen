@@ -171,7 +171,7 @@ def env_file_values(*keys):
 def check_env():
     """Refuses an environment that would send the token elsewhere; None when it is fine.
 
-    The rules live in scripts/lib/env_gate.py (shared with jegyzetek.py, marveen-commands.py and the pre-push review
+    The rules live in scripts/lib/env_gate.py (shared with marveen-commands.py and the pre-push review
     gate). BASE, the install root, comes from this file's location, never from the environment. If the gate cannot
     be loaded, nothing is sent (fail closed)."""
     try:
