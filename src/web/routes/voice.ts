@@ -191,7 +191,7 @@ function recordWhisper(pid: number, argv: string[]): void {
  *  new transcription (the router restarts STT for a still-pending voice row at once) never runs next to it. The
  *  wait counts against a queued caller's budget like any slot wait (at most the 5 s grace + 2 s). Never rejects. */
 export function reapOrphanWhisperOnStartup(deps: WhisperReapDeps = defaultWhisperReapDeps): Promise<WhisperReapResult> {
-  const done = whisperTail.then(() => reapOrphanWhisper(whisperPidfile, deps, STT_KILL_GRACE_MS)).catch((err: unknown) => {
+  const done = whisperTail.then(() => reapOrphanWhisper(whisperPidfile, deps, STT_KILL_GRACE_MS, { vtoolsPath: VTOOLS_PY })).catch((err: unknown) => {
     logger.warn({ err: (err as Error)?.message }, 'orphaned whisper reap failed')
     return 'none' as const
   })

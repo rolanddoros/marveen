@@ -20,6 +20,7 @@ import {
 
 const dir = mkdtempSync(join(tmpdir(), 'whisper-orphan-'))
 const PIDFILE = join(dir, 'whisper.pid')
+const VT = join(dir, '_vtools.py')
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const children: ChildProcess[] = []
@@ -52,7 +53,7 @@ describe('reapOrphanWhisper with real processes', () => {
   it('a live orphan with the recorded argv gets SIGINT, its finally runs, and the pidfile is removed', async () => {
     const o = await orphan()
     writeWhisperPidfile(PIDFILE, o.pid, o.recorded)
-    expect(await reapOrphanWhisper(PIDFILE, defaultWhisperReapDeps, 2_000, { pollMs: 20 })).toBe('killed')
+    expect(await reapOrphanWhisper(PIDFILE, defaultWhisperReapDeps, 2_000, { vtoolsPath: VT, pollMs: 20 })).toBe('killed')
     await exited(o.proc)
     expect(o.proc.signalCode).not.toBe('SIGKILL')
     expect(readFileSync(o.mark, 'utf-8')).toBe('ran') // SIGINT, not SIGKILL: its cleanup ran
@@ -63,7 +64,7 @@ describe('reapOrphanWhisper with real processes', () => {
     const o = await orphan({ ignoreSigint: true })
     writeWhisperPidfile(PIDFILE, o.pid, o.recorded)
     const t0 = Date.now()
-    expect(await reapOrphanWhisper(PIDFILE, defaultWhisperReapDeps, 300, { pollMs: 20 })).toBe('killed')
+    expect(await reapOrphanWhisper(PIDFILE, defaultWhisperReapDeps, 300, { vtoolsPath: VT, pollMs: 20 })).toBe('killed')
     expect(Date.now() - t0).toBeGreaterThanOrEqual(280)
     await exited(o.proc)
     expect(o.proc.signalCode).toBe('SIGKILL')
@@ -76,7 +77,7 @@ describe('reapOrphanWhisper with real processes', () => {
     writeWhisperPidfile(PIDFILE, o.pid, ['/opt/venv/bin/python', join(dir, '_vtools.py'), 'transcribe', 'AwACAgIAAxkBAAIBc2', join(dir, 'state')])
     const sent: string[] = []
     const deps: WhisperReapDeps = { ...defaultWhisperReapDeps, signal: (pid, sig) => { sent.push(sig); defaultWhisperReapDeps.signal(pid, sig) } }
-    expect(await reapOrphanWhisper(PIDFILE, deps, 200, { pollMs: 20 })).toBe('stale')
+    expect(await reapOrphanWhisper(PIDFILE, deps, 200, { vtoolsPath: VT, pollMs: 20 })).toBe('stale')
     expect(sent).toEqual([])
     expect(alive(o.pid)).toBe(true)
     expect(existsSync(PIDFILE)).toBe(false)
@@ -88,7 +89,7 @@ describe('reapOrphanWhisper with real processes', () => {
     o.proc.kill('SIGKILL'); await exited(o.proc)
     writeWhisperPidfile(PIDFILE, o.pid, o.recorded)
     const sent: string[] = []
-    expect(await reapOrphanWhisper(PIDFILE, { ...defaultWhisperReapDeps, signal: (_p, s) => { sent.push(s) } }, 200)).toBe('stale')
+    expect(await reapOrphanWhisper(PIDFILE, { ...defaultWhisperReapDeps, signal: (_p, s) => { sent.push(s) } }, 200, { vtoolsPath: VT })).toBe('stale')
     expect(sent).toEqual([])
     expect(existsSync(PIDFILE)).toBe(false)
   })
@@ -96,22 +97,79 @@ describe('reapOrphanWhisper with real processes', () => {
   it('no pidfile: nothing to do; a garbled one, or one naming this process, is removed without a signal', async () => {
     const sent: string[] = []
     const deps: WhisperReapDeps = { readArgv: () => ['x', 'y'], signal: (_p, s) => { sent.push(s) }, sleep: async () => {} }
-    expect(await reapOrphanWhisper(PIDFILE, deps, 100)).toBe('none')
+    expect(await reapOrphanWhisper(PIDFILE, deps, 100, { vtoolsPath: VT })).toBe('none')
     for (const body of ['not json', '{"pid":1,"argv":["a","b"]}', '{"pid":12345,"argv":["only-one"]}', JSON.stringify({ pid: process.pid, argv: ['x', 'y'] })]) {
       writeFileSync(PIDFILE, body)
-      expect(await reapOrphanWhisper(PIDFILE, deps, 100)).toBe('stale')
+      expect(await reapOrphanWhisper(PIDFILE, deps, 100, { vtoolsPath: VT })).toBe('stale')
       expect(existsSync(PIDFILE)).toBe(false)
     }
     expect(sent).toEqual([])
   })
 
   it('a process that survives SIGKILL is reported and its pidfile kept', async () => {
-    writeWhisperPidfile(PIDFILE, 424242, ['py', 'v', 'transcribe'])
+    writeWhisperPidfile(PIDFILE, 424242, ['py', VT, 'transcribe', 'F', 'S'])
     const sent: string[] = []
-    const deps: WhisperReapDeps = { readArgv: () => ['python3', 'v', 'transcribe'], signal: (_p, s) => { sent.push(s) }, sleep: async () => {} }
-    expect(await reapOrphanWhisper(PIDFILE, deps, 50, { pollMs: 10, killWaitMs: 20 })).toBe('survived')
+    const deps: WhisperReapDeps = { readArgv: () => ['python3', VT, 'transcribe', 'F', 'S'], signal: (_p, s) => { sent.push(s) }, sleep: async () => {} }
+    expect(await reapOrphanWhisper(PIDFILE, deps, 50, { vtoolsPath: VT, pollMs: 10, killWaitMs: 20 })).toBe('survived')
     expect(sent).toEqual(['SIGINT', 'SIGKILL'])
     expect(existsSync(PIDFILE)).toBe(true)
+  })
+})
+
+// Ron 18679: the record checks on the kill path (pid 1 = init, non-integer pids, odd argv) were untested. The fake
+// deps below call EVERY pid "ours" (readArgv returns the record's own argv), so only the record checks stand between
+// a bad record and a signal.
+describe('a bad or foreign-shaped record is never acted on', () => {
+  const good = (): unknown[] => ['/opt/venv/bin/python', VT, 'transcribe', 'AwACAgIAAxkBAAIBc2', '/s']
+  const BAD: Array<[string, unknown]> = [
+    ['pid 1 (init)', { pid: 1, argv: good() }],
+    ['pid 0', { pid: 0, argv: good() }],
+    ['negative pid', { pid: -5, argv: good() }],
+    ['fractional pid', { pid: 1234.5, argv: good() }],
+    ['string pid', { pid: '1234', argv: good() }],
+    ['argv not an array', { pid: 1234, argv: 'python transcribe' }],
+    ['argv with one element', { pid: 1234, argv: ['/opt/venv/bin/python'] }],
+    ['argv with a non-string element', { pid: 1234, argv: ['/opt/venv/bin/python', VT, 'transcribe', 123, '/s'] }],
+    ['foreign 2-element shape (Ron: python3 605)', { pid: 1234, argv: ['/usr/bin/python3', '605'] }],
+    ['5 elements, another _vtools.py', { pid: 1234, argv: ['/opt/venv/bin/python', '/elsewhere/_vtools.py', 'transcribe', 'F', '/s'] }],
+    ['5 elements, not transcribe', { pid: 1234, argv: ['/opt/venv/bin/python', VT, 'speak', 'F', '/s'] }],
+  ]
+  it.each(BAD)('%s -> stale, no signal, file removed', async (_name, body) => {
+    writeFileSync(PIDFILE, JSON.stringify(body))
+    const live = Array.isArray((body as { argv?: unknown }).argv) ? (body as { argv: string[] }).argv : good() as string[]
+    const sent: string[] = []
+    const deps: WhisperReapDeps = { readArgv: () => live, signal: (_p, s) => { sent.push(s) }, sleep: async () => {} }
+    expect(await reapOrphanWhisper(PIDFILE, deps, 20, { vtoolsPath: VT, pollMs: 5, killWaitMs: 10 })).toBe('stale')
+    expect(sent).toEqual([])
+    expect(existsSync(PIDFILE)).toBe(false)
+  })
+
+  it('POSITIVE CONTROL: the same fake deps with a good record do signal', async () => {
+    writeFileSync(PIDFILE, JSON.stringify({ pid: 1234, argv: good() }))
+    const sent: string[] = []
+    const deps: WhisperReapDeps = { readArgv: () => good() as string[], signal: (_p, s) => { sent.push(s) }, sleep: async () => {} }
+    expect(await reapOrphanWhisper(PIDFILE, deps, 20, { vtoolsPath: VT, pollMs: 5, killWaitMs: 10 })).toBe('survived')
+    expect(sent).toEqual(['SIGINT', 'SIGKILL'])
+  })
+
+  it('readWhisperPidfile itself rejects the bad pid / argv records (and accepts a good one)', () => {
+    for (const [, body] of BAD.slice(0, 8)) {
+      writeFileSync(PIDFILE, JSON.stringify(body))
+      expect(readWhisperPidfile(PIDFILE)).toBe('invalid')
+    }
+    writeFileSync(PIDFILE, JSON.stringify({ pid: 2, argv: ['a', 'b'] }))
+    expect(readWhisperPidfile(PIDFILE)).toEqual({ pid: 2, argv: ['a', 'b'] })
+  })
+
+  it('a real foreign process named by a 2-element record is not signalled (Ron\'s measured case)', async () => {
+    const p = spawn('sleep', ['605'], { stdio: 'ignore' })
+    children.push(p)
+    for (let i = 0; i < 100 && defaultWhisperReapDeps.readArgv(p.pid!)?.[0] !== 'sleep'; i++) await new Promise((r) => setTimeout(r, 10))
+    writeWhisperPidfile(PIDFILE, p.pid!, ['/usr/bin/python3', '605'])
+    expect(sameArgv(defaultWhisperReapDeps.readArgv(p.pid!)!, ['/usr/bin/python3', '605'])).toBe(true) // the tail alone WOULD match
+    expect(await reapOrphanWhisper(PIDFILE, defaultWhisperReapDeps, 200, { vtoolsPath: VT, pollMs: 20 })).toBe('stale')
+    expect(alive(p.pid!)).toBe(true)
+    p.kill('SIGKILL'); await exited(p)
   })
 })
 

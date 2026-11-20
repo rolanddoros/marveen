@@ -18,6 +18,7 @@
 
 import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { isAbsolute } from 'node:path'
 import { logger } from '../logger.js'
 
 export interface WhisperPidRecord { pid: number; argv: string[] }
@@ -73,21 +74,28 @@ export function sameArgv(live: string[], recorded: string[]): boolean {
   return live.length === 1 && live[0]!.endsWith(` ${tail.join(' ')}`)
 }
 
+/** The record has the shape transcribeWithin writes: [interpreter, <vtoolsPath>, 'transcribe', file_id, state dir],
+ *  with vtoolsPath the dashboard's own absolute _vtools.py. Anything else (a hand-made or foreign record such as
+ *  ["/usr/bin/python3", "605"], whose short tail could match an unrelated process) is never acted on (Ron 18679). */
+export function isWhisperRecordShape(rec: WhisperPidRecord, vtoolsPath: string): boolean {
+  return isAbsolute(vtoolsPath) && rec.argv.length === 5 && rec.argv[1] === vtoolsPath && rec.argv[2] === 'transcribe'
+}
+
 /** Stop the whisper a previous dashboard left running, if the pidfile still names a live process with the
- *  recorded argv. Never throws for a missing, garbled or stale pidfile; those are removed. */
+ *  recorded argv. Never throws for a missing, garbled, foreign-shaped or stale pidfile; those are removed. */
 export async function reapOrphanWhisper(
   path: string,
   deps: WhisperReapDeps,
   graceMs: number,
-  opts: { pollMs?: number; killWaitMs?: number } = {},
+  opts: { vtoolsPath: string; pollMs?: number; killWaitMs?: number },
 ): Promise<WhisperReapResult> {
   const pollMs = opts.pollMs ?? 100
   const killWaitMs = opts.killWaitMs ?? 2_000
   const rec = readWhisperPidfile(path)
   if (rec === 'missing') return 'none'
   const drop = () => { try { unlinkSync(path) } catch { /* already gone */ } }
-  if (rec === 'invalid' || rec.pid === process.pid) {
-    logger.warn({ path }, 'whisper pidfile unreadable or names this process; removed without signalling anything')
+  if (rec === 'invalid' || rec.pid === process.pid || !isWhisperRecordShape(rec, opts.vtoolsPath)) {
+    logger.warn({ path }, 'whisper pidfile unreadable, not in the whisper record shape, or names this process; removed without signalling anything')
     drop()
     return 'stale'
   }
