@@ -663,6 +663,11 @@ export const WORKER_AUTOUPDATE =
 export const VOICE_TRANSCRIBE_INBOUND =
   ['1', 'true', 'yes', 'on'].includes((cfg('VOICE_TRANSCRIBE_INBOUND') ?? '').trim().toLowerCase())
 
+// The speech-to-text wall-clock budget in milliseconds, raw (card 58b9aa06). Parsed and bounded by
+// resolveSttTimeoutMs (routes/voice.ts; default 900 s). .env / config-overrides first, then the process
+// environment, so a systemd drop-in (the way the whisper model is chosen) sets it too. Read at boot.
+export const MARVEEN_STT_TIMEOUT_MS_RAW: string | undefined = cfg('MARVEEN_STT_TIMEOUT_MS') ?? process.env.MARVEEN_STT_TIMEOUT_MS
+
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
 // authenticated as, so no personal address is baked into the shipped

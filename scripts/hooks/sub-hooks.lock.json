@@ -327,7 +327,7 @@
       "hook": {
         "type": "command",
         "command": "bash -c '[ -f \"${ROOT}/scripts/hooks/voice-reply-directive.py\" ] && exec python3 \"${ROOT}/scripts/hooks/voice-reply-directive.py\"; exit 0'",
-        "timeout": 180
+        "timeout": 920
       }
     },
     "telegram-reply-directive": {
@@ -602,5 +602,5 @@
       }
     }
   },
-  "sha256": "642f942af3468e4249d043c5ab27ee4d7bc7ab9ac1da0b69c9b8409ca72253be"
+  "sha256": "cbeb5b719f0a0bc03b4806cc5d9fef547001597412312d06c5ff6a0774f28334"
 }

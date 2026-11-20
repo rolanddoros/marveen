@@ -125,16 +125,17 @@ def main():
     try:
         req = urllib.request.Request(url)
         req.add_header("Authorization", "Bearer " + token)
-        # 170 s sits in the middle of a strictly increasing chain, innermost first:
-        #   voice.ts STT_TIMEOUT_MS 160 s  <  this urlopen 170 s
-        #                                  <  hook `timeout` in settings.json 180 s
+        # 910 s sits in the middle of a strictly increasing chain, innermost first:
+        #   voice.ts STT_DIRECTIVE_CEILING_MS 900 s  <  this urlopen 910 s
+        #                                            <  hook `timeout` 920 s (src/web/hooks/manifest.ts)
         # The shortest wins. If this one were the smallest, the socket would give
         # up before the server's own budget and the caller would see a bare
         # connection error instead of the server's transcript=null -- the same
         # "vanished with no reason" failure this change exists to remove.
         # At the previous 55 s every voice note over ~2 min was dropped with no
-        # error anywhere (measured 2026-09-18).
-        with urllib.request.urlopen(req, timeout=170) as r:
+        # error anywhere (measured 2026-09-18); 160/170/180 s held ~3.5 min on
+        # whisper "small", far less on large-v3 (card 58b9aa06, 2026-11-20).
+        with urllib.request.urlopen(req, timeout=910) as r:
             data = json.load(r)
     except Exception:
         sys.exit(0)  # dashboard unavailable -- fail-safe, no injection
@@ -143,6 +144,14 @@ def main():
     if transcript:
         sys.stdout.write("\n[Hang átirat]: " + transcript + "\n")
         sys.stdout.flush()
+    else:
+        # The server's own notice when the transcription timed out (card
+        # 58b9aa06): the agent sees that the voice note was not transcribed and
+        # how to retry, instead of a voice note that silently has no text.
+        notice = data.get("stt_notice")
+        if isinstance(notice, str) and notice:
+            sys.stdout.write("\n" + notice + "\n")
+            sys.stdout.flush()
 
     directive = data.get("directive")
     if directive:

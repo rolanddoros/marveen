@@ -693,10 +693,11 @@ describe('the report', () => {
     const r0 = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
     expect([...rewrapsOf(r0, 'outgoing-copy-gate.py'), ...rewrapsOf(r0, 'voice-reply-directive.py')]).toEqual([
       'PreToolUse [mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message] outgoing-copy-gate.py wrapper failClosedPythonProbe -> failClosedPythonProbe, deadline 8 -> 13, timeout 10 -> 15',
-      'UserPromptSubmit [-] voice-reply-directive.py wrapper failOpenExecUnquoted -> failOpenExec, deadline - -> -, timeout 60 -> 180',
+      // 920: the outermost bound of the STT chain (card 58b9aa06; was 180)
+      'UserPromptSubmit [-] voice-reply-directive.py wrapper failOpenExecUnquoted -> failOpenExec, deadline - -> -, timeout 60 -> 920',
     ])
     withSettings('sub-03', (s) => {
-      Object.assign(hookOf(s, 'UserPromptSubmit', 'voice-reply-directive.py'), { command: quotedOpen('voice-reply-directive.py'), timeout: 180 })
+      Object.assign(hookOf(s, 'UserPromptSubmit', 'voice-reply-directive.py'), { command: quotedOpen('voice-reply-directive.py'), timeout: 920 })
       Object.assign(hookOf(s, 'PreToolUse', 'outgoing-copy-gate.py'), { command: pythonGateCommand(hookPath('outgoing-copy-gate.py'), [], 15), timeout: 15 })
     }, () => {
       const r = dryRun({ root: install, nodeBin: NODE, agents: ['sub-03'] })
