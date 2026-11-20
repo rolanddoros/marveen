@@ -17,7 +17,7 @@ Callers load this file by its exact path (importlib.util.spec_from_file_location
 `python3 -I` does not put the script's directory on sys.path, and a module looked up by name could be someone
 else's. A caller that cannot load it must not send the token (fail closed).
 
-Users: scripts/lib/marveen_api.py (every helper verb and agent-msg.sh), scripts/jegyzetek.py,
+Users: scripts/lib/marveen_api.py (every helper verb and agent-msg.sh),
 scripts/hooks/marveen-commands.py, scripts/git-hooks/pre-push-review-gate.py.
 
 telegram_api_base() is the same gate for the Telegram BOT token (C2 PR4d): its users are the five python senders

@@ -24,8 +24,7 @@ BIN="$SANDBOX/bin"; mkdir -p "$BIN"
 
 # The helper runs from a throwaway copy of the install: it logs a failed send to <its install>/store/
 # agent-msg-failures.log, and the 'not json' case below is a failed send. Run from the checkout it wrote the
-# checkout's log, and the scripts shards run in parallel in one checkout: jegyzetek.test.py (another shard)
-# checks that same file, and went red on fork CI whenever the two overlapped (2026-11-06).
+# checkout's log, and the scripts shards run in parallel in one checkout (fork CI, 2026-11-06).
 INST="$SANDBOX/inst"; mkdir -p "$INST/scripts" "$INST/store"
 cp "$ROOT/scripts/agent-msg.sh" "$INST/scripts/agent-msg.sh"
 cp -R "$ROOT/scripts/lib" "$INST/scripts/lib"

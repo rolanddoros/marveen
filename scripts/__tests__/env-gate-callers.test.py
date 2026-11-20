@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""C2 PR4c: the shared token env gate (scripts/lib/env_gate.py) in jegyzetek.py and the marveen-commands hook.
+"""C2 PR4c: the shared token env gate (scripts/lib/env_gate.py) in the marveen-commands hook and agent-msg.sh.
 
 Both send the dashboard token to MARVEEN_API_BASE. Before PR4c neither checked it, so whoever could set the
 environment could send the token to any host. Now both run the shared gate BEFORE the token is read:
@@ -70,7 +70,6 @@ def make_install(prefix, token='gate-token'):
     inst = tempfile.mkdtemp(prefix=prefix)
     os.makedirs(os.path.join(inst, 'scripts', 'lib'))
     os.makedirs(os.path.join(inst, 'store'))
-    shutil.copy(os.path.join(ROOT, 'scripts', 'jegyzetek.py'), os.path.join(inst, 'scripts', 'jegyzetek.py'))
     shutil.copy(os.path.join(ROOT, 'scripts', 'agent-msg.sh'), os.path.join(inst, 'scripts', 'agent-msg.sh'))
     for f in ('marveen_api.py', 'env_gate.py', 'homoglyph.py', 'mixed_script.py'):
         shutil.copy(os.path.join(ROOT, 'scripts', 'lib', f), os.path.join(inst, 'scripts', 'lib', f))
@@ -105,15 +104,6 @@ def main():
         del local_reqs[:]
         del other_reqs[:]
 
-    # --- jegyzetek.py ------------------------------------------------------------------------------------------
-    def jegyzetek(base, token_file=None):
-        e = dict(base_env, MARVEEN_API_BASE=base)
-        if token_file:
-            e['MARVEEN_TOKEN_FILE'] = token_file
-        r = subprocess.run([sys.executable, os.path.join(inst, 'scripts', 'jegyzetek.py'), 'lista'],
-                           capture_output=True, text=True, env=e, timeout=60, stdin=subprocess.DEVNULL)
-        return r.returncode, (r.stdout + r.stderr).strip()
-
     # --- marveen-commands.py, in-process from the sandbox copy (its GATE_ROOT is the sandbox) --------------------
     def hook(base, install_dir=None):
         saved = {k: os.environ.get(k) for k in GATE_VARS}
@@ -136,11 +126,7 @@ def main():
                     os.environ[k] = v
 
     try:
-        # control: loopback works for both
-        reset()
-        rc, out = jegyzetek(local_api)
-        check('jegyzetek, loopback: asked the API with the token', rc == 0 and len(local_reqs) == 1
-              and local_reqs[0]['auth'] == 'Bearer gate-token', (rc, out, local_reqs))
+        # control: loopback works
         reset()
         (res, err), (names, note) = hook(local_api)
         check('hook, loopback: the menu came from the API (control for the fallback check)', 'stub' in names and
@@ -149,10 +135,6 @@ def main():
               len(local_reqs) == 2 and all(r['auth'] == 'Bearer gate-token' for r in local_reqs), (err, local_reqs))
 
         # a reachable non-loopback host: refused before the token is read
-        reset()
-        rc, out = jegyzetek(other_api)
-        check('jegyzetek, 127.0.0.2: FAIL, exit 1, nothing arrives', rc == 1 and 'neither loopback' in out
-              and not other_reqs and not local_reqs, (rc, out, other_reqs))
         reset()
         (res, err), (names, note) = hook(other_api)
         check('hook, 127.0.0.2: dispatch refused by the env gate, nothing arrives',
@@ -164,29 +146,9 @@ def main():
 
         # point 7 (Ron, PR4b): the request reads the base the way the gate did (spaces, trailing slashes)
         reset()
-        rc, out = jegyzetek('  %s//  ' % local_api)
-        check('jegyzetek, a base with spaces and trailing slashes: sent, to the right path',
-              rc == 0 and local_reqs and local_reqs[0]['path'] == '/api/notes', (rc, out, local_reqs))
-        reset()
         (res, err), _ = hook('  %s/  ' % local_api)
         check('hook, a base with spaces and a trailing slash: dispatch sent, to the right path',
               err is None and local_reqs and local_reqs[0]['path'] == '/api/commands/dispatch', (err, local_reqs))
-
-        # a base with a path, on loopback
-        reset()
-        rc, out = jegyzetek(local_api + '/api/notes?x=')
-        check('jegyzetek, a path in the base: refused, nothing arrives', rc == 1 and not local_reqs, (rc, out))
-
-        # the token file name rule (jegyzetek reads MARVEEN_TOKEN_FILE)
-        tmp = tempfile.mkdtemp(prefix='env-gate-callers-tok-')
-        wrong = os.path.join(tmp, 'notes.txt')
-        with open(wrong, 'w') as f:
-            f.write('first line of another file\n')
-        reset()
-        rc, out = jegyzetek(local_api, token_file=wrong)
-        check('jegyzetek, a token file not named .dashboard-token: refused, nothing arrives',
-              rc == 1 and '.dashboard-token' in out and not local_reqs, (rc, out))
-        shutil.rmtree(tmp, ignore_errors=True)
 
         # MARVEEN_INSTALL_DIR names a root whose .env allows 127.0.0.2: the hook's gate still uses its own .env
         reset()
@@ -196,10 +158,6 @@ def main():
 
         # the install's own .env origin opens exactly that origin
         write_env(inst, 'AGENT_API_ORIGIN=%s/\n' % other_api)
-        reset()
-        rc, out = jegyzetek(other_api)
-        check('jegyzetek, the .env origin: sent there', rc == 0 and len(other_reqs) == 1 and not local_reqs,
-              (rc, out, other_reqs))
         reset()
         (res, err), _ = hook(other_api)
         check('hook, the .env origin: dispatch sent there', err is None and other_reqs
@@ -242,11 +200,6 @@ def main():
             check('agent-msg.sh, %s: exit 2, refused, nothing arrives' % label,
                   rc == 2 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
             reset()
-            rc, out = jegyzetek(base)
-            outs.append(out)
-            check('jegyzetek, %s: exit 1, refused, nothing arrives' % label,
-                  rc == 1 and 'nothing was sent' in out and 'Traceback' not in out and not local_reqs, (rc, out))
-            reset()
             try:
                 (res, err), (names, note) = hook(base)
             except Exception as e:  # the hook must refuse, not raise
@@ -256,12 +209,8 @@ def main():
                   res is None and err and err.startswith('env-kapu:') and note == 'EnvGateRefused'
                   and not local_reqs, (res, err, note))
             if secret_part:
-                check('  ...%s: the secret part is in no output of the four callers' % label,
+                check('  ...%s: the secret part is in no output of the three callers' % label,
                       all(secret_part not in o for o in outs), [o for o in outs if secret_part in o])
-        # the mask keeps the rest readable: the host is still named
-        rc, out = jegyzetek('http://dani:%s@127.0.0.1:%s' % (secret, port))
-        check('the refusal names the base with the userinfo masked', '***@127.0.0.1' in out and secret not in out, out)
-
         # --- Ron 11828 pins (the code was right; nothing held it) ------------------------------------------------
         # K3: the hook's third token path, run_stop (turn-ended), runs the gate too.
         hold = os.path.join(inst, 'store', 'main-model-hold.json')
@@ -304,8 +253,8 @@ def main():
         os.remove(hold)
         shutil.rmtree(sd, ignore_errors=True)
 
-        # M3/M4/J3: MARVEEN_INSTALL_DIR names a root whose .env allows 127.0.0.2 AND whose env_gate.py allows
-        # everything. The helper, agent-msg.sh and jegyzetek take their root and their gate module from their own
+        # M3/M4: MARVEEN_INSTALL_DIR names a root whose .env allows 127.0.0.2 AND whose env_gate.py allows
+        # everything. The helper and agent-msg.sh take their root and their gate module from their own
         # file, so both are ignored.
         with open(os.path.join(fake, 'scripts', 'lib', 'env_gate.py'), 'w') as f:
             f.write('def check_env(root, environ=None):\n    return None\n\n\n'
@@ -320,36 +269,12 @@ def main():
                 ['bash', os.path.join(inst, 'scripts', 'agent-msg.sh'), 'dani', 'samu', 'szia'],
                 capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
                 env=dict(base_env, MARVEEN_API_BASE=other_api, MARVEEN_INSTALL_DIR=fake)), 2),
-            ('jegyzetek', lambda: subprocess.run(
-                [sys.executable, os.path.join(inst, 'scripts', 'jegyzetek.py'), 'lista'],
-                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
-                env=dict(base_env, MARVEEN_API_BASE=other_api, MARVEEN_INSTALL_DIR=fake)), 1),
         ]:
             reset()
             r = run_it()
-            check('M3/M4/J3 %s: a MARVEEN_INSTALL_DIR with a permissive .env and gate module opens nothing' % label,
+            check('M3/M4 %s: a MARVEEN_INSTALL_DIR with a permissive .env and gate module opens nothing' % label,
                   r.returncode == code and 'neither loopback' in (r.stdout + r.stderr) and not other_reqs,
                   (r.returncode, (r.stdout + r.stderr)[-300:], other_reqs))
-
-        # J2: jegyzetek runs the gate BEFORE it opens the token file. The token file is a FIFO with no writer: opened
-        # first, the run would hang until the timeout; gated first, it is refused at once (Ron's PR4b method).
-        fifo_dir = tempfile.mkdtemp(prefix='env-gate-callers-fifo-')
-        fifo = os.path.join(fifo_dir, '.dashboard-token')
-        os.mkfifo(fifo)
-        reset()
-        try:
-            r = subprocess.run([sys.executable, os.path.join(inst, 'scripts', 'jegyzetek.py'), 'lista'],
-                               capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
-                               env=dict(base_env, MARVEEN_API_BASE=other_api, MARVEEN_TOKEN_FILE=fifo))
-            check('J2: jegyzetek refuses before it opens the token file (a writerless FIFO does not hang it)',
-                  r.returncode == 1 and 'neither loopback' in (r.stdout + r.stderr) and not other_reqs,
-                  (r.returncode, r.stdout + r.stderr))
-        except subprocess.TimeoutExpired:
-            check('J2: jegyzetek refuses before it opens the token file (a writerless FIFO does not hang it)', False,
-                  'hung on the FIFO: the token file was opened before the gate')
-            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)  # release a reader stuck on it
-            os.close(fd)
-        shutil.rmtree(fifo_dir, ignore_errors=True)
 
         # H4: a .env origin is http(s) too: the same host under another scheme in AGENT_API_ORIGIN opens nothing.
         gate = load_gate(inst)
@@ -372,10 +297,6 @@ def main():
 
         # env_gate.py missing: fail closed, even on loopback
         os.rename(os.path.join(inst, 'scripts', 'lib', 'env_gate.py'), os.path.join(inst, 'scripts', 'lib', 'gone.py'))
-        reset()
-        rc, out = jegyzetek(local_api)
-        check('jegyzetek, env_gate.py missing: refused, nothing arrives', rc == 1 and 'cannot be loaded' in out
-              and not local_reqs, (rc, out, local_reqs))
         reset()
         (res, err), (names, note) = hook(local_api)
         check('hook, env_gate.py missing: refused, nothing arrives', res is None and err and 'cannot be loaded' in err

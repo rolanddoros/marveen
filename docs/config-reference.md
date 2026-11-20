@@ -529,7 +529,7 @@ sorolja fel). A segéd és a `scripts/agent-msg.sh` a `developer-junior.json` en
 és a generált CLAUDE.md-blokkok strict ágensnél ezt a receptet adják; minden más ágensnél a
 `curl`-recept marad változatlanul. A segéd a tokent csak loopback címre, vagy pontosan az install `.env`-jében álló
 `AGENT_API_ORIGIN` / `DASHBOARD_PUBLIC_URL` címre küldi (`MARVEEN_API_BASE`), és csak `.dashboard-token` nevű fájlból olvassa.
-Ugyanez a kapu (`scripts/lib/env_gate.py`) fut a `scripts/agent-msg.sh`-ban, a `scripts/jegyzetek.py`-ban és a
+Ugyanez a kapu (`scripts/lib/env_gate.py`) fut a `scripts/agent-msg.sh`-ban és a
 `scripts/hooks/marveen-commands.py` hookban és a pre-push review gate-ben is, mindig a token beolvasása előtt; ha
 elutasít, semmi nem megy ki (a review gate-nél a push is elutasítva). Az engedett `.env` mindig a szkript saját
 helyéről számolt install `.env`-je, sosem környezeti változóból jön. A review gate a modult a saját másolata mellől

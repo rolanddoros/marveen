@@ -26,7 +26,7 @@ const tokenFile = join(dir, '.dashboard-token')
 writeFileSync(tokenFile, TOKEN + '\n', 'utf-8')
 // agent-msg.sh runs from a throwaway copy of the install: it logs a failed send to <its install>/store/
 // agent-msg-failures.log (the "exit code" case below is a failed send). Run from the checkout it wrote the
-// checkout's log, which jegyzetek.test.py checks while the scripts shards run in the same checkout (fork CI, 2026-11-06).
+// checkout's log (fork CI, 2026-11-06).
 const inst = mkdtempSync(join(dir, 'inst-'))
 mkdirSync(join(inst, 'scripts'))
 mkdirSync(join(inst, 'store'))
