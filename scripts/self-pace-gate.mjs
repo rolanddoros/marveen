@@ -1181,7 +1181,9 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // `surface: 'security'` mode, for every agent including the main one.
 // approval_slack_posts (APPROVALSLACK1030 (2)): the posted Slack request the server checks the owner's reaction
 // against; an agent that could write it could point a request at a message it controls.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys']
+// decisions, decision_events (card 658026c5): the owner's answers to agents' questions; an agent that could write
+// them could answer its own question or forge the audit trail. Only the API writes them (routes/decisions.ts).
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'decisions', 'decision_events']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the

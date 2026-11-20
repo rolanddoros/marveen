@@ -102,6 +102,7 @@ import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
+import { tryHandleDecisions } from './web/routes/decisions.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
 import { tryHandleGromzo } from './web/routes/gromzo.js'
@@ -275,6 +276,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleCustomCommands(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
+      if (await tryHandleDecisions(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleFleetFreeze(routeCtx)) return
       if (await tryHandleGromzo(routeCtx)) return
