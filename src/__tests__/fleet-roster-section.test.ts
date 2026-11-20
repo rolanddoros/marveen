@@ -66,7 +66,6 @@ vi.mock('../web/agent-team.js', () => ({
     role: 'member' as const,
     reportsTo: (teamReportsToOverride ?? DEFAULT_TEAM_REPORTS_TO)[name] ?? null,
     delegatesTo: (teamDelegatesOverride ?? {})[name] ?? [],
-    autoDelegation: false,
     trustFrom: [],
   }),
   resolveAgentSecurityProfile: () => 'default',
