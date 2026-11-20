@@ -1750,6 +1750,53 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
 
+  // --- Decisions (card 658026c5, the "Döntések" page) ---
+  // A question an agent puts to the owner: N options with their consequences, a priority and what it blocks. NOT an
+  // approval: approvals are one-shot yes/no gates with content hashes the email and deploy gates consume, and folding
+  // decisions in would loosen their CHECKs. Only the API writes these two tables (security tables: the db-write gate
+  // denies an agent's write, like approvals), and only the owner answers (routes/decisions.ts, mayActAsOwner).
+  // asker_verified: 1 when asker came from a sub-agent's own token (AGENT_TOKENS), 0 when it was self-declared on the
+  // shared token, the same trust approvals.agent_id has.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS decisions (
+      id TEXT PRIMARY KEY,
+      asker TEXT NOT NULL,
+      asker_verified INTEGER NOT NULL DEFAULT 0 CHECK(asker_verified IN (0,1)),
+      category TEXT NOT NULL CHECK(category IN ('fork','kiwele','household','finance','agents','other')),
+      priority TEXT NOT NULL CHECK(priority IN ('urgent','high','normal','low')),
+      title TEXT NOT NULL,
+      question TEXT NOT NULL,
+      context TEXT,
+      options TEXT NOT NULL,
+      recommendation TEXT,
+      blocks TEXT,
+      due_at INTEGER,
+      expires_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','answered','withdrawn','superseded','expired')),
+      answer_key TEXT,
+      answer_text TEXT,
+      answered_at INTEGER,
+      answered_by TEXT,
+      answer_channel TEXT CHECK(answer_channel IS NULL OR answer_channel IN ('page','telegram','slack')),
+      superseded_by TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_decisions_asker ON decisions(asker, created_at)`)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS decision_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      decision_id TEXT NOT NULL,
+      event TEXT NOT NULL CHECK(event IN ('filed','pushed','answered','withdrawn','superseded','expired','delivered')),
+      actor TEXT,
+      detail TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_decision_events_decision ON decision_events(decision_id, created_at)`)
+
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
   // the same table; store/commands.json stays the import (into an EMPTY table)
@@ -7750,6 +7797,166 @@ export interface ApprovalEvent {
 
 export function listApprovalEvents(approvalId: string): ApprovalEvent[] {
   return db.prepare('SELECT * FROM approval_events WHERE approval_id = ? ORDER BY id').all(approvalId) as ApprovalEvent[]
+}
+
+// --- Decisions (card 658026c5) ---
+export const DECISION_CATEGORIES = ['fork', 'kiwele', 'household', 'finance', 'agents', 'other'] as const
+export const DECISION_PRIORITIES = ['urgent', 'high', 'normal', 'low'] as const
+export type DecisionCategory = typeof DECISION_CATEGORIES[number]
+export type DecisionPriority = typeof DECISION_PRIORITIES[number]
+export type DecisionStatus = 'open' | 'answered' | 'withdrawn' | 'superseded' | 'expired'
+export const DECISION_STATUSES: readonly DecisionStatus[] = ['open', 'answered', 'withdrawn', 'superseded', 'expired']
+export interface DecisionOption { key: string; label: string; consequence: string }
+
+/** A decision as the API returns it: options parsed, asker_verified as a boolean. */
+export interface Decision {
+  id: string
+  asker: string
+  asker_verified: boolean
+  category: DecisionCategory
+  priority: DecisionPriority
+  title: string
+  question: string
+  context: string | null
+  options: DecisionOption[]
+  recommendation: string | null
+  blocks: string | null
+  due_at: number | null
+  expires_at: number | null
+  status: DecisionStatus
+  answer_key: string | null
+  answer_text: string | null
+  answered_at: number | null
+  answered_by: string | null
+  answer_channel: 'page' | 'telegram' | 'slack' | null
+  superseded_by: string | null
+  created_at: number
+  updated_at: number
+}
+
+type DecisionRow = Omit<Decision, 'options' | 'asker_verified'> & { options: string; asker_verified: number }
+
+function decisionFromRow(row: DecisionRow): Decision {
+  let options: DecisionOption[] = []
+  try { options = JSON.parse(row.options) as DecisionOption[] } catch { /* written by createDecision only */ }
+  return { ...row, options, asker_verified: row.asker_verified === 1 }
+}
+
+function addDecisionEvent(decisionId: string, event: string, actor: string | null, detail: string | null, now: number): void {
+  db.prepare('INSERT INTO decision_events (decision_id, event, actor, detail, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(decisionId, event, actor, detail, now)
+}
+
+export function createDecision(params: {
+  id: string
+  asker: string
+  asker_verified: boolean
+  category: DecisionCategory
+  priority: DecisionPriority
+  title: string
+  question: string
+  context?: string | null
+  options: DecisionOption[]
+  recommendation?: string | null
+  blocks?: string | null
+  due_at?: number | null
+  expires_at?: number | null
+}): Decision {
+  const now = Math.floor(Date.now() / 1000)
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO decisions (id, asker, asker_verified, category, priority, title, question, context, options,
+        recommendation, blocks, due_at, expires_at, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+    `).run(
+      params.id, params.asker, params.asker_verified ? 1 : 0, params.category, params.priority, params.title,
+      params.question, params.context ?? null, JSON.stringify(params.options), params.recommendation ?? null,
+      params.blocks ?? null, params.due_at ?? null, params.expires_at ?? null, now, now,
+    )
+    addDecisionEvent(params.id, 'filed', params.asker, null, now)
+  }).immediate()
+  return getDecision(params.id) as Decision
+}
+
+export function getDecision(id: string): Decision | undefined {
+  const row = db.prepare('SELECT * FROM decisions WHERE id = ?').get(id) as DecisionRow | undefined
+  return row ? decisionFromRow(row) : undefined
+}
+
+/** Sorted as the page shows them: priority, then the ones that block something, then due_at (none last), then age. */
+export function listDecisions(opts: { status?: DecisionStatus; category?: DecisionCategory; asker?: string; limit?: number } = {}): Decision[] {
+  const where: string[] = []
+  const args: unknown[] = []
+  if (opts.status) { where.push('status = ?'); args.push(opts.status) }
+  if (opts.category) { where.push('category = ?'); args.push(opts.category) }
+  if (opts.asker) { where.push('asker = ?'); args.push(opts.asker) }
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 200), 1), 500)
+  const rows = db.prepare(`
+    SELECT * FROM decisions ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+      CASE WHEN blocks IS NULL THEN 1 ELSE 0 END,
+      CASE WHEN due_at IS NULL THEN 1 ELSE 0 END, due_at,
+      created_at, id
+    LIMIT ?
+  `).all(...args, limit) as DecisionRow[]
+  return rows.map(decisionFromRow)
+}
+
+export interface DecisionEvent { id: number; decision_id: string; event: string; actor: string | null; detail: string | null; created_at: number }
+
+export function listDecisionEvents(decisionId: string): DecisionEvent[] {
+  return db.prepare('SELECT * FROM decision_events WHERE decision_id = ? ORDER BY id').all(decisionId) as DecisionEvent[]
+}
+
+export type DecisionTransition =
+  | { ok: true; decision: Decision; messageId?: number }
+  | { ok: false; reason: 'not_found' | 'not_open' | 'not_asker'; decision?: Decision }
+
+/** The owner's answer: open -> answered, the event rows and the [DECISION_ANSWER] message to the asker, in ONE
+ *  transaction. The UPDATE's `status = 'open'` is the idempotency guard: a second answer (a double tap, two tabs)
+ *  changes 0 rows and leaves no second event and no second message. */
+export function answerDecision(id: string, answer: { key: string | null; text: string | null; by: string; channel: 'page' | 'telegram' | 'slack' }): DecisionTransition {
+  const now = Math.floor(Date.now() / 1000)
+  return db.transaction((): DecisionTransition => {
+    const changed = db.prepare(`
+      UPDATE decisions SET status = 'answered', answer_key = ?, answer_text = ?, answered_at = ?, answered_by = ?,
+        answer_channel = ?, updated_at = ?
+      WHERE id = ? AND status = 'open'
+    `).run(answer.key, answer.text, now, answer.by, answer.channel, now, id).changes
+    const decision = getDecision(id)
+    if (!decision) return { ok: false, reason: 'not_found' }
+    if (changed === 0) return { ok: false, reason: 'not_open', decision }
+    addDecisionEvent(id, 'answered', answer.by, answer.key, now)
+    const msg = createAgentMessage('system', decision.asker, decisionAnswerText(decision))
+    addDecisionEvent(id, 'delivered', 'system', `message ${msg.id}`, now)
+    return { ok: true, decision, messageId: msg.id }
+  }).immediate()
+}
+
+/** `[DECISION_ANSWER] id=… key=… label="…"`, then the owner's text verbatim on the next line(s). key=- when the owner
+ *  answered with free text only. */
+export function decisionAnswerText(d: Pick<Decision, 'id' | 'options' | 'answer_key' | 'answer_text'>): string {
+  const label = d.answer_key ? (d.options.find((o) => o.key === d.answer_key)?.label ?? '') : ''
+  const head = `[DECISION_ANSWER] id=${d.id} key=${d.answer_key ?? '-'} label=${JSON.stringify(label)}`
+  return d.answer_text ? `${head}\n${d.answer_text}` : head
+}
+
+/** The asker takes back an open decision: withdrawn, or superseded by a newer one. The asker check sits in the UPDATE
+ *  itself, so a row that is not the caller's never changes, whatever the route checked before. */
+export function closeDecisionByAsker(id: string, actor: string, to: 'withdrawn' | 'superseded', supersededBy?: string): DecisionTransition {
+  const now = Math.floor(Date.now() / 1000)
+  const newId = to === 'superseded' ? (supersededBy ?? null) : null
+  return db.transaction((): DecisionTransition => {
+    const changed = db.prepare(`
+      UPDATE decisions SET status = ?, superseded_by = ?, updated_at = ?
+      WHERE id = ? AND status = 'open' AND asker = ?
+    `).run(to, newId, now, id, actor).changes
+    const decision = getDecision(id)
+    if (!decision) return { ok: false, reason: 'not_found' }
+    if (changed === 0) return { ok: false, reason: decision.asker !== actor ? 'not_asker' : 'not_open', decision }
+    addDecisionEvent(id, to, actor, newId, now)
+    return { ok: true, decision }
+  }).immediate()
 }
 
 // --- OTel Distributed Tracing (card def5a189) ---

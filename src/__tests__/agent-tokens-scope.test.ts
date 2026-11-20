@@ -956,7 +956,7 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
 // Drive gateRequest with a minimal res double: the gate either writes 401/403
 // or returns the principal (the route would then run).
 // A body that names the calling agent in every identity field the bindings know.
-const selfBody = (agent: string): Record<string, unknown> => ({ from: agent, agent_id: agent, author: agent, actor: agent, agent, updated_by: agent })
+const selfBody = (agent: string): Record<string, unknown> => ({ from: agent, agent_id: agent, author: agent, actor: agent, agent, updated_by: agent, asker: agent })
 
 async function gateStatus(method: string, path: string, token: string, resolver: (t: string) => string | null, body?: unknown, acl?: Record<string, string[]>, headers: Record<string, string> = {}): Promise<{ status: number; body: Record<string, unknown>; auth?: unknown }> {
   const out: { status: number; body: Record<string, unknown>; auth?: unknown } = { status: 0, body: {} }
@@ -987,6 +987,8 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['GET', '/api/memories'], ['GET', '/api/memories/42'], ['POST', '/api/memories'], ['PATCH', '/api/memories/42'], ['PUT', '/api/memories/42'],
   ['GET', '/api/daily-log'], ['GET', '/api/daily-log/dates'], ['POST', '/api/daily-log'],
   ['GET', '/api/approvals'], ['GET', '/api/approvals/abc-123'], ['POST', '/api/approvals'], ['POST', '/api/approvals/abc-123/consume'],
+  ['GET', '/api/decisions'], ['GET', '/api/decisions/dec_0123456789abcdef'], ['POST', '/api/decisions'],
+  ['POST', '/api/decisions/dec_0123456789abcdef/withdraw'], ['POST', '/api/decisions/dec_0123456789abcdef/supersede'],
   ['GET', '/api/agents'],
   ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'],
   ['POST', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],

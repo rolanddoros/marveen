@@ -328,6 +328,11 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['POST'], pattern: /^\/api\/daily-log$/, why: 'daily log append (PreCompact prompt)' },
   { methods: ['GET'], pattern: /^\/api\/approvals(?:\/[^/]+)?$/, why: 'approval status poll' },
   { methods: ['POST'], pattern: /^\/api\/approvals$/, why: 'request approval (autonomy level 2)' },
+  // Card 658026c5: an agent files its question to the owner, polls it, and takes it back. Answering
+  // (POST /api/decisions/:id/answer) stays OUT: that is the owner's lane, and the route refuses every token anyway.
+  { methods: ['GET'], pattern: /^\/api\/decisions(?:\/[^/]+)?$/, why: 'decision status poll (own rows only, routes/decisions.ts)' },
+  { methods: ['POST'], pattern: /^\/api\/decisions$/, why: 'file a decision for the owner' },
+  { methods: ['POST'], pattern: /^\/api\/decisions\/[^/]+\/(?:withdraw|supersede)$/, why: 'the asker withdraws or supersedes its own open decision' },
   { methods: ['POST'], pattern: /^\/api\/approvals\/[^/]+\/consume$/, why: 'one-shot consume of an approved row (APPROVALCONSUME1022); bound to the caller below' },
   { methods: ['GET'], pattern: /^\/api\/agents$/, why: 'fleet roster' },
   // The listing returns id/label/timestamps only, never a value (routes/connectors.ts listSecrets()).
@@ -463,6 +468,9 @@ export const AGENT_IDENTITY_BINDINGS: readonly IdentityBinding[] = [
     why: 'a request is filed as the caller; a born-approved row (owner_approved_message_id) and a grant to a sub-agent (for_agent) are the owner lane' },
   { methods: ['POST'], pattern: /^\/api\/approvals\/([^/]+)\/consume$/, rowGrantee: (m, lk) => lk.approvalGrantee(m[1]!),
     why: 'a sub-agent consumes only its own request or a row the main agent granted to it (for_agent), never another agent\'s' },
+  { methods: ['POST'], pattern: /^\/api\/decisions$/, bodyFields: ['asker'], why: 'a decision is filed as the caller' },
+  { methods: ['POST'], pattern: /^\/api\/decisions\/[^/]+\/(?:withdraw|supersede)$/, bodyFields: ['actor'],
+    why: 'a decision is withdrawn or superseded by the caller (the route then requires the caller to be its asker)' },
   { methods: ['POST'], pattern: /^\/api\/messages$/, bodyFields: ['from'], why: 'a message is sent as the caller' },
   { methods: ['PUT'], pattern: /^\/api\/messages\/(\d+)$/, rowOwner: (m, lk) => lk.messageRecipient(Number(m[1])),
     why: 'only a message addressed to the caller can be closed by it' },
