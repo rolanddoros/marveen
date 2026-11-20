@@ -2873,3 +2873,49 @@ describe('idle footer whose background-task tail is a monitor alone or first (MO
     expect(detectPaneState(above)).toBe('unknown')
   })
 })
+
+describe('background-agent header in either platform bullet (PANEGLYPH1115, upstream #2812)', () => {
+  // Claude Code draws the background-agent block's header with its platform bullet: `  ⏺ main` (U+23FA) on macOS,
+  // `  ● main` (U+25CF) on Linux. The block sits below the footer and is cut before the pane is classified only when
+  // its header is recognised. With only U+23FA known, a Linux pane kept the block, so a turn starting with a clipped
+  // footer read 'unknown' (router and scheduler do not type) and a running turn with five agents read 'idle'.
+  // Block bytes as in pane-background-agents.test.ts (a 2026-10-16 capture, labels neutralised).
+  const agentRow = (label: string) => `  ◯ general-purpose  ${label} 17m 23s · ↓ 171.9k tokens`
+  const withBlock = (lead: string[], footer: string, bullet: string, rows: string[]) =>
+    [...lead, '', SEP, '❯ ', SEP, footer, '', `  ${bullet} main`, ...rows].join('\n')
+  // Turn start: spinner without a token counter, footer clipped mid-`esc to interrupt` (only accepted as the last line).
+  const turnStart = (bullet: string) => withBlock(['✻ Waiting for 2 background agents to finish', '', '✢ Mulling… (21s)'],
+    '  ⏵⏵ bypass permissions on · 1 shell, 1 monitor · /tasks to see subagents · e…', bullet, [agentRow('Reviewing the first result fi…')])
+  // Mid-turn with five agents: the rows push the spinner and `esc to interrupt` out of the bottom live windows.
+  const busyFive = (bullet: string) => withBlock(['✽ Mulling… (1m 52s · ↓ 7.9k tokens)'],
+    '  ⏵⏵ bypass permissions on · 2 shells · esc to interrupt · ↓ to manage', bullet,
+    ['one', 'two', 'three', 'four', 'five'].map(n => agentRow(`Task ${n}`)))
+  const idle = (bullet: string) => withBlock(['✻ Waiting for 1 background agent to finish'],
+    '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage', bullet, [agentRow('Reviewing the first result fi…')])
+
+  it('reads a turn start under a Linux U+25CF header line as busy, not unknown, as under U+23FA', () => {
+    for (const bullet of ['●', '⏺']) {
+      expect(turnStart(bullet)).toContain(`\n  ${bullet} main\n`)
+      expect(detectPaneState(turnStart(bullet)), bullet).toBe('busy')
+      expect(isReadyForPrompt(turnStart(bullet)), bullet).toBe(false)
+    }
+  })
+
+  it('reads a running turn with five agents under a U+25CF header as busy, not idle, as under U+23FA', () => {
+    for (const bullet of ['●', '⏺']) {
+      expect(detectPaneState(busyFive(bullet)), bullet).toBe('busy')
+      expect(isReadyForPrompt(busyFive(bullet)), bullet).toBe(false)
+    }
+  })
+
+  it('reads an idle main thread under a U+25CF header as idle and ready, as under U+23FA', () => {
+    for (const bullet of ['●', '⏺']) {
+      expect(detectPaneState(idle(bullet)), bullet).toBe('idle')
+      expect(isReadyForPrompt(idle(bullet)), bullet).toBe(true)
+    }
+  })
+
+  it('takes no other bullet as the header: under U+25C9 the turn-start block stays and the pane reads unknown', () => {
+    expect(detectPaneState(turnStart('◉'))).toBe('unknown')
+  })
+})
