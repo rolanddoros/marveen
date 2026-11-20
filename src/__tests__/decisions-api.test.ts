@@ -25,7 +25,9 @@ import { tryHandleDecisions, parseDecisionFiling, carriesSecretShape } from '../
 import { createSession } from '../web/auth-sessions.js'
 import { SESSION_COOKIE_NAME, isAgentAllowed, agentIdentityViolation } from '../web/auth-gate.js'
 import { isBlockedCrossOriginWrite } from '../web/csrf-origin.js'
+// @ts-expect-error -- plain .mjs hook script, no types
 import { SECURITY_TABLES } from '../../scripts/self-pace-gate.mjs'
+// @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision } from '../../scripts/hooks/db-write-gate.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -100,6 +102,16 @@ describe('filing', () => {
     expect(agentIdentityViolation('soma', 'POST', '/api/decisions', filing({ asker: 'soma' }), 'marveen')).toBeNull()
   })
 
+  it('X-Agent-Id naming another agent than the body\'s asker is 400 (Johnny 18324); the same name or no header passes', async () => {
+    const before = (getDb().prepare('SELECT COUNT(*) AS n FROM decisions').get() as { n: number }).n
+    const r = await file({ asker: 'kevin' }, { kind: 'token', agent: 'dennis' })
+    expect(r.status).toBe(400)
+    expect(r.body.error).toMatch(/X-Agent-Id header names 'dennis' but the body names 'kevin'/)
+    expect((getDb().prepare('SELECT COUNT(*) AS n FROM decisions').get() as { n: number }).n).toBe(before)
+    expect((await file({ asker: 'kevin' }, { kind: 'token', agent: 'kevin' })).status).toBe(201)
+    expect((await file({ asker: 'kevin' }, SHARED)).status).toBe(201)
+  })
+
   it('a browser session or a device key does not file', async () => {
     expect((await file({}, OWNER)).status).toBe(403)
     expect((await file({}, { kind: 'device', scope: 'full' })).status).toBe(403)
@@ -149,14 +161,14 @@ describe('filing', () => {
 
 describe('answer: the owner only', () => {
   it.each([
-    ['the shared token', SHARED, {}],
-    ['the shared token with a forged answered_by', SHARED, {}],
-    ['a sub-agent\'s own token (its own question)', SOMA_OWN, {}],
-    ['a full device key without the owner cookie', { kind: 'device', scope: 'full' } as Auth, {}],
-    ['an operator device key, even with the owner cookie', { kind: 'device', scope: 'operator' } as Auth, { cookie: 'set-below' }],
-  ])('%s is 403 and the row stays open with no message', async (_n, auth, headers) => {
+    ['the shared token', SHARED, false],
+    ['the shared token with a forged answered_by', SHARED, false],
+    ['a sub-agent\'s own token (its own question)', SOMA_OWN, false],
+    ['a full device key without the owner cookie', { kind: 'device', scope: 'full' } as Auth, false],
+    ['an operator device key, even with the owner cookie', { kind: 'device', scope: 'operator' } as Auth, true],
+  ] as Array<[string, Auth, boolean]>)('%s is 403 and the row stays open with no message', async (_n, auth, withCookie) => {
     const d = (await file({ asker: 'soma' }, SOMA_OWN)).body
-    const h = headers.cookie ? { cookie: ownerCookie() } : {}
+    const h: Record<string, string> = withCookie ? { cookie: ownerCookie() } : {}
     const r = await answer(d.id, { answer_key: 'A', answered_by: 'owner_session:owner' }, auth, h)
     expect(r.status).toBe(403)
     expect(r.body.code).toBe('owner_session_required')
@@ -248,6 +260,14 @@ describe('withdraw / supersede: the asker only', () => {
     expect((await call('POST', `/api/decisions/${kevins.id}/withdraw`, { actor: 'soma' }, SOMA_OWN)).status).toBe(404)
     expect(getDecision(kevins.id)?.status).toBe('open')
     expect((await call('POST', `/api/decisions/${own.id}/withdraw`, { actor: 'soma' }, SOMA_OWN)).status).toBe(200)
+  })
+
+  it('withdraw: an X-Agent-Id that disagrees with actor is 400 and the row stays open', async () => {
+    const d = (await file()).body
+    const r = await call('POST', `/api/decisions/${d.id}/withdraw`, { actor: 'kevin' }, { kind: 'token', agent: 'dennis' })
+    expect(r.status).toBe(400)
+    expect(getDecision(d.id)?.status).toBe('open')
+    expect((await call('POST', `/api/decisions/${d.id}/withdraw`, { actor: 'kevin' }, { kind: 'token', agent: 'kevin' })).status).toBe(200)
   })
 
   it('a session does not withdraw (the owner answers instead)', async () => {

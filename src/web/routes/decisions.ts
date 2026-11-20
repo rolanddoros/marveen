@@ -4,7 +4,9 @@
 // - File (POST /api/decisions): an agent, by token. The asker is the body's `asker`; a sub-agent's OWN token
 //   (AGENT_TOKENS) must name itself (auth-gate AGENT_IDENTITY_BINDINGS, repeated here), and the row says
 //   asker_verified=1. On the shared token the asker is self-declared (asker_verified=0), the same trust
-//   approvals.agent_id has today. A browser session or a device key does not file: the owner does not ask himself.
+//   approvals.agent_id has today (AGENT_TOKENS is off on this install; Johnny 18324 approved this model). A
+//   self-declared asker that disagrees with the request's own X-Agent-Id header is a 400. A browser session or a
+//   device key does not file: the owner does not ask himself.
 // - Read: the shared token and the owner see every decision; a sub-agent token sees only its own (another agent's
 //   question text is not its business).
 // - Answer (POST /api/decisions/:id/answer): the OWNER only, the same predicate that guards approving
@@ -148,6 +150,15 @@ function subAgentOf(ctx: RouteContext): string | undefined {
   return ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
 }
 
+/** Johnny 18324 (2): on the shared token the asker is self-declared, so a request that ALSO names itself in the
+ *  X-Agent-Id header (ctx.auth.agent, roster-checked by the gate) must name the same agent; a mismatch is refused
+ *  (400) instead of filing under one name while the header says another. Absent header: nothing to compare. */
+function agentHeaderMismatch(ctx: RouteContext, named: string): string | null {
+  const header = ctx.auth?.kind === 'token' ? ctx.auth.agent : undefined
+  if (header === undefined || header === '' || header === named) return null
+  return `the X-Agent-Id header names '${header}' but the body names '${named}'; they must be the same agent`
+}
+
 function visibleTo(ctx: RouteContext, d: Decision): boolean {
   const sub = subAgentOf(ctx)
   return sub === undefined || d.asker === sub
@@ -171,6 +182,8 @@ export async function tryHandleDecisions(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `asker must be the calling agent '${sub}'`, rule: 'agent-identity-binding' }, 403)
       return true
     }
+    const askerMismatch = agentHeaderMismatch(ctx, parsed.value.asker)
+    if (askerMismatch) { json(res, { error: askerMismatch }, 400); return true }
     const decision = createDecision({ id: `dec_${randomBytes(8).toString('hex')}`, ...parsed.value, asker_verified: sub !== undefined })
     logger.info({ id: decision.id, asker: decision.asker, verified: decision.asker_verified, category: decision.category, priority: decision.priority }, 'decision filed')
     json(res, decision, 201)
@@ -262,6 +275,8 @@ export async function tryHandleDecisions(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `actor must be the calling agent '${sub}'`, rule: 'agent-identity-binding' }, 403)
       return true
     }
+    const actorMismatch = agentHeaderMismatch(ctx, actor)
+    if (actorMismatch) { json(res, { error: actorMismatch }, 400); return true }
     const d = DECISION_ID_RE.test(id) ? getDecision(id) : undefined
     if (!d || !visibleTo(ctx, d)) { notFound(); return true }
     let newId: string | undefined
