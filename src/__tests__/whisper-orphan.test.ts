@@ -15,6 +15,7 @@ vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), debug: 
 
 import {
   reapOrphanWhisper, defaultWhisperReapDeps, writeWhisperPidfile, clearWhisperPidfile, readWhisperPidfile, sameArgv,
+  isWhisperRecordShape,
   type WhisperReapDeps,
 } from '../web/whisper-orphan.js'
 
@@ -133,6 +134,10 @@ describe('a bad or foreign-shaped record is never acted on', () => {
     ['foreign 2-element shape (Ron: python3 605)', { pid: 1234, argv: ['/usr/bin/python3', '605'] }],
     ['5 elements, another _vtools.py', { pid: 1234, argv: ['/opt/venv/bin/python', '/elsewhere/_vtools.py', 'transcribe', 'F', '/s'] }],
     ['5 elements, not transcribe', { pid: 1234, argv: ['/opt/venv/bin/python', VT, 'speak', 'F', '/s'] }],
+    // Ron 18872 (H/H2): our own _vtools.py and 'transcribe', but not 5 items
+    ['right script + transcribe, 3 items', { pid: 1234, argv: ['/opt/venv/bin/python', VT, 'transcribe'] }],
+    ['right script + transcribe, 4 items', { pid: 1234, argv: ['/opt/venv/bin/python', VT, 'transcribe', 'F'] }],
+    ['right script + transcribe, 6 items', { pid: 1234, argv: ['/opt/venv/bin/python', VT, 'transcribe', 'F', '/s', 'extra'] }],
   ]
   it.each(BAD)('%s -> stale, no signal, file removed', async (_name, body) => {
     writeFileSync(PIDFILE, JSON.stringify(body))
@@ -150,6 +155,24 @@ describe('a bad or foreign-shaped record is never acted on', () => {
     const deps: WhisperReapDeps = { readArgv: () => good() as string[], signal: (_p, s) => { sent.push(s) }, sleep: async () => {} }
     expect(await reapOrphanWhisper(PIDFILE, deps, 20, { vtoolsPath: VT, pollMs: 5, killWaitMs: 10 })).toBe('survived')
     expect(sent).toEqual(['SIGINT', 'SIGKILL'])
+  })
+
+  // Ron 18872 (A): the shape check must not hide the own-pid guard. A WELL-SHAPED record naming the dashboard's own
+  // pid, with readArgv saying "ours", must still never be signalled (it would SIGINT the dashboard itself).
+  it('a well-shaped record naming this process is stale, no signal, file removed', async () => {
+    writeFileSync(PIDFILE, JSON.stringify({ pid: process.pid, argv: good() }))
+    const sent: string[] = []
+    const deps: WhisperReapDeps = { readArgv: () => good() as string[], signal: (_p, s) => { sent.push(s) }, sleep: async () => {} }
+    expect(await reapOrphanWhisper(PIDFILE, deps, 20, { vtoolsPath: VT, pollMs: 5, killWaitMs: 10 })).toBe('stale')
+    expect(sent).toEqual([])
+    expect(existsSync(PIDFILE)).toBe(false)
+  })
+
+  // Ron 18872 (G): the clause stays (defence in depth); a relative script path never makes a record acceptable.
+  it('isWhisperRecordShape: a relative vtoolsPath never matches, even a record that names it', () => {
+    const rec = { pid: 1234, argv: ['/opt/venv/bin/python', 'relative.py', 'transcribe', 'F', '/s'] }
+    expect(isWhisperRecordShape(rec, 'relative.py')).toBe(false)
+    expect(isWhisperRecordShape({ pid: 1234, argv: good() as string[] }, VT)).toBe(true) // positive control
   })
 
   it('readWhisperPidfile itself rejects the bad pid / argv records (and accepts a good one)', () => {
