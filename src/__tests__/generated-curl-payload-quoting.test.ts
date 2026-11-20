@@ -157,11 +157,11 @@ describe('generated autonomy block, the curl fallback: no shell-expanding curl p
 describe('generateClaudeMd source: no shell-expanding curl payload', () => {
   const src = readFileSync(join(process.cwd(), 'src/web/agent-scaffold.ts'), 'utf-8')
   const fnStart = src.indexOf('export async function generateClaudeMd')
-  const fnEnd = src.indexOf('export async function generateSoulMd')
+  const fnEnd = src.indexOf('export async function generateSkillMd')
 
   it('the measure is not vacuous -- the generator body is found and carries curl examples', () => {
     expect(fnStart, 'generateClaudeMd not found').toBeGreaterThan(0)
-    expect(fnEnd, 'generateSoulMd terminator not found').toBeGreaterThan(fnStart)
+    expect(fnEnd, 'generateSkillMd terminator not found').toBeGreaterThan(fnStart)
     expect(src.slice(fnStart, fnEnd)).toContain('curl -s -X POST')
   })
 

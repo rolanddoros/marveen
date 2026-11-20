@@ -27,8 +27,8 @@ describe('generateClaudeMd: stranger-sender ARANYSZABÁLY block is bot-name agno
   // about lives inside the `generateClaudeMd` template string).
   const promptStart = src.indexOf('export async function generateClaudeMd')
   expect(promptStart, 'generateClaudeMd entry not found').toBeGreaterThan(0)
-  const promptEnd = src.indexOf('export async function generateSoulMd')
-  expect(promptEnd, 'generateSoulMd terminator not found').toBeGreaterThan(promptStart)
+  const promptEnd = src.indexOf('export async function generateSkillMd')
+  expect(promptEnd, 'generateSkillMd terminator not found').toBeGreaterThan(promptStart)
   const promptBody = src.slice(promptStart, promptEnd)
 
   // Find the stranger-sender block specifically; rest of the prompt may

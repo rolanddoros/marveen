@@ -1247,7 +1247,6 @@ window._i18n.en = {
   'agents.reauth.reason':			'Re-authentication required',
   'agents.sharedEnvAuth.label':			'Shared env auth key',
   'agents.sharedEnvAuth.tip':			'The env block of the shared ~/.claude/settings.json copies this key into this agent, so it may run on that key or endpoint instead of its own token.',
-  'agents.soul_md_generating':			'Generating SOUL.md...',
   'agents.status.online':          'Online',
   'agents.status.offline':         'Offline',
   'agents.marveen_process_tip':    'Running: the main assistant always runs in the --channels session. This card always shows Running (no per-agent tmux check).',

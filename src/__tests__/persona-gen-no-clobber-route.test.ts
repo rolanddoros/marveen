@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 // file overwritten by the template) is back, and all ten tests stay green.
 //
 // So this file runs POST /api/agents end to end with a generator the test
-// holds open: the operator writes CLAUDE.md / SOUL.md INSIDE the generation
+// holds open: the operator writes CLAUDE.md INSIDE the generation
 // window, then generation is released (or failed), and the files on disk, the
 // sentinel, the main-agent notice and the response are what get asserted.
 //
@@ -32,7 +32,6 @@ const h = vi.hoisted(() => ({
     started: Promise<void>
     markStarted: () => void
     claude: { promise: Promise<string>; resolve: (v: string) => void; reject: (e: Error) => void }
-    soul: { promise: Promise<string>; resolve: (v: string) => void; reject: (e: Error) => void }
   },
 }))
 
@@ -57,7 +56,6 @@ vi.mock('../web/agent-scaffold.js', async (importOriginal) => {
     scaffoldAgentDir: (name: string) => { mkdirSync(join(h.root, name), { recursive: true }) },
     writeAgentSettingsFromProfile: vi.fn(),
     generateClaudeMd: () => { h.gen!.markStarted(); return h.gen!.claude.promise },
-    generateSoulMd: () => { h.gen!.markStarted(); return h.gen!.soul.promise },
     buildCreationSections: async (name: string) => {
       if (h.sectionsError) throw h.sectionsError
       return `## Memoria rendszer\n\n(the seven sections for ${name})`
@@ -89,7 +87,6 @@ const NAME = 'zz-persona-noclobber-probe'
 const HAND_CLAUDE = '# kezi CLAUDE\n\n## Tiltasok\n- Soha ne kuldj levelet jovahagyas nelkul.\n'
 const HAND_SOUL = '# kezi SOUL\n\nKezzel irt hangnem.\n'
 const GEN_CLAUDE = '# generalt CLAUDE\n'
-const GEN_SOUL = '# generalt SOUL\n'
 
 function deferred<T>() {
   let resolve!: (v: T) => void
@@ -137,7 +134,7 @@ beforeEach(() => {
   h.root = mkdtempSync(join(tmpdir(), 'persona-route-'))
   let markStarted!: () => void
   const started = new Promise<void>((r) => { markStarted = r })
-  h.gen = { started, markStarted, claude: deferred<string>(), soul: deferred<string>() }
+  h.gen = { started, markStarted, claude: deferred<string>() }
   h.createAgentMessage.mockReset()
   // Unmeasured CLI = the model gate fails open; this test is not about it.
   process.env[CLI_VERSION_OVERRIDE_ENV] = ''
@@ -150,30 +147,30 @@ afterAll(() => {
 })
 
 describe('POST /api/agents: files hand-written DURING generation survive (pre-generation baseline)', () => {
-  it('generation SUCCEEDS: both hand-written files kept, generated text goes to *.generated.md, main agent told', async () => {
+  // Card df560c9f: SOUL.md is no longer generated. A SOUL.md somebody writes during creation is simply left alone
+  // (never generated over, never a sidecar, never reported): only CLAUDE.md is guarded.
+  it('generation SUCCEEDS: the hand-written CLAUDE.md kept, generated text goes to CLAUDE.generated.md, main agent told', async () => {
     const pending = startCreate()
     await h.gen!.started // snapshot taken, generation in flight
     writeFileSync(join(dir(), 'CLAUDE.md'), HAND_CLAUDE)
     writeFileSync(join(dir(), 'SOUL.md'), HAND_SOUL)
     h.gen!.claude.resolve(GEN_CLAUDE)
-    h.gen!.soul.resolve(GEN_SOUL)
     const r = await pending
 
     expect(read('CLAUDE.md')).toBe(HAND_CLAUDE)
     expect(read('SOUL.md')).toBe(HAND_SOUL)
     expect(read('CLAUDE.generated.md')).toBe(GEN_CLAUDE)
-    expect(read('SOUL.generated.md')).toBe(GEN_SOUL)
+    expect(existsSync(join(dir(), 'SOUL.generated.md'))).toBe(false)
     expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(false)
 
     expect(r.status).toBe(200)
     expect(r.body.personalityPending).toBeUndefined()
     expect(r.body.personalitySkipped).toEqual([
       { file: 'CLAUDE.md', generatedPath: join(dir(), 'CLAUDE.generated.md') },
-      { file: 'SOUL.md', generatedPath: join(dir(), 'SOUL.generated.md') },
     ])
 
     // "The skip is never silent": exactly one notice, to the main agent,
-    // naming both files and where the generated text went.
+    // naming the file and where the generated text went.
     const notices = skipNotices()
     expect(notices).toHaveLength(1)
     const [from, to, text] = notices[0]
@@ -181,9 +178,8 @@ describe('POST /api/agents: files hand-written DURING generation survive (pre-ge
     expect(to).toBe(MAIN_AGENT_ID)
     expect(text).toContain(NAME)
     expect(text).toContain('CLAUDE.md')
-    expect(text).toContain('SOUL.md')
+    expect(text).not.toContain('SOUL.md')
     expect(text).toContain(join(dir(), 'CLAUDE.generated.md'))
-    expect(text).toContain(join(dir(), 'SOUL.generated.md'))
   })
 
   it('generation FAILS (the measured incident): no template over the hand-written files, NO sentinel, main agent told', async () => {
@@ -192,7 +188,6 @@ describe('POST /api/agents: files hand-written DURING generation survive (pre-ge
     writeFileSync(join(dir(), 'CLAUDE.md'), HAND_CLAUDE)
     writeFileSync(join(dir(), 'SOUL.md'), HAND_SOUL)
     h.gen!.claude.reject(new Error('generation timed out'))
-    h.gen!.soul.reject(new Error('generation timed out'))
     const r = await pending
 
     expect(read('CLAUDE.md')).toBe(HAND_CLAUDE)
@@ -208,7 +203,6 @@ describe('POST /api/agents: files hand-written DURING generation survive (pre-ge
     expect(r.body.personalityPending).toBeUndefined()
     expect(r.body.personalitySkipped).toEqual([
       { file: 'CLAUDE.md', generatedPath: null },
-      { file: 'SOUL.md', generatedPath: null },
     ])
 
     const notices = skipNotices()
@@ -216,21 +210,20 @@ describe('POST /api/agents: files hand-written DURING generation survive (pre-ge
     expect(notices[0][0]).toBe('system')
     expect(notices[0][1]).toBe(MAIN_AGENT_ID)
     expect(notices[0][2]).toContain('CLAUDE.md')
-    expect(notices[0][2]).toContain('SOUL.md')
+    expect(notices[0][2]).not.toContain('SOUL.md')
   })
 
-  it('generation FAILS, only CLAUDE.md hand-written: template lands on SOUL.md alone, sentinel written, both reported', async () => {
+  it('generation FAILS, only CLAUDE.md hand-written: no template lands anywhere, no SOUL.md template, no sentinel, CLAUDE.md reported', async () => {
     const pending = startCreate()
     await h.gen!.started
     writeFileSync(join(dir(), 'CLAUDE.md'), HAND_CLAUDE)
     h.gen!.claude.reject(new Error('boom'))
-    h.gen!.soul.reject(new Error('boom'))
     const r = await pending
 
     expect(read('CLAUDE.md')).toBe(HAND_CLAUDE)
-    expect(read('SOUL.md')).toContain('SABLON')
-    expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(true)
-    expect(r.body.personalityPending).toBe(true)
+    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
+    expect(existsSync(join(dir(), PERSONALITY_PENDING_SENTINEL))).toBe(false)
+    expect(r.body.personalityPending).toBeUndefined()
     expect(r.body.personalitySkipped).toEqual([{ file: 'CLAUDE.md', generatedPath: null }])
     expect(skipNotices()).toHaveLength(1)
     expect(skipNotices()[0][2]).toContain('CLAUDE.md')
@@ -243,11 +236,10 @@ describe('POST /api/agents: untouched files still get written (the guard is not 
     const pending = startCreate()
     await h.gen!.started
     h.gen!.claude.resolve(GEN_CLAUDE)
-    h.gen!.soul.resolve(GEN_SOUL)
     const r = await pending
 
     expect(read('CLAUDE.md')).toBe(GEN_CLAUDE)
-    expect(read('SOUL.md')).toBe(GEN_SOUL)
+    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
     expect(existsSync(join(dir(), 'CLAUDE.generated.md'))).toBe(false)
     expect(r.body).toEqual({ ok: true, name: NAME })
     expect(skipNotices()).toHaveLength(0)
@@ -257,7 +249,6 @@ describe('POST /api/agents: untouched files still get written (the guard is not 
     const pending = startCreate()
     await h.gen!.started
     h.gen!.claude.reject(new Error('boom'))
-    h.gen!.soul.reject(new Error('boom'))
     const r = await pending
 
     expect(read('CLAUDE.md')).toContain('SABLON')
@@ -273,14 +264,13 @@ describe('POST /api/agents: untouched files still get written (the guard is not 
     const pending = startCreate()
     await h.gen!.started
     h.gen!.claude.reject(new Error('boom'))
-    h.gen!.soul.reject(new Error('boom'))
     await pending
 
     const file = read('CLAUDE.md')
     expect(file).toContain('SABLON')
     expect(file.endsWith(`\n\n## Memoria rendszer\n\n(the seven sections for ${NAME})\n`)).toBe(true)
     expect(file.indexOf('## Modell')).toBeLessThan(file.indexOf('## Memoria rendszer'))
-    expect(read('SOUL.md')).not.toContain('Memoria rendszer')
+    expect(existsSync(join(dir(), 'SOUL.md'))).toBe(false)
   })
 
   it('generation FAILS and the sections cannot be built either: the plain template is still written, the agent kept', async () => {
@@ -289,7 +279,6 @@ describe('POST /api/agents: untouched files still get written (the guard is not 
       const pending = startCreate()
       await h.gen!.started
       h.gen!.claude.reject(new Error('boom'))
-      h.gen!.soul.reject(new Error('boom'))
       const r = await pending
 
       const file = read('CLAUDE.md')

@@ -3328,10 +3328,9 @@ function agentApiName() {
 }
 let wizardStep = 1
 let generatedClaudeMd = ''
-let generatedSoulMd = ''
 let wizardCreatedName = ''
 // C1 PR 11c-2: the "will have its own Telegram bot" answer the agent was created with.
-// Without it there is no SOUL.md: step 3 hides its editor and does not send it.
+// (Card df560c9f: no SOUL.md is generated either way; step 3 edits CLAUDE.md only.)
 let wizardTelegram = true
 // Set from the POST /api/agents response when the backend fell back to a template
 // because personality generation failed. It answers 200 in that case (the agent
@@ -3580,15 +3579,12 @@ function resetWizard() {
   document.querySelectorAll('#avatarGrid .avatar-grid-item').forEach(i => i.classList.remove('selected'))
   resetCreateAvatarUpload()
   generatedClaudeMd = ''
-  generatedSoulMd = ''
   wizardCreatedName = ''
   wizardPersonalityPending = null
   wizardTelegram = true
   document.getElementById('agentTelegram').checked = true
-  document.getElementById('wizardSoulGroup').hidden = false
   renderWizardPendingBanner()
   document.getElementById('wizardClaudeMd').value = ''
-  document.getElementById('wizardSoulMd').value = ''
   populateProfileSelect(
     document.getElementById('agentProfile'),
     document.getElementById('agentProfileDesc'),
@@ -3656,15 +3652,13 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     wizardPersonalityPending = result.personalityPending
       ? { detail: result.detail || '', warning: result.warning || '' }
       : null
-    // C1 PR 11c-2: without Telegram no SOUL.md is generated, so the status does not name it.
-    statusEl.textContent = t(telegram ? 'agents.soul_md_generating' : 'agents.claude_md_generating')
+    statusEl.textContent = t('agents.claude_md_generating')
 
     // Fetch full agent details to get generated content
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(createdName)}`)
     if (detailRes.ok) {
       const detail = await detailRes.json()
       generatedClaudeMd = detail.claudeMd || detail.content || ''
-      generatedSoulMd = detail.soulMd || ''
     }
 
     statusEl.textContent = t('kanban.breakdown.running')
@@ -3690,8 +3684,6 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     setTimeout(() => {
       wizardStep = 3
       document.getElementById('wizardClaudeMd').value = generatedClaudeMd
-      document.getElementById('wizardSoulMd').value = generatedSoulMd
-      document.getElementById('wizardSoulGroup').hidden = !wizardTelegram
       renderWizardPendingBanner()
       updateWizardUI()
     }, 600)
@@ -3714,7 +3706,6 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
   // input field -- accents in the input would miss the real agent dir.
   const name = wizardCreatedName || agentName.value.trim()
   const claudeMd = document.getElementById('wizardClaudeMd').value
-  const soulMd = document.getElementById('wizardSoulMd').value
   const createBtn = document.getElementById('wizardCreateBtn')
 
   createBtn.disabled = true
@@ -3726,8 +3717,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      // C1 PR 11c-2: without Telegram the agent has no SOUL.md; sending soulMd would write one.
-      body: JSON.stringify(wizardTelegram ? { claudeMd, soulMd } : { claudeMd }),
+      body: JSON.stringify({ claudeMd }),
     })
 
     if (!res.ok) {

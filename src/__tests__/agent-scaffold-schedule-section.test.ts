@@ -15,7 +15,7 @@ import { gateDecision } from '../../scripts/self-pace-gate.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
 const start = src.indexOf('export async function generateClaudeMd')
-const end = src.indexOf('export async function generateSoulMd')
+const end = src.indexOf('export async function generateSkillMd')
 const prompt = src.slice(start, end)
 const secStart = prompt.indexOf('## Ütemezett feladatok')
 const secEnd = prompt.indexOf('\n## ', secStart + 5)

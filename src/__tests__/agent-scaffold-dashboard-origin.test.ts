@@ -112,8 +112,8 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
   // other legitimate uses of localhost elsewhere in the same file.
   const fnStart = src.indexOf('export async function generateClaudeMd')
   expect(fnStart, 'generateClaudeMd not found in source').toBeGreaterThan(0)
-  const fnEnd = src.indexOf('export async function generateSoulMd')
-  expect(fnEnd, 'generateSoulMd terminator not found').toBeGreaterThan(fnStart)
+  const fnEnd = src.indexOf('export async function generateSkillMd')
+  expect(fnEnd, 'generateSkillMd terminator not found').toBeGreaterThan(fnStart)
   const fnBody = src.slice(fnStart, fnEnd)
 
   it('imports DASHBOARD_PUBLIC_URL from config', () => {

@@ -90,16 +90,16 @@ if [ "${1:-}" = "--launch-env" ]; then
   exit 0
 fi
 
-# An agent is READY to be started only once both personality files exist. The
-# dashboard wizard creates the directory first and generates CLAUDE.md /
-# SOUL.md afterwards through an LLM call that can take minutes
-# (routes/agents.ts: "Generating agent CLAUDE.md and SOUL.md..."), so a
+# An agent is READY to be started only once its personality file exists. The
+# dashboard wizard creates the directory first and generates CLAUDE.md
+# afterwards through an LLM call that can take minutes
+# (routes/agents.ts: "Generating agent CLAUDE.md..."), so a
 # directory alone proves nothing about whether the agent is finished. Claude
 # Code reads CLAUDE.md at startup: a session started before the files land
 # comes up with no identity, no rules and no persona, and stays that way
 # until restarted by hand -- from the outside the creation looks failed.
 agent_is_scaffolded() {
-  [ -f "$1/CLAUDE.md" ] && [ -f "$1/SOUL.md" ]
+  [ -f "$1/CLAUDE.md" ]
 }
 
 # Self-test hook, mirroring --resolve-provider: evaluate the predicate and
@@ -267,7 +267,7 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   fi
 
   # Do not start a half-scaffolded agent: the wizard's LLM call may still be
-  # writing CLAUDE.md / SOUL.md. The next tick starts it once both exist.
+  # writing CLAUDE.md. The next tick starts it once it exists.
   if ! agent_is_scaffolded "$AGENT_DIR"; then
     echo "$(timestamp) [watchdog] $AGENT_ID: personality files not ready yet (wizard still generating?), skipping this tick" >> "$LOG"
     continue

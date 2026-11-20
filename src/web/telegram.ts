@@ -190,12 +190,9 @@ export async function sendTelegramPhoto(token: string, chatId: string, photoPath
 export async function sendWelcomeMessage(agentName: string, token: string): Promise<void> {
   const chatId = resolveOwnerChatId()
   if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install') ; return }
-  const dir = agentDir(agentName)
-  const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
-  const firstLine = soulMd.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim() || ''
-
+  // Card df560c9f: the greeting no longer quotes a SOUL.md line (the file is not generated any more).
   try {
-    const greeting = `Szia! ${agentName.charAt(0).toUpperCase() + agentName.slice(1)} vagyok, most jöttem létre. ${firstLine ? firstLine + ' ' : ''}Írj ha segíthetek!`
+    const greeting = `Szia! ${agentName.charAt(0).toUpperCase() + agentName.slice(1)} vagyok, most jöttem létre. Írj ha segíthetek!`
     await sendTelegramMessage(token, chatId, greeting)
 
     // Send avatar if exists

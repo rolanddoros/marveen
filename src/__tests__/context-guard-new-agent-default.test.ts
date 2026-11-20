@@ -90,7 +90,7 @@ describe('the creation path actually calls it', () => {
     // careful to make survivable.
     const scaffold = routeSrc.indexOf('scaffoldAgentDir(name)')
     const seed = routeSrc.indexOf('seedContextGuardForNewAgent(name)')
-    const generate = routeSrc.indexOf("'Generating agent CLAUDE.md and SOUL.md...'")
+    const generate = routeSrc.indexOf("'Generating agent CLAUDE.md...'")
     expect(scaffold, 'scaffoldAgentDir call not found').toBeGreaterThan(-1)
     expect(seed, 'guard seed call not found').toBeGreaterThan(scaffold)
     expect(generate, 'personality generation log not found').toBeGreaterThan(seed)
